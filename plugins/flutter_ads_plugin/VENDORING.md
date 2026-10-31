@@ -45,3 +45,11 @@
 # `lib/services/ad_config.dart` and are DEMO IDs from the plugin
 # example until fqapp's formal Huijing IDs are supplied. Never reuse
 # peiwan's or WeatherMaster's formal IDs here.
+
+7. AAR wiring: AGP 9 refuses direct `files('libs/*.aar')` dependencies in
+   a library module (the AARs would not be packaged in the plugin AAR).
+   The 18 AARs are therefore declared via a `flatDir { dirs 'libs' }`
+   repository as `api(name: '<file name minus .aar>', ext: 'aar')`. The
+   AAR files themselves are untouched. (The `files()` form was masked
+   in earlier runs: the Gradle daemon died of OOM during R8 before the
+   bundle task reported it.)
