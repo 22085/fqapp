@@ -56,8 +56,10 @@ env:
   # Certificate the release APK must carry. The built APK is compared against
   # this, so a package signed with the wrong key -- or not signed at all --
   # fails here instead of being published. The matching keystore is stored
-  # as a repository secret.
-  RELEASE_SIGNER_SHA256: 'e8471cd8a935fd71fd8197355b5558d245449d5bc8294f60f88616f60451c550'
+  # as a repository secret. FORK PIN (rename-hide only): this is the fqapp
+  # fork keystore certificate, NOT the upstream release certificate; do not
+  # merge this change into master/upstream.
+  RELEASE_SIGNER_SHA256: '0af92385814b289c111f72096ee193364b6388e23d1e4dfec2586196e4283e93'
   FQAPP_USE_MAVEN_MIRRORS: 'false'
   # workers.max / CMAKE_BUILD_PARALLEL_LEVEL stay at 2. Raising them to 4 was
   # measured and made things WORSE on the 4-vCPU / 16 GB runner: the release APK
