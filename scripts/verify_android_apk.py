@@ -347,9 +347,28 @@ def verify(args: argparse.Namespace, report_dir: Path, report: dict) -> None:
             report["native_libraries"].append(details)
     report["checks"]["native_libraries"] = "passed"
 
-    run_logged([node, str(checker), *(str(path) for path in libraries)],
-               report_dir, "elf-alignment.log")
-    report["checks"]["elf_16kb_alignment"] = "passed"
+    # 16 KiB ELF alignment is a hard gate for 64-bit ABIs (Android 15+
+    # requires it there), but several ad-SDK vendors still ship 32-bit
+    # .so files linked with 4 KiB alignment (Beizi libBZDevInfo.so,
+    # Kuaishou libplt-base.so/libti-monitor.so, Pangle
+    # libpangleflipped.so), which cannot be relinked. Those libraries
+    # still load on the 4 KiB-page devices that 32-bit builds target,
+    # so for armeabi-v7a a failing ELF check is recorded as a warning
+    # instead of aborting the run; elf-alignment.log still names every
+    # offender and the report keeps the "warned" verdict. The gate
+    # stays hard for 64-bit ABIs.
+    try:
+        run_logged([node, str(checker), *(str(path) for path in libraries)],
+                   report_dir, "elf-alignment.log")
+    except VerificationError:
+        if abi != "armeabi-v7a":
+            raise
+        print("WARNING: armeabi-v7a native libraries are not 16 KiB aligned; "
+              "see elf-alignment.log. 32-bit-only vendor libraries cannot be "
+              "relinked; the gate stays hard for 64-bit ABIs.", flush=True)
+        report["checks"]["elf_16kb_alignment"] = "warned"
+    else:
+        report["checks"]["elf_16kb_alignment"] = "passed"
     run_logged([zipalign, "-c", "-P", "16", "-v", "4", str(apk)],
                report_dir, "zipalign.log")
     report["checks"]["zip_16kb_alignment"] = "passed"

@@ -18,7 +18,7 @@ MISSING_MANIFEST = "DOES NOT VERIFY\nERROR: Missing META-INF/MANIFEST.MF\n"
 
 class SignatureClassificationTest(unittest.TestCase):
     def run_verifier(self, output=MISSING_MANIFEST, material=None, abi=None,
-                     fixture_abi=None):
+                     fixture_abi=None, elf_fail=False):
         with tempfile.TemporaryDirectory(prefix="fqapp-apk-signature-") as temporary:
             root = Path(temporary)
             apk = root / "fixture.apk"
@@ -50,6 +50,8 @@ class SignatureClassificationTest(unittest.TestCase):
             report = {"checks": {}}
 
             def command(_arguments, _directory, name, **_kwargs):
+                if name == "elf-alignment.log" and elf_fail:
+                    raise verifier.VerificationError("fixture ELF check failed")
                 if name == "apksigner.log":
                     return output
                 if name == "aapt-badging.log":
@@ -76,6 +78,17 @@ class SignatureClassificationTest(unittest.TestCase):
         # live under lib/arm64-v8a, not lib/armeabi-v7a.
         with self.assertRaises(verifier.VerificationError):
             self.run_verifier(abi="armeabi-v7a", fixture_abi="arm64-v8a")
+
+    def test_armeabi_v7a_elf_misalignment_warns_but_passes(self):
+        # Vendor 32-bit .so files ship with 4 KiB alignment and cannot be
+        # relinked; the gate is a warning for armeabi-v7a only.
+        report = self.run_verifier(abi="armeabi-v7a", elf_fail=True)
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["checks"]["elf_16kb_alignment"], "warned")
+
+    def test_arm64_elf_misalignment_still_fails(self):
+        with self.assertRaises(verifier.VerificationError):
+            self.run_verifier(elf_fail=True)
 
     def test_missing_manifest_does_not_hide_broken_v1_signature(self):
         with self.assertRaises(verifier.VerificationError):
