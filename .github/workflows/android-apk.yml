@@ -70,7 +70,10 @@ env:
   # kotlin.incremental is forced back on: gradle.properties disables it to dodge
   # a Windows file-locking bug ("Could not close incremental caches"), and CI is
   # Linux-only. A system property overrides the gradle.properties entry.
-  GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx1536m -XX:MaxMetaspaceSize=768m -XX:ReservedCodeCacheSize=256m" -Dorg.gradle.workers.max=2 -Dorg.gradle.daemon=false -Dkotlin.incremental=true'
+  # 注意：-Dorg.gradle.jvmargs 系统属性会覆盖 android/gradle.properties 里的同名项，
+  # 0290764 只改 gradle.properties 抬到 8G 没生效，实际一直是 1.5G，R8 在
+  # :app:minifyReleaseWithR8 直接 OutOfMemoryError。这里必须同样给足。
+  GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx8g -XX:MaxMetaspaceSize=2g -XX:ReservedCodeCacheSize=512m" -Dorg.gradle.workers.max=2 -Dorg.gradle.daemon=false -Dkotlin.incremental=true'
   CMAKE_BUILD_PARALLEL_LEVEL: '2'
   CARGO_BUILD_JOBS: '2'
   CARGO_TERM_COLOR: always
@@ -78,7 +81,7 @@ env:
 jobs:
   apk:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     defaults:
       run:
         shell: bash
