@@ -50,6 +50,7 @@ class AboutPage extends StatelessWidget {
       context,
     ).showSnackBar(const SnackBar(content: Text('已复制版本号')));
   }
+}
 
 /// 头部 logo：全幅图片，圆角与投影跟随图版的 15% 板式圆角。
 class _AboutLogo extends StatelessWidget {
