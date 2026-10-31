@@ -24,11 +24,6 @@ android {
     defaultConfig {
         minSdk = flutter.minSdkVersion
     }
-
-    dependenciesInfo {
-        includeInApk = false
-        includeInBundle = false
-    }
 }
 
 // The Flutter tool injects the flutter SDK path via local.properties
