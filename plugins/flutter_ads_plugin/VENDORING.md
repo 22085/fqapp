@@ -52,4 +52,9 @@
    repository as `api(name: '<file name minus .aar>', ext: 'aar')`. The
    AAR files themselves are untouched. (The `files()` form was masked
    in earlier runs: the Gradle daemon died of OOM during R8 before the
-   bundle task reported it.)
+   bundle task reported it.) The flatDir repository must ALSO be
+   declared in the root `allprojects` repositories
+   (android/build.gradle.kts): dependency resolution runs in the
+   consuming (:app) project's context, so a flatDir declared only in
+   the plugin is invisible there and every AAR fails with
+   "Could not find :<name>:" at :app:mergeReleaseNativeLibs.
