@@ -14,6 +14,8 @@ import '../models/audio_extra.dart';
 import '../models/comment_reply.dart';
 import '../models/media_item.dart';
 import '../services/api_client.dart';
+import '../services/ad_config.dart';
+import '../services/ad_service.dart';
 import '../services/app_theme.dart';
 import '../services/backend_transport.dart';
 import '../services/chapter_cache_store.dart';
@@ -2559,6 +2561,12 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       _settleReadTime();
       await _persistProgress();
       if (!mounted) return;
+      // 章末插屏：进入的章号（1-based）每 N 章一次，失败/超时直接放行，
+      // 不挡翻章；目录跳转走 [_jumpToChapter]，不触发。
+      if ((_index + 2) % AdConfig.novelInterstitialEveryChapters == 0) {
+        await AdService.instance.maybeShowInterstitial();
+        if (!mounted) return;
+      }
       final turn = _captureChapterTurn(1);
       setState(() => _index++);
       await _load(chapterTurn: turn);

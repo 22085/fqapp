@@ -254,6 +254,13 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  flutter_ads_plugin:
+    dependency: "direct main"
+    description:
+      path: "plugins/flutter_ads_plugin"
+      relative: true
+    source: path
+    version: "0.0.1"
   flutter_cache_manager:
     dependency: "direct main"
     description:

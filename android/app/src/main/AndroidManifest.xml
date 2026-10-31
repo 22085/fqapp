@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <!-- 访问本地后端 127.0.0.1 与上游 API -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- 听视频（listen mode）：前台服务保活 + 13+ 通知（通知被拒只影响可见性，服务照常跑） -->
@@ -15,6 +16,7 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="false"
+        tools:replace="android:allowBackup"
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:networkSecurityConfig="@xml/network_security_config">

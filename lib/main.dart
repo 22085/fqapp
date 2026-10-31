@@ -23,6 +23,7 @@ import 'pages/drama_page.dart';
 import 'pages/library_page.dart';
 import 'pages/mine_page.dart';
 import 'services/app_log.dart';
+import 'services/ad_service.dart';
 import 'services/app_theme.dart';
 import 'services/audio_download_store.dart';
 import 'services/audio_floating_routes.dart';
@@ -86,6 +87,8 @@ Future<void> _prepareRuntime() async {
     ).invokeMethod<bool>('shareText', {'title': title, 'text': text});
     return launched ?? false;
   };
+  // 广告 SDK：不阻塞启动，失败只记日志（AdService 内部 fail-open）。
+  unawaited(AdService.instance.init());
   // Rust 核心日志的读取入口：日志页「Rust」视图读 runtime_dir/rust.log。
   // 核心只在 Android 落盘（桌面/测试构建不装 logger），读不到时页面给空态。
   RustLogSource.reader = BackendService.instance.readRustLog;

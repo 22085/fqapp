@@ -1,0 +1,45 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="com.flutter.ads_plugin.flutter_ads_plugin">
+
+    <!-- Vendored into fqapp with fqapp-specific patches (see VENDORING.md):
+         over-broad upstream permissions stripped (READ_PHONE_STATE,
+         storage, location, QUERY_ALL_PACKAGES, REQUEST_INSTALL_PACKAGES,
+         GET_TASKS, EXPAND_STATUS_BAR); the upstream permissive
+         network_security_config and TubeActivity (DJX) are removed.
+         fqapp's own strict network_security_config wins in the merge. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <permission
+        android:name="${applicationId}.openadsdk.permission.TT_PANGOLIN"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="${applicationId}.openadsdk.permission.TT_PANGOLIN" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <permission
+        android:name="${applicationId}.permission.KW_SDK_BROADCAST"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="${applicationId}.permission.KW_SDK_BROADCAST" />
+
+    <application>
+        <provider
+            android:name="com.qq.e.comm.GDTFileProvider"
+            android:authorities="${applicationId}.gdt.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/gdt_file_path" />
+        </provider>
+        <provider
+            android:name="com.bytedance.sdk.openadsdk.TTFileProvider"
+            android:authorities="${applicationId}.TTFileProvider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>

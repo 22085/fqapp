@@ -18,6 +18,8 @@ import '../services/api_client.dart';
 import '../services/backend_transport.dart' show BackendRequest;
 import '../services/player_panel_preferences.dart';
 import '../services/watched_episodes.dart';
+import '../services/ad_config.dart';
+import '../services/ad_service.dart';
 import 'listen_mode_page.dart';
 import '../services/episode_source_cache.dart';
 import '../services/fair_memory.dart';
@@ -130,6 +132,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   VoidCallback? _unregisterFairMemoryFlush;
   bool _initVideo = false;
   bool _paging = false;
+  bool _rewardInProgress = false;
 
   /// 悬浮窗播放中（#24）：应用切后台后画面搬进系统悬浮窗继续播。
   /// 服务在 inactive（仍属前台过渡态）时启动，hidden 确认切后台后显示；
@@ -1696,14 +1699,49 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     return _history.save(history, watchedSeconds: seconds);
   }
 
-  Future<void> _selectEpisode(int index, {int? expectedGeneration}) {
+  Future<void> _selectEpisode(
+    int index, {
+    int? expectedGeneration,
+    bool forceUnlock = false,
+  }) async {
     if (!mounted ||
         _switchingSeries ||
         index < 0 ||
         index >= widget.eps.length ||
         index == _index ||
         (expectedGeneration != null && !_current(expectedGeneration))) {
-      return Future<void>.value();
+      return;
+    }
+    // 激励解锁：前 N 集免费，从第 N+1 集起，未解锁的集先走激励视频。
+    // 拿到奖励才切集；用户中途关闭则停在当前集；加载失败 fail-open
+    //（直接放行，不记解锁），广告绝不锁死播放。
+    if (!forceUnlock && index >= AdConfig.rewardFreeEpisodes) {
+      if (!await AdService.instance.isEpisodeUnlocked(
+        widget.bookId,
+        index,
+      )) {
+        if (_rewardInProgress) return;
+        _rewardInProgress = true;
+        try {
+          final outcome = await AdService.instance.showRewardForUnlock(
+            seriesKey: widget.bookId,
+            episodeIndex: index,
+          );
+          if (outcome == RewardOutcome.dismissed) return;
+        } finally {
+          _rewardInProgress = false;
+        }
+        return _selectEpisode(
+          index,
+          expectedGeneration: expectedGeneration,
+          forceUnlock: true,
+        );
+      }
+    }
+    // 切集插屏：每 N 集一次，带最短间隔与加载超时，失败直接放行。
+    if ((index + 1) % AdConfig.episodeInterstitialEvery == 0) {
+      await AdService.instance.maybeShowInterstitial();
+      if (!mounted) return;
     }
     setState(() {
       _index = index;
@@ -1716,7 +1754,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     unawaited(_loadHotComments());
     // _loadVideo invalidates prior work synchronously; no network or history
     // operation may delay recording the user's newest target.
-    return _loadVideo();
+    await _loadVideo();
   }
 
   @override

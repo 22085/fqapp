@@ -53,6 +53,8 @@ import 'player_page.dart';
 import 'search_page.dart';
 import 'series_detail_page.dart';
 import 'series_pager_physics.dart';
+import '../services/ad_config.dart';
+import '../widgets/ad_feed_card.dart';
 
 /// One entry of the 短剧 tab's channel strip.
 ///
@@ -1717,7 +1719,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
           final onScreen = index == _screenIndex;
           // 官方在 holder 绑定时拉热评；这里只在剧首次上屏时请求一次。
           if (onScreen) unawaited(_loadFeedHotComments(item));
-          return _DramaFeedCard(
+          final card = _DramaFeedCard(
             item: item,
             bottomInset: _effectiveBottomInset(context),
             opening: _openingId == item.id,
@@ -1762,6 +1764,22 @@ class _DramaPageState extends ConsumerState<DramaPage>
             hotCommentActive:
                 onScreen && !_modalOpen && !_feedPanelOpen && !_paging,
           );
+          // 每 N 张 feed 卡叠加一张原生广告卡（可滑动跳过，加载失败
+          // 时 AdFeedCard 为空，不挡视频）。
+          if ((index + 1) % AdConfig.feedCardEvery == 0) {
+            return Stack(
+              children: [
+                card,
+                const Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: AdFeedCard(),
+                ),
+              ],
+            );
+          }
+          return card;
         },
       ),
     );

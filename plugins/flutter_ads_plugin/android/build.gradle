@@ -1,0 +1,87 @@
+group = "com.flutter.ads_plugin.flutter_ads_plugin"
+version = "1.0"
+
+// Vendored into fqapp (plugins/flutter_ads_plugin) with fqapp-specific
+// patches; see VENDORING.md. No buildscript/AGP pin here: the Flutter
+// Gradle plugin supplies the AGP/Kotlin toolchain (AGP 9 / Java 17 in
+// fqapp's settings.gradle.kts). The upstream buildscript pinned AGP
+// 7.4.2 / compileSdk 35 / Java 11 / okhttp 3.8.0 and DJX deps, which do
+// not build under fqapp's toolchain. DJX/TubeActivity are removed:
+// fqapp has its own drama player and never calls openDJX.
+
+apply plugin: "com.android.library"
+
+android {
+    namespace = "com.flutter.ads_plugin.flutter_ads_plugin"
+
+    compileSdk = flutter.compileSdkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    defaultConfig {
+        minSdk = flutter.minSdkVersion
+    }
+
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+}
+
+// The Flutter tool injects the flutter SDK path via local.properties
+// (same mechanism as the upstream plugin template).
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file('local.properties')
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withReader('UTF-8') { reader -> localProperties.load(reader) }
+}
+def flutterRoot = localProperties.getProperty('flutter.sdk')
+
+dependencies {
+    if (flutterRoot != null) {
+        compileOnly files("$flutterRoot/bin/cache/artifacts/engine/android-arm/flutter.jar")
+    }
+    implementation "androidx.appcompat:appcompat:1.2.0"
+    implementation 'androidx.legacy:legacy-support-v4:1.0.0'
+    implementation "androidx.recyclerview:recyclerview:1.2.0"
+
+    implementation 'androidx.multidex:multidex:2.0.1'
+    implementation 'androidx.cardview:cardview:1.0.0'
+    implementation 'com.googlecode.android-query:android-query:0.25.9'
+
+    implementation 'com.google.android.material:material:1.1.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.0.4'
+
+    // okhttp 4.12.0 to match fqapp (Retrofit); upstream 3.8.0 conflicts.
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'com.squareup.okio:okio:3.6.0'
+    implementation 'com.google.code.gson:gson:2.9.0'
+    implementation 'com.github.bumptech.glide:glide:3.7.0'
+
+    // Bundled mediation AARs (Huijing 5.6.1.2 / ad-mill 5.6.1), via files()
+    // so no flatDir repository is needed.
+    api files('libs/ad-mill-adscope-adapter-5.6.1.7-5.6.1.aar')
+    api files('libs/ad-mill-baidu-adapter-9.460-5.6.1.aar')
+    api files('libs/ad-mill-csj-adapter-7.8.1.4-5.6.1.aar')
+    api files('libs/ad-mill-gdt-adapter-4.710.1580-5.6.1.aar')
+    api files('libs/ad-mill-gromore-adapter-7.8.1.4-5.6.1.aar')
+    api files('libs/ad-mill-kuaishou-adapter-5.9.10.1-5.6.1.aar')
+    api files('libs/ad-mill-octopus-adapter-2.6.10.10-5.6.1.aar')
+    api files('libs/ad-mill-sdk-5.6.1.aar')
+    api files('libs/ad-mill-xbid-adapter-1.0.0-5.6.1.aar')
+
+    api files('libs/Baidu_MobAds_SDK-release_v9.460.aar')
+    api files('libs/beizi_fusion_sdk_5.6.1.7.aar')
+    api files('libs/GDTSDK.unionNormal.4.710.1580.aar')
+
+    api files('libs/hj-openads-5.6.1.2.aar')
+
+    api files('libs/kssdkad.aar')
+    api files('libs/octopus_ad_sdk_2.6.10.10.aar')
+    api files('libs/open_ad_sdk_7.8.1.4.aar')
+    api files('libs/wind-common-2.1.1.aar')
+    api files('libs/wind-sdk-4.25.86.aar')
+}
