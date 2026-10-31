@@ -24,8 +24,6 @@ class AboutPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final outline = theme.colorScheme.outline;
     final palette = HomePalette.of(context);
 
     return Scaffold(
