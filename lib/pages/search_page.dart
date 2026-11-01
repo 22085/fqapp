@@ -17,6 +17,7 @@ import '../widgets/home/home_shelf.dart';
 import '../widgets/media_card.dart';
 import '../widgets/search/search_discovery.dart';
 import 'detail_page.dart';
+import '../widgets/ad_banner.dart';
 
 typedef SearchPageLoader =
     Future<List<SearchTab>> Function(
@@ -536,6 +537,7 @@ class _SearchPageState extends State<SearchPage> {
     final palette = HomePalette.of(context);
 
     return Scaffold(
+        bottomNavigationBar: const AdBanner(),
       backgroundColor: palette.canvas,
       appBar: AppBar(
         titleSpacing: 0,

@@ -36,6 +36,7 @@ import 'cached_books_page.dart';
 import 'detail_page.dart';
 import 'reader_page.dart';
 import 'search_page.dart';
+import '../widgets/ad_banner.dart';
 
 /// 版式偏好：0 宫格 / 1 双列 / 2 列表，与 [BookshelfLayout] 的枚举下标一致。
 /// 6.0 以前的版本在这里存的是列数 (2..6)，读取时迁移成宫格。
@@ -807,7 +808,13 @@ class _LibraryPageState extends State<LibraryPage> with WidgetsBindingObserver {
             ],
           ),
         ),
-        bottomNavigationBar: _editing ? _editBottomBar(palette) : null,
+        bottomNavigationBar: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_editing) _editBottomBar(palette),
+            const AdBanner(),
+          ],
+        ),
       ),
     );
   }

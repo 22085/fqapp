@@ -48,6 +48,7 @@ import '../widgets/comment_images.dart';
 import '../widgets/home/home_design.dart';
 import 'detail_page.dart';
 import 'reader_page.dart';
+import '../widgets/ad_banner.dart';
 
 part 'audio_listening_layout.dart';
 part '../services/audio_playback_guard.dart';

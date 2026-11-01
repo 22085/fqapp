@@ -23,6 +23,7 @@ import 'library_backup_page.dart';
 import 'settings_category_page.dart';
 import 'system_tts_settings_page.dart';
 import 'text_replacement_page.dart';
+import '../widgets/ad_banner.dart';
 
 /// Settings home: a list of category entries (PiliPlus multi-level
 /// navigation). Each category opens its own CommonSetting-style page.
@@ -159,6 +160,7 @@ class SettingsPage extends StatelessWidget {
     ];
 
     return Scaffold(
+        bottomNavigationBar: const AdBanner(),
       backgroundColor: palette.canvas,
       appBar: AppBar(
         title: const Text('设置'),

@@ -19,6 +19,9 @@ import '../services/reader_history.dart';
 import '../services/shelf_store.dart';
 import '../services/shelf_toggle.dart';
 import '../services/user_facing_error.dart';
+import '../widgets/ad_banner.dart';
+import '../services/ad_config.dart';
+import '../services/ad_service.dart';
 
 typedef ComicChapterLoader = Future<List<ComicImage>> Function(Chapter chapter);
 typedef ComicImageProviderFactory =
@@ -437,11 +440,17 @@ class _ComicReaderPageState extends State<ComicReaderPage>
     }, createHistory: createHistory);
   }
 
-  void _changeChapter(int index) {
+  Future<void> _changeChapter(int index) async {
     if (index < 0 ||
         index >= widget.chapters.length ||
         index == _chapterIndex) {
       return;
+    }
+    // 章末插屏：与小说阅读页同规则，进入的章号（1-based）每 N 章一次，
+    // 失败/超时直接放行，不挡翻章。
+    if ((index + 1) % AdConfig.novelInterstitialEveryChapters == 0) {
+      await AdService.instance.maybeShowInterstitial();
+      if (!mounted) return;
     }
     _saveTimer?.cancel();
     _settleReadTime();
@@ -472,7 +481,7 @@ class _ComicReaderPageState extends State<ComicReaderPage>
         ),
       ),
     );
-    if (mounted && selected != null) _changeChapter(selected);
+    if (mounted && selected != null) unawaited(_changeChapter(selected));
   }
 
   Future<void> _showImage(int index) => Navigator.of(context).push<void>(
@@ -559,9 +568,11 @@ class _ComicReaderPageState extends State<ComicReaderPage>
                 ),
               ],
       ),
-      bottomNavigationBar: empty
-          ? null
-          : SafeArea(
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (!empty)
+            SafeArea(
               top: false,
               child: Padding(
                 padding: const EdgeInsets.symmetric(
@@ -608,6 +619,9 @@ class _ComicReaderPageState extends State<ComicReaderPage>
                 ),
               ),
             ),
+          const AdBanner(),
+        ],
+      ),
       body: SafeArea(
         top: false,
         bottom: false,

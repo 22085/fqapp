@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../widgets/home/home_design.dart';
+import '../widgets/ad_banner.dart';
 
 /// About page: centered logo/name header, then the version row.
 class AboutPage extends StatelessWidget {
@@ -27,6 +28,7 @@ class AboutPage extends StatelessWidget {
     final palette = HomePalette.of(context);
 
     return Scaffold(
+        bottomNavigationBar: const AdBanner(),
       backgroundColor: palette.canvas,
       appBar: AppBar(title: const Text('关于'), centerTitle: true),
       body: ListView(

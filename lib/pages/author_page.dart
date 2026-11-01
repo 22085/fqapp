@@ -12,6 +12,7 @@ import '../services/user_facing_error.dart';
 import '../widgets/home/home_design.dart';
 import '../widgets/media_card.dart';
 import 'detail_page.dart';
+import '../widgets/ad_banner.dart';
 
 /// Loads an author profile. Injectable so the page can be tested offline.
 typedef AuthorLoader = Future<AuthorProfile> Function(String authorId);
@@ -84,6 +85,7 @@ class _AuthorPageState extends State<AuthorPage> {
         ? widget.fallbackName
         : '作者';
     return Scaffold(
+        bottomNavigationBar: const AdBanner(),
       backgroundColor: palette.canvas,
       appBar: AppBar(
         backgroundColor: palette.canvas,

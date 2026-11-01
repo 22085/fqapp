@@ -44,6 +44,7 @@ import 'cached_book_reader.dart';
 import 'comic_reader_page.dart';
 import 'player_page.dart';
 import 'reader_page.dart';
+import '../widgets/ad_banner.dart';
 
 /// Optional decorations for the detail page (currently the review block).
 /// Kept as one injected bundle so callers that already stub the detail and
@@ -548,17 +549,23 @@ class _DetailPageState extends State<DetailPage> {
               ),
         body: desktop ? _desktopBody(palette) : _phoneBody(palette),
         bottomNavigationBar: desktop
-            ? null
-            : DetailReadBar(
-                label: _readBarLabel,
-                opening: _opening,
-                enabled: _supported && !_loading && _allChapters.isNotEmpty,
-                actionsEnabled: _supported && _isBook,
-                onRead: _openLastPosition,
-                onListen: _isBook ? _openListening : null,
-                onDownload: _isBook ? _showDownloadSheet : null,
-                download: _isBook ? _downloadProgress : null,
-              ),
+            ? const AdBanner()
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  DetailReadBar(
+                    label: _readBarLabel,
+                    opening: _opening,
+                    enabled: _supported && !_loading && _allChapters.isNotEmpty,
+                    actionsEnabled: _supported && _isBook,
+                    onRead: _openLastPosition,
+                    onListen: _isBook ? _openListening : null,
+                    onDownload: _isBook ? _showDownloadSheet : null,
+                    download: _isBook ? _downloadProgress : null,
+                  ),
+                  const AdBanner(),
+                ],
+              )
       ),
     );
   }

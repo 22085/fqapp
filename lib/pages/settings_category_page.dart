@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../widgets/home/home_design.dart';
+import '../widgets/ad_banner.dart';
 
 /// PiliPlus-style settings category entry (shown on the settings home page).
 class SettingsCategory {
@@ -78,6 +79,7 @@ class _SettingsCategoryPageState extends State<SettingsCategoryPage> {
     final palette = HomePalette.of(context);
     final items = widget.itemsBuilder?.call(context) ?? widget.items;
     return Scaffold(
+        bottomNavigationBar: const AdBanner(),
       backgroundColor: palette.canvas,
       appBar: AppBar(
         title: Text(widget.title),

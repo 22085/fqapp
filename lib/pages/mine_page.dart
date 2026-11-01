@@ -15,6 +15,7 @@ import '../widgets/mine/mine_summary.dart';
 import '../widgets/mine/mine_top_books.dart';
 import 'detail_page.dart';
 import 'settings_page.dart';
+import '../widgets/ad_banner.dart';
 
 /// 我的：首屏直接是阅读统计（今日 / 本周 / 累计 / 连续），下面热力图、
 /// 读得最多，最后是离线缓存 / 备份与导入 / 关于。应用设置在标题栏齿轮。
@@ -115,6 +116,7 @@ class _MinePageState extends State<MinePage> {
     final palette = HomePalette.of(context);
     final today = DateUtils.dateOnly(DateTime.now());
     return Scaffold(
+        bottomNavigationBar: const AdBanner(),
       backgroundColor: palette.canvas,
       appBar: AppBar(
         title: const Text('我的'),

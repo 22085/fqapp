@@ -89,6 +89,8 @@ Future<void> _prepareRuntime() async {
   };
   // 广告 SDK：不阻塞启动，失败只记日志（AdService 内部 fail-open）。
   unawaited(AdService.instance.init());
+  // 开屏广告：冷启动展示一次，同样不阻塞启动（showSplash 内部 fail-open）。
+  unawaited(AdService.instance.showSplash());
   // Rust 核心日志的读取入口：日志页「Rust」视图读 runtime_dir/rust.log。
   // 核心只在 Android 落盘（桌面/测试构建不装 logger），读不到时页面给空态。
   RustLogSource.reader = BackendService.instance.readRustLog;

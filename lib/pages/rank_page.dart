@@ -11,6 +11,7 @@ import '../services/rank_cache.dart';
 import '../services/user_facing_error.dart';
 import '../widgets/home/home_design.dart';
 import 'detail_page.dart';
+import '../widgets/ad_banner.dart';
 
 /// Loads the rank catalogue.
 typedef RankCatalogLoader = Future<RankCatalog> Function();
@@ -235,6 +236,7 @@ class _RankPageState extends State<RankPage> {
   Widget build(BuildContext context) {
     final palette = HomePalette.of(context);
     return Scaffold(
+        bottomNavigationBar: const AdBanner(),
       backgroundColor: palette.canvas,
       appBar: AppBar(
         backgroundColor: palette.canvas,

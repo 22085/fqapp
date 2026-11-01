@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/chapter_cache_store.dart' show formatCacheBytes;
 import '../services/drama_download_store.dart';
 import '../services/drama_downloader.dart';
+import '../widgets/ad_banner.dart';
 
 /// 短剧离线缓存管理页（官方 DownloadManagementActivity 的「已下载」tab
 /// 形态）：按剧聚合的卡片 + 集级明细 + 删除（单集/整剧/全部）+ 占用统计
@@ -144,6 +145,7 @@ class _CachedDramasPageState extends State<CachedDramasPage> {
       (task) => task.status == DramaDownloadStatus.paused,
     );
     return Scaffold(
+        bottomNavigationBar: const AdBanner(),
       key: const ValueKey('dramas-page'),
       appBar: AppBar(
         title: const Text('离线缓存'),

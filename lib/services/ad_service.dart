@@ -56,6 +56,35 @@ class AdService {
     await _loadUnlocks();
   }
 
+  /// 开屏广告：冷启动展示一次。加载失败、关闭或超时都直接放行，
+  /// 绝不阻塞启动；原生 SDK 刚初始化时留 1 秒宽限再加载。
+  Future<void> showSplash() async {
+    if (!isReady) return;
+    try {
+      final completer = Completer<void>();
+      void done() {
+        if (!completer.isCompleted) completer.complete();
+      }
+
+      await Future<void>.delayed(const Duration(seconds: 1));
+      _plugin.loadAndShowSplash(
+        AdConfig.splashId,
+        onSplashClosed: done,
+        onSplashAdFailToLoad: (_, _, _) => done(),
+      );
+      await completer.future.timeout(
+        const Duration(seconds: 8),
+        onTimeout: done,
+      );
+    } catch (error, stack) {
+      AppLog.e('ads', 'splash failed', error: error, stack: stack);
+    } finally {
+      try {
+        _plugin.destroySplash();
+      } catch (_) {}
+    }
+  }
+
   String _unlockKey(String seriesKey, int episodeIndex) =>
       'fqapp_ads_unlock_${seriesKey}_$episodeIndex';
 

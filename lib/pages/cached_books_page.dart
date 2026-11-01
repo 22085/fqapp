@@ -6,6 +6,7 @@ import '../services/book_txt_export.dart';
 import '../services/chapter_cache_store.dart';
 import '../services/library_store.dart';
 import 'cached_book_reader.dart';
+import '../widgets/ad_banner.dart';
 
 class CachedBooksPage extends StatefulWidget {
   final ChapterCacheStore? cacheStore;
@@ -266,6 +267,7 @@ class _CachedBooksPageState extends State<CachedBooksPage> {
     final count = _books.fold(0, (sum, item) => sum + item.stats.chapterCount);
     final bytes = _books.fold(0, (sum, item) => sum + item.stats.byteCount);
     return Scaffold(
+        bottomNavigationBar: const AdBanner(),
       appBar: AppBar(
         title: const Text('离线缓存'),
         actions: [

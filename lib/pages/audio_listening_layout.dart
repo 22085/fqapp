@@ -31,6 +31,7 @@ extension _AudioListeningLayout on _AudioPageState {
     // 它只承担一行状态说明，强调色用品牌橙在暖底上也不违和。
     final paletteForStatus = HomePalette.of(context);
     return Scaffold(
+      bottomNavigationBar: const AdBanner(),
       key: ValueKey('audio_session_${c._bookId}'),
       backgroundColor: theme.canvas,
       body: SafeArea(
