@@ -3,6 +3,14 @@ import 'package:flutter/material.dart';
 import '../../services/app_theme.dart';
 import '../../services/reader_preferences.dart';
 
+/// 阅读页右下角两颗动作钮（看 / 听）的直径。
+///
+/// 取听书胶囊里那圈圆形封面的尺寸（`AudioFloatingPlayer._width/_height`
+/// 里的 42dp），两颗钮原先照官方资源按 56dp 摆，比胶囊里的图书封面大出
+/// 三分之一，压在正文上也显得重。缩到 42 后与胶囊同高，两处并排时视线
+/// 不再被按钮抢走；「看」展开成提示条时的宽高也按这个比例一起缩。
+const double kReaderActionSize = 42;
+
 extension ReaderThemeColors on ReaderThemePreset {
   bool get isDark => this == ReaderThemePreset.dark;
 
@@ -77,11 +85,17 @@ extension ReaderThemeColors on ReaderThemePreset {
   /// 不是正文色;夜间自带 60% alpha。
   Color get selectionUnderlineColor => selectionHandleColor;
 
-  /// 朗读句高亮底色：与选区强调色区分开的暖黄，墨水屏用淡黑灰以免
-  /// 盖住正文。
+  /// 朗读句高亮底色（默认值）：取**当前背景加深**，而不是固定暖黄。
+  ///
+  /// 浅色纸面用正文色压 10% 混进背景，得到同色系里深一档的底；夜间主题的
+  /// 正文色是浅色，混出来自然是「提亮」，白字仍读得清。墨水屏保留淡黑灰，
+  /// 避免彩色底把残影放大。
+  ///
+  /// 用户可在「设置 → 听书 → 高亮颜色」里覆盖（见
+  /// [ReaderPreferences.narrationHighlightColor]）。
   Color get narrationHighlightColor => isEink
       ? Colors.black.withValues(alpha: 0.10)
-      : const Color(0xFFFFC107).withValues(alpha: 0.28);
+      : Color.alphaBlend(textColor.withValues(alpha: 0.10), backgroundColor);
 
   Color get panelColor {
     if (isEink) return Colors.white;
