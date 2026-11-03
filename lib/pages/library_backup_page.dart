@@ -9,7 +9,6 @@ import '../services/library_backup_service.dart';
 import '../widgets/home/home_design.dart';
 import '../widgets/data_transfer_widgets.dart';
 import 'fanqie_history_import_page.dart';
-import '../widgets/ad_banner.dart';
 
 class LibraryBackupPage extends StatefulWidget {
   const LibraryBackupPage({super.key});
@@ -283,11 +282,8 @@ class _LibraryBackupPageState extends State<LibraryBackupPage> {
             ),
           ),
         ),
-        bottomNavigationBar: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (_busy != null || preview != null)
-              SafeArea(
+        bottomNavigationBar: _busy != null || preview != null
+            ? SafeArea(
                 top: false,
                 child: Container(
                   color: palette.canvas,
@@ -315,10 +311,8 @@ class _LibraryBackupPageState extends State<LibraryBackupPage> {
                           onPressed: _restore,
                         ),
                 ),
-              ),
-            const AdBanner(),
-          ],
-        ),
+              )
+            : null,
       ),
     );
   }

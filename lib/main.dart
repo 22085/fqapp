@@ -23,6 +23,7 @@ import 'pages/drama_page.dart';
 import 'pages/library_page.dart';
 import 'pages/mine_page.dart';
 import 'services/app_log.dart';
+import 'services/ad_route_observer.dart';
 import 'services/ad_service.dart';
 import 'services/app_theme.dart';
 import 'services/audio_download_store.dart';
@@ -47,6 +48,7 @@ import 'services/playlet_share.dart';
 import 'services/poster_cache.dart';
 import 'services/shelf_store.dart';
 import 'services/swipe_guide_store.dart';
+import 'widgets/ad_banner.dart';
 import 'widgets/lazy_indexed_stack.dart';
 import 'widgets/home/home_design.dart';
 
@@ -240,6 +242,8 @@ class _FqAppState extends State<FqApp> {
   final _audioRoutes = AudioFloatingRoutes(
     defaultBottomInset: isWindowsDesktop ? 0 : 72,
   );
+  // 全路由插屏观察者：只构造一次，内部计时从启动开始算。
+  final _adRouteObserver = AdRouteObserver();
   // Desktop fullscreen reparents the content; keep the playback owner alive.
   final _audioScopeKey = GlobalKey();
   final _navigatorKey = isWindowsDesktop
@@ -267,7 +271,7 @@ class _FqAppState extends State<FqApp> {
                 final effectiveMode = eink ? ThemeMode.light : mode;
                 return MaterialApp(
                   navigatorKey: _navigatorKey,
-                  navigatorObservers: [_audioRoutes],
+                  navigatorObservers: [_audioRoutes, _adRouteObserver],
                   builder: (context, child) {
                     final playback = AudioPlaybackScope(
                       key: _audioScopeKey,
@@ -275,11 +279,28 @@ class _FqAppState extends State<FqApp> {
                       recentListen: loadRecentListen,
                       child: child ?? const SizedBox.shrink(),
                     );
+                    // 全局上下横幅：所有页面顶部与底部各一条，失败自动隐藏；
+                    // 桌面端 AdBanner 自身渲染为空。
+                    final framed = Column(
+                      children: [
+                        SafeArea(
+                          top: true,
+                          bottom: false,
+                          child: const AdBanner(),
+                        ),
+                        Expanded(child: playback),
+                        SafeArea(
+                          top: false,
+                          bottom: true,
+                          child: const AdBanner(),
+                        ),
+                      ],
+                    );
                     return AudioFloatingRouteScope(
                       routes: _audioRoutes,
                       child: isWindowsDesktop
-                          ? DesktopAppFrame(child: playback)
-                          : playback,
+                          ? DesktopAppFrame(child: framed)
+                          : framed,
                     );
                   },
                   title: '什锦铺',

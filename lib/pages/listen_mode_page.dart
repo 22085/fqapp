@@ -10,7 +10,6 @@ import '../services/audio_preferences.dart';
 import '../services/episode_source_cache.dart';
 import '../services/native_player.dart';
 import '../services/player_preferences.dart';
-import '../widgets/ad_banner.dart';
 
 /// 听书模式页（官方 `jm3.d0.y()` 的 `ShortSeriesLaunchArgs.setIsListenMode`
 /// 语义）：独立于视频播放页的音频页——封面、剧名/集名、进度条、上一集/
@@ -280,7 +279,6 @@ class _ListenModePageState extends State<ListenModePage>
         if (!didPop) _exitWithResult();
       },
       child: Scaffold(
-        bottomNavigationBar: const AdBanner(),
         key: const ValueKey('listen-page'),
         // 全屏听书页是整块大底色：OLED 纯黑生效时降到 #000000 省电，
         // 其余深色模式保持官方 #121212。AppBar / 按钮本来就是透明 + 白字。

@@ -5,7 +5,6 @@ import '../services/chapter_text_formatter.dart';
 import '../services/text_replacement_engine.dart';
 import '../services/text_replacement_store.dart';
 import '../widgets/home/home_design.dart';
-import '../widgets/ad_banner.dart';
 
 class TextReplacementPage extends StatefulWidget {
   const TextReplacementPage({super.key, this.store});
@@ -98,7 +97,6 @@ class _TextReplacementPageState extends State<TextReplacementPage> {
     final palette = HomePalette.of(context);
     final snapshot = _store.snapshot;
     return Scaffold(
-        bottomNavigationBar: const AdBanner(),
       backgroundColor: palette.canvas,
       appBar: AppBar(title: const Text('正文替换')),
       floatingActionButton: FloatingActionButton(

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../services/audio_floating_routes.dart';
 import '../services/system_tts.dart';
-import '../widgets/ad_banner.dart';
 
 class SystemTtsSettingsPage extends StatefulWidget {
   const SystemTtsSettingsPage({super.key});
@@ -110,7 +109,6 @@ class _SystemTtsSettingsPageState extends State<SystemTtsSettingsPage>
         .firstOrNull
         ?.label;
     return Scaffold(
-        bottomNavigationBar: const AdBanner(),
       appBar: AppBar(title: const Text('系统朗读')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())

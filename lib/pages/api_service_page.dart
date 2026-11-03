@@ -9,7 +9,6 @@ import '../services/backend_service.dart';
 import '../services/lan_share_preferences.dart';
 import '../widgets/home/home_design.dart';
 import 'log_viewer_page.dart';
-import '../widgets/ad_banner.dart';
 
 /// Local API service console.
 ///
@@ -253,7 +252,6 @@ class _ApiServicePageState extends State<ApiServicePage> {
     ];
 
     return Scaffold(
-        bottomNavigationBar: const AdBanner(),
       backgroundColor: palette.canvas,
       appBar: AppBar(
         title: const Text('本地接口'),

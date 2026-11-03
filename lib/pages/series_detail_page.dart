@@ -25,7 +25,6 @@ import '../widgets/series_detail/series_detail_theme.dart';
 import '../widgets/series_detail/series_detail_top_bar.dart';
 import 'detail_page.dart' show openBookDetail;
 import 'player_page.dart' show PlayerPage;
-import '../widgets/ad_banner.dart';
 
 /// 短剧详情：版式照 `mockups/detail-redesign.html` 右机。
 ///
@@ -421,7 +420,6 @@ class _SeriesDetailPageState extends State<SeriesDetailPage> {
   Widget build(BuildContext context) {
     final palette = HomePalette.of(context);
     return Scaffold(
-        bottomNavigationBar: const AdBanner(),
       key: const ValueKey('series-detail-page'),
       backgroundColor: palette.canvas,
       body: Stack(

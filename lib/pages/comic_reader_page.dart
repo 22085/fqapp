@@ -19,7 +19,6 @@ import '../services/reader_history.dart';
 import '../services/shelf_store.dart';
 import '../services/shelf_toggle.dart';
 import '../services/user_facing_error.dart';
-import '../widgets/ad_banner.dart';
 import '../services/ad_config.dart';
 import '../services/ad_service.dart';
 
@@ -568,11 +567,9 @@ class _ComicReaderPageState extends State<ComicReaderPage>
                 ),
               ],
       ),
-      bottomNavigationBar: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (!empty)
-            SafeArea(
+      bottomNavigationBar: empty
+          ? null
+          : SafeArea(
               top: false,
               child: Padding(
                 padding: const EdgeInsets.symmetric(
@@ -619,9 +616,6 @@ class _ComicReaderPageState extends State<ComicReaderPage>
                 ),
               ),
             ),
-          const AdBanner(),
-        ],
-      ),
       body: SafeArea(
         top: false,
         bottom: false,

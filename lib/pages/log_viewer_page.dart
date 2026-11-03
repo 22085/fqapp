@@ -10,7 +10,6 @@ import '../services/book_txt_export.dart';
 import '../services/playlet_share.dart';
 import '../widgets/logs/log_entry_card.dart';
 import '../widgets/logs/log_filter_sheet.dart';
-import '../widgets/ad_banner.dart';
 
 enum _LogSource {
   app('应用'),
@@ -531,7 +530,6 @@ class _LogViewerPageState extends State<LogViewerPage>
         ObjectKey(_displayEntries[i]): _displayEntries.length - 1 - i,
     };
     return Scaffold(
-        bottomNavigationBar: const AdBanner(),
       appBar: AppBar(
         title: const Text('日志'),
         actions: [

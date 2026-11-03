@@ -31,7 +31,6 @@ import 'detail_page.dart';
 import 'rank_page.dart';
 import 'search_page.dart';
 import 'home_provider.dart';
-import '../widgets/ad_banner.dart';
 
 /// 书城首页：以书为主的书架。
 ///
@@ -245,7 +244,6 @@ class _HomePageState extends ConsumerState<HomePage> {
     final categories = _categoriesOf(state);
     final textScale = MediaQuery.textScalerOf(context).scale(16) / 16;
     return Scaffold(
-        bottomNavigationBar: const AdBanner(),
       backgroundColor: palette.canvas,
       body: Align(
         alignment: Alignment.topCenter,

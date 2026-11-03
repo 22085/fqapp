@@ -12,7 +12,6 @@ import '../services/backend_transport.dart';
 import '../services/fanqie_history_import_service.dart';
 import '../services/fanqie_library_capture_service.dart';
 import '../services/fanqie_library_import_service.dart';
-import '../widgets/ad_banner.dart';
 
 class FanqieHistoryImportPage extends StatefulWidget {
   const FanqieHistoryImportPage({super.key});
@@ -512,11 +511,8 @@ class _FanqieHistoryImportPageState extends State<FanqieHistoryImportPage> {
             ),
           ),
         ),
-        bottomNavigationBar: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (_busy || parsed != null || capture != null)
-              SafeArea(
+        bottomNavigationBar: _busy || parsed != null || capture != null
+            ? SafeArea(
                 top: false,
                 child: Container(
                   color: palette.canvas,
@@ -555,10 +551,8 @@ class _FanqieHistoryImportPageState extends State<FanqieHistoryImportPage> {
                     ],
                   ),
                 ),
-              ),
-            const AdBanner(),
-          ],
-        ),
+              )
+            : null,
       ),
     );
   }

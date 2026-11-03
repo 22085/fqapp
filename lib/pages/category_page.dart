@@ -5,7 +5,6 @@ import '../models/category_front.dart';
 import '../services/api_client.dart';
 import '../services/desktop_platform.dart';
 import '../widgets/home/home_design.dart';
-import '../widgets/ad_banner.dart';
 
 /// 官方分类页（`BookCategoryActivity`，7.0.9.32 实测形态）：
 ///
@@ -205,7 +204,6 @@ class _CategoryPageState extends State<CategoryPage> {
     final palette = HomePalette.of(context);
     final front = _front;
     return Scaffold(
-        bottomNavigationBar: const AdBanner(),
       backgroundColor: palette.canvas,
       body: SafeArea(
         bottom: false,
