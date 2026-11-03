@@ -10,6 +10,8 @@ import '../services/app_log.dart';
 ///
 /// 仅 Android 生效；其它平台渲染为空。广告加载失败时原生侧回调
 /// onError，本卡片只记一条日志，不占位、不挡滑动——用户划走即过。
+/// [AdConfig.feedEnabled] 关闭时（暂无正式信息流 ID）直接渲染为空，
+/// 不加载、不占位。
 class AdFeedCard extends StatefulWidget {
   const AdFeedCard({super.key, this.height = 180});
 
@@ -45,7 +47,7 @@ class _AdFeedCardState extends State<AdFeedCard> {
 
   @override
   Widget build(BuildContext context) {
-    if (!Platform.isAndroid || !AdConfig.enabled) {
+    if (!Platform.isAndroid || !AdConfig.enabled || !AdConfig.feedEnabled) {
       return const SizedBox.shrink();
     }
     return SizedBox(
