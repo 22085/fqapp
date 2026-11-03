@@ -36,6 +36,10 @@ class AdService {
   bool _interstitialShowing = false;
   DateTime? _lastInterstitialShownAt;
   final Set<String> _unlocked = <String>{};
+
+  /// 每部剧一次激励解锁到的最远集号：拿到一次奖励后，后面一批集
+  /// 直接看，不再弹激励。
+  final Map<String, int> _unlockedThrough = <String, int>{};
   bool _unlocksLoaded = false;
 
   bool get isReady => AdConfig.enabled && _initialized;
@@ -88,31 +92,56 @@ class AdService {
   String _unlockKey(String seriesKey, int episodeIndex) =>
       'fqapp_ads_unlock_${seriesKey}_$episodeIndex';
 
+  String _unlockThroughKey(String seriesKey) =>
+      'fqapp_ads_unlock_through_$seriesKey';
+
   Future<void> _loadUnlocks() async {
     if (_unlocksLoaded) return;
     _unlocksLoaded = true;
     try {
       final prefs = await SharedPreferences.getInstance();
+      const throughPrefix = 'fqapp_ads_unlock_through_';
       for (final key in prefs.getKeys()) {
-        if (key.startsWith('fqapp_ads_unlock_')) _unlocked.add(key);
+        if (key.startsWith(throughPrefix)) {
+          final through = prefs.getInt(key);
+          if (through != null) {
+            _unlockedThrough[key.substring(throughPrefix.length)] = through;
+          }
+        } else if (key.startsWith('fqapp_ads_unlock_')) {
+          _unlocked.add(key);
+        }
       }
     } catch (_) {
       // 读不到时按未解锁处理，激励流程会重新走一遍。
     }
   }
 
-  /// 该集是否已经激励解锁（持久化，重启后仍有效）。
+  /// 该集是否已经激励解锁（持久化，重启后仍有效）：单集解锁记录
+  /// 或一批解锁覆盖到的集都算已解锁。
   Future<bool> isEpisodeUnlocked(String seriesKey, int episodeIndex) async {
     await _loadUnlocks();
-    return _unlocked.contains(_unlockKey(seriesKey, episodeIndex));
+    if (_unlocked.contains(_unlockKey(seriesKey, episodeIndex))) {
+      return true;
+    }
+    final through = _unlockedThrough[seriesKey];
+    return through != null && episodeIndex <= through;
   }
 
   Future<void> _markUnlocked(String seriesKey, int episodeIndex) async {
     final key = _unlockKey(seriesKey, episodeIndex);
     _unlocked.add(key);
+    final through = episodeIndex + AdConfig.rewardUnlockBatch - 1;
+    final prev = _unlockedThrough[seriesKey];
+    if (prev == null || through > prev) {
+      _unlockedThrough[seriesKey] = through;
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(key, true);
+      await prefs.setInt(
+        _unlockThroughKey(seriesKey),
+        _unlockedThrough[seriesKey]!,
+      );
     } catch (_) {
       // 记不住也只影响下次进集时多看一次激励，不挡播放。
     }

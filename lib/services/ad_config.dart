@@ -39,7 +39,11 @@ class AdConfig {
   static const int feedCardEvery = 5;
 
   /// 短剧免费集数：前 N 集直接看，从第 N+1 集起需要激励解锁。
-  static const int rewardFreeEpisodes = 10;
+  static const int rewardFreeEpisodes = 20;
+
+  /// 一次激励解锁覆盖的集数：拿到一次奖励后，从当集起往后 N 集
+  /// 直接看，不再弹激励；看完这批后下一集再出一次激励。
+  static const int rewardUnlockBatch = 20;
 
   /// 小说章末插屏间隔（每 N 章出现一次）。
   static const int novelInterstitialEveryChapters = 3;
