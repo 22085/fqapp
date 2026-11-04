@@ -20,6 +20,7 @@ import '../services/shelf_store.dart';
 import '../services/shelf_toggle.dart';
 import '../services/user_facing_error.dart';
 import '../services/ad_config.dart';
+import '../services/ad_banner_visibility.dart';
 import '../services/ad_service.dart';
 import '../widgets/comic/comic_chapter_bar.dart';
 import '../widgets/comic/comic_chrome_button.dart';
@@ -148,6 +149,8 @@ class _ComicReaderPageState extends State<ComicReaderPage>
   @override
   void initState() {
     super.initState();
+    // 漫画阅读页在栈内时隐藏全局底部横幅，不占画面。
+    AdBannerVisibility.hide();
     WidgetsBinding.instance.addObserver(this);
     // 小米公平运行内存：KILL 广播到达时刷一次漫画进度，避免被杀丢进度。
     _unregisterFairMemoryFlush = FairMemoryService.instance
@@ -170,6 +173,7 @@ class _ComicReaderPageState extends State<ComicReaderPage>
 
   @override
   void dispose() {
+    AdBannerVisibility.show();
     _imageRequest?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _unregisterFairMemoryFlush?.call();

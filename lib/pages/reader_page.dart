@@ -22,6 +22,7 @@ import '../widgets/reader/reader_listen_button.dart';
 import 'player_page.dart';
 import '../services/api_client.dart';
 import '../services/ad_config.dart';
+import '../services/ad_banner_visibility.dart';
 import '../services/ad_service.dart';
 import '../services/app_theme.dart';
 import '../services/chapter_cache_store.dart';
@@ -302,6 +303,8 @@ class _ReaderPageState extends State<ReaderPage>
   @override
   void initState() {
     super.initState();
+    // 小说阅读页在栈内时隐藏全局底部横幅，不占画面。
+    AdBannerVisibility.hide();
     VolumeKeyService.instance.setOnVolumeKey(_onVolumeKey);
     _syncVolumeKeyEnabled();
     // 官方默认跟随：起播时（d.java:143-151）页面会自动同步到朗读处。阅读页
@@ -396,6 +399,7 @@ class _ReaderPageState extends State<ReaderPage>
 
   @override
   void dispose() {
+    AdBannerVisibility.show();
     _videoMatchRequest?.cancel();
     _videoOpenRequest?.cancel();
     _controlsVisibility.dispose();
