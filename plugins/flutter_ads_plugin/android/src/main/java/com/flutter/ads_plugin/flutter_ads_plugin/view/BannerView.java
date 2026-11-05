@@ -80,6 +80,7 @@ public class BannerView implements PlatformView, MethodChannel.MethodCallHandler
             @Override
             public void onAdLoadError(HJAdError hjAdError, String s) {
                 Map<String, Object> args = new HashMap<>();
+                args.put("code", hjAdError.code);
                 args.put("msg", hjAdError.msg);
                 methodChannel.invokeMethod("onAdLoadError", args);
             }

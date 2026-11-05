@@ -51,13 +51,21 @@ class AdService {
     if (_initialized || !AdConfig.enabled) return;
     if (!Platform.isAndroid) return;
     try {
-      _plugin.initAd(AdConfig.appId, 1);
+      // 各联盟 App ID 一起传下去：灰鲸只拿自己的 App ID 初始化，
+      // 穿山甲/快手/百度/腾讯的 SDK 各要自己的 App ID，之前没传，
+      // 这四个联盟就一直没初始化、激励自然不出。空的跳过。
+      _plugin.initAd(
+        AdConfig.appId,
+        1,
+        networkAppIds: AdConfig.networkAppIds,
+      );
       _initialized = true;
-      AppLog.d('ads', 'Huijing SDK init dispatched (demo app id)');
+      AppLog.d('ads', 'Huijing SDK init dispatched');
       AppLog.i(
         'ads',
         'config reward free=${AdConfig.rewardFreeEpisodes} '
-        'batch=${AdConfig.rewardUnlockBatch}',
+        'batch=${AdConfig.rewardUnlockBatch} '
+        'networks=${AdConfig.networkAppIds.keys.join(',')}',
       );
     } catch (error, stack) {
       AppLog.e('ads', 'Huijing SDK init failed', error: error, stack: stack);
@@ -218,6 +226,12 @@ class AdService {
     }
 
     try {
+      // 上一次的激励对象先销毁、再重新加载：不要在广告刚关闭时立刻
+      // destroy，原生侧 Activity 还在收尾，destroy 会把宿主 Activity
+      // 一起带掉，看完广告就大退就是这么来的。
+      try {
+        _plugin.destroyReward();
+      } catch (_) {}
       _plugin.loadReward(
         AdConfig.rewardId,
         'fqapp-user',
@@ -249,10 +263,6 @@ class AdService {
     } catch (error, stack) {
       AppLog.e('ads', 'reward failed', error: error, stack: stack);
       return RewardOutcome.failed;
-    } finally {
-      try {
-        _plugin.destroyReward();
-      } catch (_) {}
     }
   }
 }

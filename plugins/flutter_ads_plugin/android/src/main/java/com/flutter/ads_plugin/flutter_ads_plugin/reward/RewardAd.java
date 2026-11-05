@@ -21,6 +21,7 @@ public class RewardAd implements EventChannel.StreamHandler {
     private EventChannel eventChannel;
     private EventChannel.EventSink eventSink;
     private HJAdsSdkReward hjAdsSdkReward;
+    private boolean streamEnded = false;
 
     public RewardAd(FlutterPlugin.FlutterPluginBinding flutterPluginBinding) {
         eventChannel = new EventChannel(flutterPluginBinding.getBinaryMessenger(), "flutter_ads_plugin/events_RewardAd");
@@ -31,6 +32,7 @@ public class RewardAd implements EventChannel.StreamHandler {
     public void onListen(Object o, EventChannel.EventSink eventSink) {
         Log.d(hjTag, "___" + Process.myPid() + "___" + "onListen");
         this.eventSink = eventSink;
+        this.streamEnded = false;
         // 模拟发送多个异步事件
         //eventSink.success("success");
         //eventSink.error("error", "中断异常", e.getMessage());
@@ -40,10 +42,31 @@ public class RewardAd implements EventChannel.StreamHandler {
     public void onCancel(Object arguments) {
         Log.d(hjTag, "___" + Process.myPid() + "___" + "onCancel");
         this.eventSink = null;
+        this.streamEnded = true;
+    }
+
+    /** 发事件：流已结束（close/error 后）或 sink 为空时直接丢弃，避免迟到回调崩掉。 */
+    private void sendEvent(java.util.Map<String, Object> result) {
+        if (eventSink == null || streamEnded) {
+            return;
+        }
+        eventSink.success(result);
+    }
+
+    /** 终结事件流：先发完最后一条事件，再 endOfStream 并丢弃 sink。 */
+    private void endStream(java.util.Map<String, Object> result) {
+        if (eventSink != null && !streamEnded) {
+            eventSink.success(result);
+            eventSink.endOfStream();
+        }
+        streamEnded = true;
+        eventSink = null;
     }
 
     public void setStreamHandler() {
         eventChannel.setStreamHandler(null);
+        streamEnded = true;
+        eventSink = null;
         if (hjAdsSdkReward != null) {
             hjAdsSdkReward.destroy();
             hjAdsSdkReward = null;
@@ -63,6 +86,8 @@ public class RewardAd implements EventChannel.StreamHandler {
     }
 
     public void destroyAd() {
+        streamEnded = true;
+        eventSink = null;
         if (hjAdsSdkReward != null) {
             hjAdsSdkReward.destroy();
             hjAdsSdkReward = null;
@@ -81,10 +106,7 @@ public class RewardAd implements EventChannel.StreamHandler {
                 java.util.Map<String, Object> result = new java.util.HashMap<>();
                 result.put("event", "onVideoAdLoadSuccess");
                 result.put("placementId", placementId);
-                if (eventSink != null) {
-                    eventSink.success(result);
-                    //eventSink.endOfStream();
-                }
+                sendEvent(result);
             }
 
             @Override
@@ -92,10 +114,7 @@ public class RewardAd implements EventChannel.StreamHandler {
                 Log.d(hjTag, "___" + Process.myPid() + "___" + "reward" + "_" + "onVideoAdPlayEnd");
                 java.util.Map<String, Object> result = new java.util.HashMap<>();
                 result.put("event", "onVideoAdPlayEnd");
-                if (eventSink != null) {
-                    eventSink.success(result);
-                    //eventSink.endOfStream();
-                }
+                sendEvent(result);
             }
 
             @Override
@@ -103,10 +122,7 @@ public class RewardAd implements EventChannel.StreamHandler {
                 Log.d(hjTag, "___" + Process.myPid() + "___" + "reward" + "_" + "onVideoAdPlayStart");
                 java.util.Map<String, Object> result = new java.util.HashMap<>();
                 result.put("event", "onVideoAdPlayStart");
-                if (eventSink != null) {
-                    eventSink.success(result);
-                    //eventSink.endOfStream();
-                }
+                sendEvent(result);
             }
 
             @Override
@@ -114,10 +130,7 @@ public class RewardAd implements EventChannel.StreamHandler {
                 Log.d(hjTag, "___" + Process.myPid() + "___" + "reward" + "_" + "onVideoAdClicked");
                 java.util.Map<String, Object> result = new java.util.HashMap<>();
                 result.put("event", "onVideoAdClicked");
-                if (eventSink != null) {
-                    eventSink.success(result);
-                    //eventSink.endOfStream();
-                }
+                sendEvent(result);
             }
 
             @Override
@@ -129,10 +142,7 @@ public class RewardAd implements EventChannel.StreamHandler {
                 //result.put("isReward", hjRewardVerify.isReward());
                 //result.put("ErrorCode", hjRewardVerify.getErrorCode());
                 //result.put("ErrorMsg", hjRewardVerify.getErrorMsg());
-                if (eventSink != null) {
-                    eventSink.success(result);
-                    //eventSink.endOfStream();
-                }
+                sendEvent(result);
             }
 
             @Override
@@ -140,10 +150,7 @@ public class RewardAd implements EventChannel.StreamHandler {
                 Log.d(hjTag, "___" + Process.myPid() + "___" + "reward" + "_" + "onVideoAdClosed");
                 java.util.Map<String, Object> result = new java.util.HashMap<>();
                 result.put("event", "onVideoAdClosed");
-                if (eventSink != null) {
-                    eventSink.success(result);
-                    eventSink.endOfStream();
-                }
+                endStream(result);
             }
 
             @Override
@@ -154,10 +161,7 @@ public class RewardAd implements EventChannel.StreamHandler {
                 result.put("code", hjAdError.code);
                 result.put("msg", hjAdError.msg);
                 result.put("placementId", placementId);
-                if (eventSink != null) {
-                    eventSink.success(result);
-                    eventSink.endOfStream();
-                }
+                endStream(result);
             }
 
             @Override
@@ -168,10 +172,7 @@ public class RewardAd implements EventChannel.StreamHandler {
                 result.put("code", hjAdError.code);
                 result.put("msg", hjAdError.msg);
                 result.put("placementId", placementId);
-                if (eventSink != null) {
-                    eventSink.success(result);
-                    eventSink.endOfStream();
-                }
+                endStream(result);
             }
         });
     }

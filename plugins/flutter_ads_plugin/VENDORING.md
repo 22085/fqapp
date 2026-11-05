@@ -58,3 +58,20 @@
    consuming (:app) project's context, so a flatDir declared only in
    the plugin is invisible there and every AAR fails with
    "Could not find :<name>:" at :app:mergeReleaseNativeLibs.
+
+# 8. 2026-11-05 广告优化：
+# - 联盟初始化：`FlutterAdsPlugin.init` 在 `startWithAppId` 之前
+#   按 `AdConfig.networkAppIds` 组装 `WMNetworkConfig` 再调
+#   `setInitNetworkConfig`（另调 `setInitForGromore/Pangle/Gdt/
+#   Kuaishou`）。之前只传灰鲸 App ID，`startWithAppId` 内部读到的
+#   `wmNetworkConfig` 为空，穿山甲/快手/百度/腾讯的 SDK 从没初始
+#   化，激励只有别的联盟能出。各联盟 App ID 填在 `AdConfig` 里
+#   （csjAppId/gdtAppId/kuaishouAppId/baiduAppId），空的跳过；
+#   穿山甲同时按 CSJ 和 GROMORE 两个 id 登记，共用同一个 App ID。
+# - 激励大退：`RewardAd.java` 所有事件改走 `sendEvent`，close/
+#   error 后 `endStream` 并丢弃 sink，迟到回调不再往已结束的流里
+#   发；`AdService` 的 `destroyReward` 从 `finally` 移到下一次
+#   加载前（广告刚关闭、Activity 还在收尾时 destroy 会把宿主带掉）。
+# - 横幅不出：`AdBanner` 加载失败不再永久隐藏，退避重试
+#   15s/30s/60s…最多 5 次，重试时重建 AndroidView 重新拉；
+#   `BannerView` 的 load error 同时回传 code，不止 msg。
