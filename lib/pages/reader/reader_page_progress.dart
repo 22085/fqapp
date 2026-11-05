@@ -352,9 +352,29 @@ extension _ReaderPageProgress on _ReaderPageState {
       _settleReadTime();
       await _persistProgress();
       if (!mounted) return;
+      // 激励门：前 N 章免费，从第 N+1 章起，未解锁的章先走激励视频；
+      // 拿到奖励才翻章；中途关闭则停在当前章；加载失败 fail-open。
+      var rewardShown = false;
+      final target = _index + 1;
+      if (target >= AdConfig.rewardFreeEpisodes) {
+        if (!await AdService.instance.isEpisodeUnlocked(
+          'novel:${widget.bookId}',
+          target,
+        )) {
+          final outcome = await AdService.instance.showRewardForUnlock(
+            seriesKey: 'novel:${widget.bookId}',
+            episodeIndex: target,
+          );
+          if (outcome == RewardOutcome.dismissed) return;
+          if (!mounted) return;
+          rewardShown = outcome == RewardOutcome.granted;
+        }
+      }
       // 章末插屏：进入的章号（1-based）每 N 章一次，失败/超时直接放行，
-      // 不挡翻章；目录跳转走 [_jumpToChapter]，不触发。
-      if ((_index + 2) % AdConfig.novelInterstitialEveryChapters == 0) {
+      // 不挡翻章；目录跳转走 [_jumpToChapter]，不触发；刚看过激励的
+      // 这次不再叠加插屏。
+      if (!rewardShown &&
+          (_index + 2) % AdConfig.novelInterstitialEveryChapters == 0) {
         await AdService.instance.maybeShowInterstitial();
         if (!mounted) return;
       }
@@ -390,6 +410,22 @@ extension _ReaderPageProgress on _ReaderPageState {
                 widget.chapters[index].itemId,
               ))) {
         return;
+      }
+      // 激励门（只对手动目录跳章；跟随朗读自动切章不弹，不打断听书）：
+      // 前 N 章免费，从第 N+1 章起，未解锁的章先走激励视频；
+      // 拿到奖励才跳章；中途关闭则停在当前章；加载失败 fail-open。
+      if (!followListening && index >= AdConfig.rewardFreeEpisodes) {
+        if (!await AdService.instance.isEpisodeUnlocked(
+          'novel:${widget.bookId}',
+          index,
+        )) {
+          final outcome = await AdService.instance.showRewardForUnlock(
+            seriesKey: 'novel:${widget.bookId}',
+            episodeIndex: index,
+          );
+          if (outcome == RewardOutcome.dismissed) return;
+          if (!mounted) return;
+        }
       }
       _settleReadTime();
       await _persistProgress();

@@ -55,7 +55,8 @@ import '../widgets/home/home_design.dart';
 import '../widgets/home/home_sheet.dart';
 import 'detail_page.dart';
 import 'reader_page.dart';
-import '../services/ad_banner_visibility.dart';
+import '../services/ad_config.dart';
+import '../services/ad_service.dart';
 import 'system_tts_settings_page.dart';
 
 part 'audio_listening_layout.dart';
@@ -440,15 +441,7 @@ class _AudioPageState extends State<AudioPage> {
   }
 
   @override
-  void initState() {
-    super.initState();
-    // 听书页在栈内时隐藏全局底部横幅，不占画面。
-    AdBannerVisibility.hide();
-  }
-
-  @override
   void dispose() {
-    AdBannerVisibility.show();
     final session = _session;
     session?.removeListener(_changed);
     session?._readAlong.removeListener(_onReadAlongChanged);

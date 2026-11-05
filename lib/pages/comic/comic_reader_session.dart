@@ -328,9 +328,33 @@ extension _ComicReaderSession on _ComicReaderPageState {
         index == _chapterIndex) {
       return;
     }
+    // 激励门：前 N 章免费，从第 N+1 章起，未解锁的章先走激励视频；
+    // 拿到奖励才进章；中途关闭则停在当前章；加载失败 fail-open。
+    var rewardShown = false;
+    if (_rewardInProgress) return;
+    if (index >= AdConfig.rewardFreeEpisodes) {
+      if (!await AdService.instance.isEpisodeUnlocked(
+        'comic:${widget.bookId}',
+        index,
+      )) {
+        _rewardInProgress = true;
+        try {
+          final outcome = await AdService.instance.showRewardForUnlock(
+            seriesKey: 'comic:${widget.bookId}',
+            episodeIndex: index,
+          );
+          if (outcome == RewardOutcome.dismissed) return;
+          if (!mounted) return;
+          rewardShown = outcome == RewardOutcome.granted;
+        } finally {
+          _rewardInProgress = false;
+        }
+      }
+    }
     // 章末插屏：与小说阅读页同规则，进入的章号（1-based）每 N 章一次，
-    // 失败/超时直接放行，不挡翻章。
-    if ((index + 1) % AdConfig.novelInterstitialEveryChapters == 0) {
+    // 失败/超时直接放行，不挡翻章；刚看过激励的这次不再叠加插屏。
+    if (!rewardShown &&
+        (index + 1) % AdConfig.novelInterstitialEveryChapters == 0) {
       await AdService.instance.maybeShowInterstitial();
       if (!mounted) return;
     }

@@ -19,7 +19,6 @@ import '../services/backend_transport.dart' show BackendRequest;
 import '../services/player_panel_preferences.dart';
 import '../services/watched_episodes.dart';
 import '../services/ad_config.dart';
-import '../services/ad_banner_visibility.dart';
 import '../services/ad_service.dart';
 import 'listen_mode_page.dart';
 import '../services/episode_source_cache.dart';
@@ -248,8 +247,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    // 播放页在栈内时隐藏全局底部横幅，不占画面。
-    AdBannerVisibility.hide();
     WidgetsBinding.instance.addObserver(this);
     // 小米公平运行内存：KILL 广播到达时刷一次播放进度，避免被杀丢进度。
     _unregisterFairMemoryFlush = FairMemoryService.instance
@@ -815,7 +812,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
-    AdBannerVisibility.show();
     WidgetsBinding.instance.removeObserver(this);
     _unregisterFairMemoryFlush?.call();
     _unregisterFairMemoryFlush = null;

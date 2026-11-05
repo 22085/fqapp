@@ -38,12 +38,13 @@ class AdConfig {
   /// 短剧 feed 里原生广告卡出现的间隔（每 N 张卡片叠加一张广告卡）。
   static const int feedCardEvery = 5;
 
-  /// 短剧免费集数：前 N 集直接看，从第 N+1 集起需要激励解锁。
-  static const int rewardFreeEpisodes = 20;
+  /// 激励门免费集数：前 N 集 / 章直接看，从第 N+1 集 / 章起需要激励解锁。
+  /// 短剧、漫剧、小说、漫画、听书共用这组数值。
+  static const int rewardFreeEpisodes = 5;
 
-  /// 一次激励解锁覆盖的集数：拿到一次奖励后，从当集起往后 N 集
-  /// 直接看，不再弹激励；看完这批后下一集再出一次激励。
-  static const int rewardUnlockBatch = 20;
+  /// 一次激励解锁覆盖的集数：拿到一次奖励后，从当集 / 章起往后 N 集 / 章
+  /// 直接看，不再弹激励；看完这批后下一集 / 章再出一次激励。
+  static const int rewardUnlockBatch = 5;
 
   /// 小说章末插屏间隔（每 N 章出现一次）。
   static const int novelInterstitialEveryChapters = 3;

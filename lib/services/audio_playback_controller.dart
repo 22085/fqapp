@@ -480,6 +480,21 @@ class _AudioPlaybackController extends ChangeNotifier
     if (_closed || index < 0 || index >= _chapters.length) return;
     // 任何换章动作都意味着用户自己接管了，倒计时窗口必须作废。
     _cancelAdvanceCountdown(this);
+    // 激励门：前 N 章免费，从第 N+1 章起，未解锁的章先走激励视频；
+    // 拿到奖励才进章；中途关闭则停在当前章；加载失败 fail-open。
+    // 同章重开（恢复播放、切声音版本）不重复弹；初次进页续听也不弹。
+    if (index != _index && index >= AdConfig.rewardFreeEpisodes) {
+      if (!await AdService.instance.isEpisodeUnlocked(
+        'audio:$_bookId',
+        index,
+      )) {
+        final outcome = await AdService.instance.showRewardForUnlock(
+          seriesKey: 'audio:$_bookId',
+          episodeIndex: index,
+        );
+        if (outcome == RewardOutcome.dismissed) return;
+      }
+    }
     final generation = ++_generation;
     ++_seekGeneration;
     _saveTimer?.cancel();
