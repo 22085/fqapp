@@ -54,6 +54,11 @@ class AdService {
       _plugin.initAd(AdConfig.appId, 1);
       _initialized = true;
       AppLog.d('ads', 'Huijing SDK init dispatched (demo app id)');
+      AppLog.i(
+        'ads',
+        'config reward free=${AdConfig.rewardFreeEpisodes} '
+        'batch=${AdConfig.rewardUnlockBatch}',
+      );
     } catch (error, stack) {
       AppLog.e('ads', 'Huijing SDK init failed', error: error, stack: stack);
     }
@@ -120,11 +125,16 @@ class AdService {
   /// 或一批解锁覆盖到的集都算已解锁。
   Future<bool> isEpisodeUnlocked(String seriesKey, int episodeIndex) async {
     await _loadUnlocks();
-    if (_unlocked.contains(_unlockKey(seriesKey, episodeIndex))) {
-      return true;
-    }
+    final single = _unlocked.contains(_unlockKey(seriesKey, episodeIndex));
     final through = _unlockedThrough[seriesKey];
-    return through != null && episodeIndex <= through;
+    final result =
+        single || (through != null && episodeIndex <= through);
+    AppLog.i(
+      'ads',
+      'unlock check $seriesKey ep=$episodeIndex single=$single '
+      'through=$through result=$result',
+    );
+    return result;
   }
 
   Future<void> _markUnlocked(String seriesKey, int episodeIndex) async {
@@ -145,6 +155,11 @@ class AdService {
     } catch (_) {
       // 记不住也只影响下次进集时多看一次激励，不挡播放。
     }
+    AppLog.i(
+      'ads',
+      'unlocked $seriesKey ep=$episodeIndex '
+      'through=${_unlockedThrough[seriesKey]}',
+    );
   }
 
   /// 章末/切集插屏：满足最短间隔才尝试展示，失败或超时直接放行。
@@ -226,6 +241,10 @@ class AdService {
       if (outcome == RewardOutcome.granted) {
         await _markUnlocked(seriesKey, episodeIndex);
       }
+      AppLog.i(
+        'ads',
+        'reward $seriesKey ep=$episodeIndex outcome=$outcome',
+      );
       return outcome;
     } catch (error, stack) {
       AppLog.e('ads', 'reward failed', error: error, stack: stack);
