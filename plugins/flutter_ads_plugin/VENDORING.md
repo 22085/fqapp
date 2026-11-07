@@ -32,6 +32,19 @@
 # 6. Removed: `example/`, docx notes, `.idea/`, Gradle caches, the
 #    plugin's own `pubspec.lock`.
 #
+# Removed 2026-11-07 (user request): Octopus, Beizi AdScope and XBid.
+# The ads actually served were all from these three minor networks; the
+# big four (CSJ/Pangle, GDT, Baidu, Kuaishou) were not filling. Removed
+# their 5 AARs (ad-mill-octopus-adapter, octopus_ad_sdk,
+# ad-mill-adscope-adapter, beizi_fusion_sdk, ad-mill-xbid-adapter) and
+# their `api(name: ...)` lines in android/build.gradle. 13 AARs remain:
+# Huijing core + CSJ + GroMore + GDT + Baidu + Kuaishou. Consequence: if
+# the big four still do not fill, rewarded ads fail open (free viewing)
+# and banners stay empty instead of showing a minor-network ad. Restore
+# by re-adding the 5 AAR files from the original plugin zip plus the 5
+# `api(name: ...)` lines (and re-checking the waterfall in the Huijing
+# console, which still lists these networks per placement).
+#
 # fqapp-side requirements (outside this plugin):
 # - `android/gradle.properties`: `android.enableJetifier=true` (the
 #   Kuaishou/Pangle providers extend support-library FileProvider;
