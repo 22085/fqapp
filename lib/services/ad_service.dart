@@ -51,21 +51,13 @@ class AdService {
     if (_initialized || !AdConfig.enabled) return;
     if (!Platform.isAndroid) return;
     try {
-      // 各联盟 App ID 一起传下去：灰鲸只拿自己的 App ID 初始化，
-      // 穿山甲/快手/百度/腾讯的 SDK 各要自己的 App ID，之前没传，
-      // 这四个联盟就一直没初始化、激励自然不出。空的跳过。
-      _plugin.initAd(
-        AdConfig.appId,
-        1,
-        networkAppIds: AdConfig.networkAppIds,
-      );
+      _plugin.initAd(AdConfig.appId, 1);
       _initialized = true;
       AppLog.d('ads', 'Huijing SDK init dispatched');
       AppLog.i(
         'ads',
         'config reward free=${AdConfig.rewardFreeEpisodes} '
-        'batch=${AdConfig.rewardUnlockBatch} '
-        'networks=${AdConfig.networkAppIds.keys.join(',')}',
+        'batch=${AdConfig.rewardUnlockBatch}',
       );
     } catch (error, stack) {
       AppLog.e('ads', 'Huijing SDK init failed', error: error, stack: stack);

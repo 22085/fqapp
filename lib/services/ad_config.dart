@@ -12,33 +12,10 @@ class AdConfig {
   /// 总开关：关掉后所有广告位都不加载、不展示，播放与阅读不受影响。
   static const bool enabled = true;
 
-  /// 灰鲸 App ID（正式）。
+  /// 灰鲸 App ID（正式）。各联盟不用在 APP 里单独配 App ID：灰鲸
+  /// 是服务端聚合，联盟账号、瀑布流都在灰鲸后台配，APP 只传灰鲸
+  /// App ID + 广告位 ID，服务端下发瀑布流后各联盟 SDK 再初始化。
   static const String appId = '246351';
-
-  /// 各联盟 App ID：只填公开的 App ID，不要填密钥。
-  /// 穿山甲/快手/百度/腾讯的激励不出，就是因为之前初始化时只传了
-  /// 灰鲸 App ID，这四个联盟的 SDK 各要自己的 App ID 才能初始化。
-  /// 从各联盟开放平台取（穿山甲开放平台、优量汇、快手联盟、百青藤），
-  /// 空字符串表示不初始化该联盟；填好后重新构建才会生效。
-  static const String csjAppId = '';
-
-  /// 腾讯优量汇 App ID。
-  static const String gdtAppId = '';
-
-  /// 快手联盟 App ID。
-  static const String kuaishouAppId = '';
-
-  /// 百度联盟（百青藤）App ID。
-  static const String baiduAppId = '';
-
-  /// 各联盟 App ID 汇总（空的自动去掉）：初始化时传给原生侧。
-  /// 日志里只记联盟名，不记 ID。
-  static Map<String, String> get networkAppIds => <String, String>{
-        if (csjAppId.isNotEmpty) 'csj': csjAppId,
-        if (gdtAppId.isNotEmpty) 'gdt': gdtAppId,
-        if (kuaishouAppId.isNotEmpty) 'kuaishou': kuaishouAppId,
-        if (baiduAppId.isNotEmpty) 'baidu': baiduAppId,
-      };
 
   /// 开屏广告位（正式）。
   static const String splashId = '1204449094057364';

@@ -54,15 +54,10 @@ class FlutterAdsPlugin {
   }
 
   @override
-  void initAd(
-    String initId,
-    int isPersonalizedAdvertisingOn, {
-    Map<String, String> networkAppIds = const {},
-  }) {
+  void initAd(String initId, int isPersonalizedAdvertisingOn) {
     methodChannel.invokeMethod<String>('init', {
       "initId": initId,
       "isPersonalizedAdvertisingOn": isPersonalizedAdvertisingOn,
-      "networkAppIds": networkAppIds,
     });
   }
 

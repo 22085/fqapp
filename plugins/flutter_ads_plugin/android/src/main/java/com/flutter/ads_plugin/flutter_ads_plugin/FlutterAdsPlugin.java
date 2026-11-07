@@ -67,23 +67,15 @@ public class FlutterAdsPlugin implements FlutterPlugin, MethodCallHandler, Activ
             hjAdsSdk.setAdult(true);
             hjAdsSdk.setDebugEnable(false);
             hjAdsSdk.setPersonalizedAdvertisingOn(isPersonalizedAdvertisingOn == 1);
-            // 各联盟 App ID：不传的话对应联盟 SDK 不初始化、不填充。
-            // 之前只传灰鲸 App ID，穿山甲/快手/百度/腾讯一直没初始化。
-            initNetworks(hjAdsSdk, map.get("networkAppIds"));
             //hj初始化方法
             hjAdsSdk.startWithAppId(mActivity.getApplication(), initId);
         } else if (call.method.equals("init2")) {
             String initId = ValueUtils.getString(map.get("initId"));
             int isPersonalizedAdvertisingOn = ValueUtils.getInt(map.get("isPersonalizedAdvertisingOn"), 1);
-            String csjAppId = ValueUtils.getString(map.get("csjAppId"));
-            String djxJsonName = ValueUtils.getString(map.get("djxJsonName"));
             HJAdsSdk hjAdsSdk = HJAdsSdk.sharedAds();
             hjAdsSdk.setAdult(true);
             hjAdsSdk.setDebugEnable(false);
             hjAdsSdk.setPersonalizedAdvertisingOn(isPersonalizedAdvertisingOn == 1);
-            java.util.Map<String, String> csjOnly = new java.util.HashMap<>();
-            if (csjAppId != null && !csjAppId.isEmpty()) csjOnly.put("csj", csjAppId);
-            initNetworks(hjAdsSdk, csjOnly);
             hjAdsSdk.startWithAppId(mActivity.getApplication(), initId);
         } else if (call.method.equals("loadSplash")) {
             if (splashAd != null) {
@@ -146,75 +138,6 @@ public class FlutterAdsPlugin implements FlutterPlugin, MethodCallHandler, Activ
         } else {
             result.notImplemented();
         }
-    }
-
-    /**
-     * 各联盟初始化：startWithAppId 内部只读之前 setInitNetworkConfig
-     * 传进去的 WMNetworkConfig，里面没有哪个联盟，哪个联盟就不初始化、
-     * 不填充。之前 init 只传灰鲸 App ID，WMNetworkConfig 从没设过，
-     * 穿山甲/快手/百度/腾讯的激励一直出不来，就是这个原因。
-     * 只有传了 App ID 的联盟才加进配置，空的跳过。
-     * 穿山甲同时按 CSJ 和 GROMORE 两个 id 登记（GroMore 就是穿山甲
-     * 的聚合 SDK，两个 id 共用同一个穿山甲 App ID）。
-     */
-    private void initNetworks(HJAdsSdk hjAdsSdk, Object networkAppIds) {
-        String csj = networkAppId(networkAppIds, "csj");
-        String gdt = networkAppId(networkAppIds, "gdt");
-        String kuaishou = networkAppId(networkAppIds, "kuaishou");
-        String baidu = networkAppId(networkAppIds, "baidu");
-        if (csj.isEmpty() && gdt.isEmpty() && kuaishou.isEmpty() && baidu.isEmpty()) {
-            Log.d(hjTag, "___" + Process.myPid() + "___" + "initNetworks: no network app ids");
-            return;
-        }
-        com.mobads.vivatb.WMNetworkConfig.Builder builder =
-                new com.mobads.vivatb.WMNetworkConfig.Builder();
-        if (!csj.isEmpty()) {
-            builder.addInitConfig(new com.mobads.vivatb.WMAdnInitConfig(
-                    com.mobads.vivatb.WMNetworkConfig.CSJ, csj));
-            builder.addInitConfig(new com.mobads.vivatb.WMAdnInitConfig(
-                    com.mobads.vivatb.WMNetworkConfig.GROMORE, csj));
-            hjAdsSdk.setInitForGromore(mActivity.getApplication(), csj);
-            hjAdsSdk.setInitForPangle(mActivity.getApplication(), csj);
-        }
-        if (!gdt.isEmpty()) {
-            builder.addInitConfig(new com.mobads.vivatb.WMAdnInitConfig(
-                    com.mobads.vivatb.WMNetworkConfig.GDT, gdt));
-            hjAdsSdk.setInitForGdt(mActivity.getApplication(), gdt);
-        }
-        if (!kuaishou.isEmpty()) {
-            builder.addInitConfig(new com.mobads.vivatb.WMAdnInitConfig(
-                    com.mobads.vivatb.WMNetworkConfig.KUAISHOU, kuaishou));
-            hjAdsSdk.setInitForKuaishou(mActivity.getApplication(), kuaishou);
-        }
-        if (!baidu.isEmpty()) {
-            builder.addInitConfig(new com.mobads.vivatb.WMAdnInitConfig(
-                    com.mobads.vivatb.WMNetworkConfig.BAIDU, baidu));
-        }
-        hjAdsSdk.setInitNetworkConfig(builder.build(),
-                new com.hzhj.openads.listener.OnAdsSdkListener() {
-                    @Override
-                    public void onNetworkInitBefore22() {
-                    }
-
-                    @Override
-                    public void onNetworkInitBefore30() {
-                    }
-
-                    @Override
-                    public void onNetworkInitBefore19() {
-                    }
-                });
-        Log.d(hjTag, "___" + Process.myPid() + "___" + "initNetworks: "
-                + "csj=" + !csj.isEmpty()
-                + " gdt=" + !gdt.isEmpty()
-                + " kuaishou=" + !kuaishou.isEmpty()
-                + " baidu=" + !baidu.isEmpty());
-    }
-
-    private static String networkAppId(Object networkAppIds, String key) {
-        if (!(networkAppIds instanceof java.util.Map)) return "";
-        Object v = ((java.util.Map<?, ?>) networkAppIds).get(key);
-        return v instanceof String ? (String) v : "";
     }
 
     @Override

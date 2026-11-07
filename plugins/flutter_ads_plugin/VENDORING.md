@@ -72,15 +72,17 @@
    the plugin is invisible there and every AAR fails with
    "Could not find :<name>:" at :app:mergeReleaseNativeLibs.
 
-# 8. 2026-11-05 广告优化：
-# - 联盟初始化：`FlutterAdsPlugin.init` 在 `startWithAppId` 之前
-#   按 `AdConfig.networkAppIds` 组装 `WMNetworkConfig` 再调
-#   `setInitNetworkConfig`（另调 `setInitForGromore/Pangle/Gdt/
-#   Kuaishou`）。之前只传灰鲸 App ID，`startWithAppId` 内部读到的
-#   `wmNetworkConfig` 为空，穿山甲/快手/百度/腾讯的 SDK 从没初始
-#   化，激励只有别的联盟能出。各联盟 App ID 填在 `AdConfig` 里
-#   （csjAppId/gdtAppId/kuaishouAppId/baiduAppId），空的跳过；
-#   穿山甲同时按 CSJ 和 GROMORE 两个 id 登记，共用同一个 App ID。
+# 8. 2026-11-05 广告优化（联盟初始化部分已于 2026-11-07 撤销）：
+# - 联盟初始化（已撤销，勿恢复）：当时按 `AdConfig.networkAppIds`
+#   组装 `WMNetworkConfig` 再调 `setInitNetworkConfig`，以为各联盟
+#   SDK 要 APP 单独传 App ID 才能初始化。错的：灰鲸是服务端聚合，
+#   联盟账号与瀑布流都在灰鲸后台配，APP 只传灰鲸 App ID + 广告位
+#   ID，服务端下发瀑布流后各联盟 SDK 再初始化；用户也明确纠正过
+#   “让我去各大广网弄，我要是能还用聚合干啥”。2026-11-07 已删掉
+#   `networkAppIds` 整条链（AdConfig 字段、AdService 传参、Dart
+#   `initAd` 参数、Java `initNetworks`/`networkAppId` 与 init2 里
+#   的调用），init 只剩 `startWithAppId(appId)`。激励只出小联盟的
+#   真因在灰鲸后台激励广告位的瀑布流，不在 APP 侧。
 # - 激励大退：`RewardAd.java` 所有事件改走 `sendEvent`，close/
 #   error 后 `endStream` 并丢弃 sink，迟到回调不再往已结束的流里
 #   发；`AdService` 的 `destroyReward` 从 `finally` 移到下一次
