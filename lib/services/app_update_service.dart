@@ -11,11 +11,12 @@ import 'package:path_provider/path_provider.dart';
 /// APK itself and hands it to the system installer through the
 /// `fqapp/app-update` channel (see `android/.../AppUpdatePlugin.kt`).
 ///
-/// Manual only: nothing here runs at startup; the user taps 检查更新 in
-/// Settings. The installed version and the device ABIs come from the
-/// native side (PackageManager / `Build.SUPPORTED_ABIS`), so they can
-/// never drift from the installed build and no new pub dependency is
-/// needed for them.
+/// Checks run two ways: manually (Settings → 检查更新) and once silently
+/// on startup (SettingsPage.checkOnStartup), which only shows a dialog
+/// when a newer versionCode exists. The installed version and the device
+/// ABIs come from the native side (PackageManager / `Build.SUPPORTED_ABIS`),
+/// so they can never drift from the installed build and no new pub
+/// dependency is needed for them.
 class AppUpdateService {
   AppUpdateService._();
 

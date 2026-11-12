@@ -23,6 +23,7 @@ import 'pages/cached_books_page.dart';
 import 'pages/drama_page.dart';
 import 'pages/library_page.dart';
 import 'pages/mine_page.dart';
+import 'pages/settings_page.dart';
 import 'pages/theme_page.dart';
 import 'services/app_log.dart';
 import 'services/ad_route_observer.dart';
@@ -302,6 +303,21 @@ class _FqAppState extends State<FqApp> {
       ? DesktopPlatform.navigatorKey
       : GlobalKey<NavigatorState>();
   final _localDataReady = Completer<void>();
+
+  @override
+  void initState() {
+    super.initState();
+    // 启动时静默查一次更新：只有发现新版才弹确认框，已是最新或检查
+    // 失败时什么都不显示。等开屏广告过去再查，避免弹窗和开屏抢焦点。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future.delayed(const Duration(seconds: 5), () {
+        final context = _navigatorKey.currentContext;
+        if (context != null && mounted) {
+          unawaited(SettingsPage.checkOnStartup(context));
+        }
+      });
+    });
+  }
 
   Future<void> _initializeData() async {
     await (widget.initializer ?? _initializeLocalData)();

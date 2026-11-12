@@ -353,7 +353,8 @@ class SettingsPage extends StatelessWidget {
 
   /// Manual update check (Settings → 更新 → 检查更新): ask our own
   /// update server, offer to download + install when a newer
-  /// versionCode exists. Nothing here runs automatically.
+  /// versionCode exists. The same offer is reused by the silent
+  /// startup check ([checkOnStartup]) below.
   static Future<void> _checkForUpdate(BuildContext context) async {
     if (_updateBusy) {
       _showUpdateHint(context, '正在检查更新，请稍等');
@@ -388,14 +389,42 @@ class SettingsPage extends StatelessWidget {
             _showUpdateHint(context, '检查更新失败，请重试');
             return;
           }
-          final wantDownload = await showSettingsConfirmDialog(
-            context: context,
-            title: '发现新版本',
-            message: '最新版本 ${info.versionName}，是否下载并安装？',
-            confirmLabel: '下载并安装',
-          );
-          if (!wantDownload || !context.mounted) return;
-          await _downloadAndInstall(context, info);
+          await _offerUpdate(context, info);
+      }
+    } finally {
+      _updateBusy = false;
+    }
+  }
+
+  /// Offer an available update: confirm dialog, then download + install.
+  /// Shared by the manual check and the silent startup check.
+  static Future<void> _offerUpdate(
+    BuildContext context,
+    AppUpdateInfo info,
+  ) async {
+    final wantDownload = await showSettingsConfirmDialog(
+      context: context,
+      title: '发现新版本',
+      message: '最新版本 ${info.versionName}，是否下载并安装？',
+      confirmLabel: '下载并安装',
+    );
+    if (!wantDownload || !context.mounted) return;
+    await _downloadAndInstall(context, info);
+  }
+
+  /// Silent startup check (called once from the app root after the
+  /// splash): only acts when a newer versionCode exists — a confirm
+  /// dialog offering the download. Already latest / failed /
+  /// non-Android show nothing at all.
+  static Future<void> checkOnStartup(BuildContext context) async {
+    if (_updateBusy) return;
+    _updateBusy = true;
+    try {
+      final check = await AppUpdateService.instance.checkForUpdate();
+      if (!context.mounted) return;
+      if (check.status == AppUpdateStatus.available &&
+          check.info != null) {
+        await _offerUpdate(context, check.info!);
       }
     } finally {
       _updateBusy = false;
