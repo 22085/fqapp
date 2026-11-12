@@ -633,16 +633,20 @@ jobs:
       - name: Publish APKs to update server
         # The in-app updater (Settings → 更新 → 检查更新) reads
         # https://fqapp.sshdog.com/update.json, which this step rewrites
-        # with the freshly built APKs. Runs only when the
-        # UPDATE_DEPLOY_KEY secret is configured; while it is not, the
-        # step is skipped and the run stays green. The key is written to
-        # a file with mode 600, never printed, and removed after use.
+        # with the freshly built APKs. GitHub does not allow `secrets` in
+        # an `if:` condition, so the "secret configured?" check lives
+        # inside the script: with no UPDATE_DEPLOY_KEY the step prints a
+        # note and exits 0, and the run stays green. The key is written
+        # to a file with mode 600, never printed, and removed after use.
         # Host keys are pinned via ssh-keyscan, never bypassed.
-        if: ${{ secrets.UPDATE_DEPLOY_KEY != '' }}
         env:
           UPDATE_DEPLOY_KEY: ${{ secrets.UPDATE_DEPLOY_KEY }}
         run: |
           set -euo pipefail
+          if [ -z "${UPDATE_DEPLOY_KEY:-}" ]; then
+            echo "UPDATE_DEPLOY_KEY is not configured; skipping upload (run stays green)."
+            exit 0
+          fi
           mkdir -p ~/.ssh
           printf '%s\n' "$UPDATE_DEPLOY_KEY" > ~/.ssh/fqapp-update-deploy-key
           chmod 600 ~/.ssh/fqapp-update-deploy-key
