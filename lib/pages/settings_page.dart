@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../services/app_links.dart';
 import '../services/app_theme.dart';
 import '../services/audio_preferences.dart';
 import '../services/native_player.dart';
@@ -138,6 +139,23 @@ class SettingsPage extends StatelessWidget {
         subtitle: '本地接口地址与可用端点',
         pageBuilder: (_) => const ApiServicePage(),
         items: const [],
+      ),
+      SettingsCategory(
+        icon: LucideIcons.download,
+        title: '更新',
+        subtitle: '查看最新构建并下载安装包',
+        items: [
+          SettingsItem(
+            icon: LucideIcons.download,
+            title: '检查更新',
+            subtitle: '在浏览器中打开构建页，下载最新安装包',
+            // fork 的构建页：APK 在每次运行的 Artifacts 里。
+            onTap: (context, _) => openAppLink(
+              context,
+              'https://github.com/22085/fqapp/actions/workflows/android-apk.yml',
+            ),
+          ),
+        ],
       ),
       SettingsCategory(
         icon: LucideIcons.info,
