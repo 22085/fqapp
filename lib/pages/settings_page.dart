@@ -26,8 +26,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../services/app_links.dart';
 import '../services/app_theme.dart';
+import '../services/app_update_service.dart';
 import '../services/app_theme_style.dart';
 import '../services/app_style_tokens.dart';
 import '../services/audio_preferences.dart';
@@ -193,17 +193,13 @@ class SettingsPage extends StatelessWidget {
       SettingsCategory(
         icon: LucideIcons.download,
         title: '更新',
-        subtitle: '查看最新构建并下载安装包',
+        subtitle: '检查新版本并下载安装包',
         items: [
           SettingsItem(
             icon: LucideIcons.download,
             title: '检查更新',
-            subtitle: '在浏览器中打开构建页，下载最新安装包',
-            // fork 的构建页：APK 在每次运行的 Artifacts 里。
-            onTap: (context, _) => openAppLink(
-              context,
-              'https://github.com/22085/fqapp/actions/workflows/android-apk.yml',
-            ),
+            subtitle: '从更新服务器检查新版本并安装',
+            onTap: (context, _) => _checkForUpdate(context),
           ),
         ],
       ),
@@ -347,6 +343,144 @@ class SettingsPage extends StatelessWidget {
             ),
       ),
     );
+  }
+
+  // ── 应用内自更新 ──────────────────────────────────────────────────────
+
+  /// Guards a check / download in flight: a second tap while one is
+  /// running only shows a hint instead of opening a second dialog.
+  static bool _updateBusy = false;
+
+  /// Manual update check (Settings → 更新 → 检查更新): ask our own
+  /// update server, offer to download + install when a newer
+  /// versionCode exists. Nothing here runs automatically.
+  static Future<void> _checkForUpdate(BuildContext context) async {
+    if (_updateBusy) {
+      _showUpdateHint(context, '正在检查更新，请稍等');
+      return;
+    }
+    _updateBusy = true;
+    try {
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('正在检查更新…'),
+          duration: Duration(seconds: 20),
+        ),
+      );
+      final AppUpdateCheck check =
+          await AppUpdateService.instance.checkForUpdate();
+      if (!context.mounted) return;
+      messenger.hideCurrentSnackBar();
+      switch (check.status) {
+        case AppUpdateStatus.notSupported:
+          _showUpdateHint(context, '应用内更新仅支持 Android');
+        case AppUpdateStatus.failed:
+          _showUpdateHint(context, check.reason ?? '检查更新失败，请重试');
+        case AppUpdateStatus.upToDate:
+          _showUpdateHint(
+            context,
+            '已是最新版本（${check.currentVersionName ?? ''}）',
+          );
+        case AppUpdateStatus.available:
+          final info = check.info;
+          if (info == null) {
+            _showUpdateHint(context, '检查更新失败，请重试');
+            return;
+          }
+          final wantDownload = await showSettingsConfirmDialog(
+            context: context,
+            title: '发现新版本',
+            message: '最新版本 ${info.versionName}，是否下载并安装？',
+            confirmLabel: '下载并安装',
+          );
+          if (!wantDownload || !context.mounted) return;
+          await _downloadAndInstall(context, info);
+      }
+    } finally {
+      _updateBusy = false;
+    }
+  }
+
+  /// Download the new APK with a progress dialog, then open the system
+  /// installer. The dialog cannot be dismissed by back / tap-outside
+  /// while the download runs, so its route is only ever popped here.
+  static Future<void> _downloadAndInstall(
+    BuildContext context,
+    AppUpdateInfo info,
+  ) async {
+    final progress = ValueNotifier<double>(0);
+    var dialogOpen = false;
+    try {
+      final dialogFuture = showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => PopScope(
+          canPop: false,
+          child: AlertDialog(
+            title: const Text('正在下载新版本'),
+            content: ValueListenableBuilder<double>(
+              valueListenable: progress,
+              builder: (context, value, _) => Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  LinearProgressIndicator(value: value > 0 ? value : null),
+                  const SizedBox(height: 12),
+                  Text(
+                    value > 0
+                        ? '已下载 ${(value * 100).toStringAsFixed(0)}%'
+                        : '正在连接…',
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      dialogOpen = true;
+      // Let the dialog build before the download starts, so the progress
+      // notifier is live when the first chunk arrives.
+      await WidgetsBinding.instance.endOfFrame;
+      final apk = await AppUpdateService.instance.downloadUpdate(
+        info,
+        (value) => progress.value = value,
+      );
+      if (context.mounted && dialogOpen) {
+        Navigator.pop(context);
+        dialogOpen = false;
+      }
+      await dialogFuture;
+      if (!context.mounted) return;
+      final status = await AppUpdateService.instance.installUpdate(apk);
+      if (!context.mounted) return;
+      if (status == 'needsPermission') {
+        _showUpdateHint(
+          context,
+          '请在设置里允许“安装未知应用”，然后再点一次检查更新',
+        );
+      } else if (status == 'ok') {
+        _showUpdateHint(context, '安装器已打开，请按提示完成安装');
+      } else {
+        _showUpdateHint(context, '打开安装器失败，请重试');
+      }
+    } catch (_) {
+      if (context.mounted && dialogOpen) {
+        Navigator.pop(context);
+        dialogOpen = false;
+      }
+      if (context.mounted) {
+        _showUpdateHint(context, '下载失败，请检查网络后重试');
+      }
+    } finally {
+      progress.dispose();
+    }
+  }
+
+  static void _showUpdateHint(BuildContext context, String message) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   // ── 外观 ──────────────────────────────────────────────────────────────

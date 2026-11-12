@@ -48,6 +48,8 @@ class MainActivity : FlutterActivity() {
         // 小米澎湃 OS 公平运行内存：收 TRIM/KILL 广播，转发 Dart 处理后回系统。
         flutterEngine.plugins.add(FairMemoryPlugin())
         flutterEngine.plugins.add(AiRequestPlugin())
+        // 应用内自更新：检查 fqapp.sshdog.com/update.json，下载并安装 APK。
+        flutterEngine.plugins.add(AppUpdatePlugin())
 
         hapticsChannel =
             MethodChannel(

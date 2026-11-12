@@ -630,6 +630,40 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Publish APKs to update server
+        # The in-app updater (Settings → 更新 → 检查更新) reads
+        # https://fqapp.sshdog.com/update.json, which this step rewrites
+        # with the freshly built APKs. Runs only when the
+        # UPDATE_DEPLOY_KEY secret is configured; while it is not, the
+        # step is skipped and the run stays green. The key is written to
+        # a file with mode 600, never printed, and removed after use.
+        # Host keys are pinned via ssh-keyscan, never bypassed.
+        if: ${{ secrets.UPDATE_DEPLOY_KEY != '' }}
+        env:
+          UPDATE_DEPLOY_KEY: ${{ secrets.UPDATE_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$UPDATE_DEPLOY_KEY" > ~/.ssh/fqapp-update-deploy-key
+          chmod 600 ~/.ssh/fqapp-update-deploy-key
+          ssh-keyscan -H 1.92.127.142 >> ~/.ssh/known_hosts
+          version_full="$(grep -m1 '^version:' pubspec.yaml | awk '{print $2}')"
+          version_name="${version_full%%+*}"
+          version_code="${version_full##*+}"
+          if [ -z "$version_name" ] || [ -z "$version_code" ]; then
+            echo "::error::Could not parse version from pubspec.yaml (got '$version_full')" >&2
+            exit 1
+          fi
+          printf '{"versionCode": %s, "versionName": "%s", "arm64Url": "https://fqapp.sshdog.com/fqapp-arm64-v8a-release.apk", "armv7Url": "https://fqapp.sshdog.com/fqapp-armeabi-v7a-release.apk"}' \
+            "$version_code" "$version_name" > build/ci-artifacts/update.json
+          scp -i ~/.ssh/fqapp-update-deploy-key \
+            build/ci-artifacts/app-arm64-v8a-release.apk \
+            build/ci-artifacts/app-armeabi-v7a-release.apk \
+            build/ci-artifacts/update.json \
+            fqapp-updater@1.92.127.142:/var/www/fqapp-update/
+          rm -f ~/.ssh/fqapp-update-deploy-key
+          printf 'Published %s (%s) to fqapp.sshdog.com\n' "$version_name" "$version_code"
+
       - name: Remove temporary signing file
         if: always()
         run: rm -f -- "$RUNNER_TEMP/fqapp-release.jks"

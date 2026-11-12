@@ -13,6 +13,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <!-- 短剧 / 漫剧悬浮窗播放（#24）：切后台时把画面搬进系统悬浮窗，需要用户在系统设置里允许 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <!-- 应用内自更新（AppUpdatePlugin）：安装从更新服务器下载的 APK，首次安装
+         前需用户在系统设置里允许“安装未知应用” -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <!-- Device identity and reading data stay on-device; see
          .agents/notes/implemented/bug-fix/2026-09-18-home-geometry-and-backup.md -->
     <application
@@ -37,6 +40,18 @@
             android:name=".AiRequestService"
             android:exported="false"
             android:foregroundServiceType="dataSync"/>
+        <!-- 应用内自更新：FileProvider 把下载的 APK 以 content:// 分享给系统安装器。
+             authority 是 <applicationId>.fileprovider，与 AppUpdatePlugin 里
+             "${packageName}.fileprovider" 一致。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
         <activity
             android:name=".MainActivity"
             android:exported="true"
