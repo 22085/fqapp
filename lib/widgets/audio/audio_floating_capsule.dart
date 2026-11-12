@@ -152,18 +152,25 @@ extension _AudioCapsule on _AudioPlaybackScopeState {
     );
   }
 
+  Object? get _playbackError {
+    final session = _session;
+    return session != null && !session._closed ? session._error : _tts?.error;
+  }
+
   /// Officially a playback error is a toast; the capsule falls back to its
   /// play icon (`pn2/i.java` `b.i`). The listening page shows errors inline.
-  void _toastNewError() {
-    final session = _session;
-    final Object? error = session != null && !session._closed
-        ? session._error
-        : _tts?.error;
+  void _toastNewError({String? readerBookId}) {
+    final error = _playbackError;
     if (error == null) {
       _toastedError = null;
       return;
     }
-    if (error == _toastedError || !(_routes?.visible ?? false)) return;
+    final readerMatches =
+        readerBookId != null && _switchBookMatches(readerBookId);
+    if (error == _toastedError ||
+        (!readerMatches && !(_routes?.visible ?? false))) {
+      return;
+    }
     _toastedError = error;
     _toast(error.toString());
   }
@@ -207,6 +214,19 @@ extension _AudioCapsule on _AudioPlaybackScopeState {
     final playing = (session._player?.playing ?? false) && session._wantPlay;
     if (playing) {
       await _showReaderVoices(context, session._bookId);
+      return;
+    }
+    await _showListenEngineSheet(context);
+  }
+
+  /// 系统朗读的三点：和作品音频同一条规矩——暂停/没在播先选引擎。
+  ///
+  /// 系统朗读没有音色可选，以前三点无条件跳朗读设置页，把「换引擎」藏进
+  /// 了设置里：暂停时用户多半是想换一套来源重听，结果点开只看到语速。
+  /// 朗读中才给设置页（语速、引擎参数），暂停时给「选择播放引擎」。
+  Future<void> _showTtsMore(BuildContext context, SystemTtsPlayback tts) async {
+    if (tts.wantPlay && !tts.closed) {
+      _openTtsSettings(context);
       return;
     }
     await _showListenEngineSheet(context);
@@ -256,8 +276,19 @@ extension _AudioCapsule on _AudioPlaybackScopeState {
     );
     if (picked == null || !mounted) return;
     await AudioPreferences.instance.setListenEngine(picked);
+    if (!mounted || !context.mounted) return;
+    // 暂停态换引擎要立刻接上：以前只记偏好，当前会话还挂着旧引擎，用户
+    // 得关掉胶囊再重进才生效。接不上（音频切系统朗读时不在书页）就只记
+    // 偏好，提示下一步怎么走。
+    final resumed = await ReaderAudioBridge.resumeWithEngine(context, picked);
     if (!mounted) return;
-    _toast(picked == ListenEngine.smart ? '播放引擎：智能朗读' : '播放引擎：系统朗读');
+    _toast(
+      resumed
+          ? (picked == ListenEngine.smart ? '播放引擎：智能朗读' : '播放引擎：系统朗读')
+          : (picked == ListenEngine.smart
+                ? '已切换到智能朗读，点「听书」继续'
+                : '已切换到系统朗读，回书页点「听书」继续'),
+    );
   }
 
   void _openTtsSettings(BuildContext context) {
@@ -271,6 +302,7 @@ extension _AudioCapsule on _AudioPlaybackScopeState {
     BuildContext context, {
     bool inReaderMenu = false,
     bool monochrome = false,
+    VoidCallback? onOpenBook,
   }) {
     final routes = _routes;
     if (routes == null) return const SizedBox.shrink();
@@ -289,6 +321,7 @@ extension _AudioCapsule on _AudioPlaybackScopeState {
             key: ObjectKey(session),
             inReaderMenu: inReaderMenu,
             monochrome: monochrome,
+            keyPrefix: inReaderMenu ? 'reader-menu' : 'audio-floating',
             title: session._title,
             cover: session._cover,
             progress: session._position,
@@ -324,6 +357,7 @@ extension _AudioCapsule on _AudioPlaybackScopeState {
             key: ObjectKey(tts),
             inReaderMenu: inReaderMenu,
             monochrome: monochrome,
+            keyPrefix: inReaderMenu ? 'reader-menu' : 'audio-floating',
             title: tts.book.title,
             cover: tts.book.coverUrl,
             progress: tts,
@@ -333,10 +367,12 @@ extension _AudioCapsule on _AudioPlaybackScopeState {
             canToggle: true,
             visible: visible,
             bottomInset: routes.bottomInset,
-            onOpen: () => _openTts(tts),
+            onOpen: () => _openTts(tts, onOpenBook: onOpenBook),
             onToggle: () => unawaited(tts.toggle()),
-            // 系统朗读没有音色可选，三点直接进朗读设置页（引擎 / 语速）。
-            onMore: inReaderMenu ? () => _openTtsSettings(context) : null,
+            // 播放中给朗读设置（语速等），暂停时给「选择播放引擎」。
+            onMore: inReaderMenu
+                ? () => unawaited(_showTtsMore(context, tts))
+                : null,
             onClose: () => unawaited(stopTts(tts)),
           );
         } else if (recent != null) {
@@ -344,6 +380,7 @@ extension _AudioCapsule on _AudioPlaybackScopeState {
             key: ObjectKey(recent),
             inReaderMenu: inReaderMenu,
             monochrome: monochrome,
+            keyPrefix: inReaderMenu ? 'reader-menu' : 'audio-floating',
             title: recent.title,
             cover: recent.cover,
             progress: _tick,

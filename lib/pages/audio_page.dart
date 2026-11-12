@@ -1,4 +1,5 @@
 import '../services/desktop_platform.dart';
+import '../services/linux_platform.dart';
 import '../widgets/desktop_chapter_sidebar.dart';
 import 'dart:async';
 import 'dart:io';
@@ -44,12 +45,12 @@ import '../widgets/audio/audio_quick_rows.dart';
 import '../widgets/audio/audio_real_expanded.dart';
 import '../widgets/audio/audio_real_sections.dart';
 import '../widgets/audio/audio_skip_points_rows.dart';
-import '../widgets/audio/audio_cover_card.dart';
 import '../widgets/audio/audio_sections.dart';
 import '../widgets/audio/audio_subtitle_scroller.dart';
 import '../widgets/audio/voice_settings_sheet.dart';
-import '../widgets/audio/system_tts_controls.dart';
+import '../widgets/reader/reader_listen_capsule.dart';
 import '../widgets/chapter_cache_sheet.dart';
+import '../widgets/comment_emoji.dart';
 import '../widgets/comment_images.dart';
 import '../widgets/home/home_design.dart';
 import '../widgets/home/home_sheet.dart';
@@ -244,9 +245,8 @@ class _AudioPageState extends State<AudioPage> {
   bool _attaching = false;
   bool _attachFailed = false;
 
-  /// 封面取色得到的整页配色。null 表示还没算完或取色失败，此时用官方
-  /// 截图里那套暖棕兜底（[AudioPageTheme.fallback]）。
-  AudioPageTheme? _theme;
+  /// Keep the work's cover hue across voice versions, not across sessions.
+  Color? _coverDominant;
   String _themeSource = '';
 
   /// 展开态全文是否展开；换章/换模式时自动收起。
@@ -273,30 +273,22 @@ class _AudioPageState extends State<AudioPage> {
 
   _AudioPlaybackController get c => _session!;
 
-  /// 封面变了才重算，避免每次 rebuild 都读一次缓存文件。
   void _syncCoverTheme() {
     final session = _session;
-    if (session == null) return;
+    if (session == null || _themeSource.isNotEmpty) return;
     // 墨水屏固定纯黑白，封面取色没有意义，也省掉一次解码。
     if (einkModeNotifier.value) return;
-    final cover = session._cover;
-    if (cover == _themeSource) return;
+    final cover = session.request.cover.isNotEmpty
+        ? session.request.cover
+        : session._cover;
+    if (cover.isEmpty) return;
     _themeSource = cover;
-    if (cover.isEmpty) {
-      if (_theme != null) setState(() => _theme = null);
-      return;
-    }
     unawaited(() async {
       final dominant = await fetchCoverDominant(cover);
-      if (!mounted || cover != _themeSource) return;
-      setState(() {
-        _theme = dominant == null
-            ? null
-            : AudioPageTheme.fromCover(
-                dominant,
-                dark: Theme.of(context).brightness == Brightness.dark,
-              );
-      });
+      if (!mounted || !identical(session, _session) || cover != _themeSource) {
+        return;
+      }
+      setState(() => _coverDominant = dominant);
     }());
   }
 
@@ -309,6 +301,7 @@ class _AudioPageState extends State<AudioPage> {
       _owner = context.findAncestorStateOfType<_AudioPlaybackScopeState>();
       unawaited(_attach());
     }
+    _syncCoverTheme();
   }
 
   Future<void> _attach() async {
@@ -330,6 +323,8 @@ class _AudioPageState extends State<AudioPage> {
       return;
     }
     _session = session;
+    _themeSource = '';
+    _coverDominant = null;
     session.addListener(_changed);
     session._readAlong.addListener(_onReadAlongChanged);
     if (owner == null) session.start();
@@ -552,7 +547,7 @@ class _AudioPageState extends State<AudioPage> {
     if (c._switchingVersion) return;
     await _showHomeStyleSheet<void>(
       (sheetContext) => VoiceSettingsSheet(
-        selectedId: c._extras.tones.hasFixedTone ? c._bookId : c._toneId,
+        selectedId: c._hasFixedTone ? c._bookId : c._toneId,
         narrators: _narratorOptions(),
         online: _onlineOptions(),
         onSelect: (option) {
@@ -631,8 +626,13 @@ class _AudioPageState extends State<AudioPage> {
             isMultiTone: tone.isMultiTone,
           ),
     ];
-    if (options.isNotEmpty) return options;
+    // Keep a restored local voice visible even if discovery returns other tones.
+    final hasToneOptions = options.isNotEmpty;
     for (final voice in c._voices) {
+      if (hasToneOptions &&
+          (voice.id != c._toneId || voice.id != c._restoredLocalVoice?.id)) {
+        continue;
+      }
       if (!c._selectableTone(voice.id) || !ids.add(voice.id)) continue;
       options.add(VoiceOption(id: voice.id, title: voice.label));
     }
@@ -705,12 +705,11 @@ class _AudioPageState extends State<AudioPage> {
     final detail = c._extras.detail;
     final introSummary = detail?.abstract ?? '';
     final related = c._extras.related.isEmpty ? null : c._extras.related.first;
-    final hasIntro =
-        introSummary.isNotEmpty ||
-        (detail?.author.name.isNotEmpty ?? false) ||
-        detail?.title.isNotEmpty == true;
     // Windows 桌面端用独立版式；它只需要 tones，上面这些局部变量先算好并不吃亏。
-    if (isWindowsDesktop) return _desktopAudio(palette, chapter, tones);
+    if (isWindowsDesktop ||
+        (isLinuxDesktop && MediaQuery.sizeOf(context).width >= 700)) {
+      return _desktopAudio(palette, chapter, tones);
+    }
 
     // 官方整页底色/字色都取自封面（见 audio_page_theme.dart）；墨水屏固定
     // 纯黑白，不使用封面取色。
@@ -727,21 +726,20 @@ class _AudioPageState extends State<AudioPage> {
         pageDark: pageDark,
         chapter: chapter,
         realAudio: realAudio,
-        tones: tones,
         detail: detail,
         introSummary: introSummary,
         related: related,
-        hasIntro: hasIntro,
       ),
     );
   }
 
   /// 封面取色结果 + OLED 画布降黑；还没算完时用官方暖棕兜底。
   AudioPageTheme _coverTheme(bool pageDark, HomePalette palette) =>
-      (_theme ??
-              (pageDark
-                  ? AudioPageTheme.fallbackDark
-                  : AudioPageTheme.fallback))
+      (_coverDominant != null
+              ? AudioPageTheme.fromCover(_coverDominant!, dark: pageDark)
+              : pageDark
+              ? AudioPageTheme.fallbackDark
+              : AudioPageTheme.fallback)
           .withOled(palette.oled && pageDark);
 
   Widget _desktopAudio(
@@ -784,9 +782,7 @@ class _AudioPageState extends State<AudioPage> {
                           AudioToneSection(
                             title: c._mode == 'narrator' ? '真人讲书' : '智能朗读',
                             tones: tones,
-                            selectedId: c._extras.tones.hasFixedTone
-                                ? c._bookId
-                                : c._toneId,
+                            selectedId: c._hasFixedTone ? c._bookId : c._toneId,
                             currentChapterTitle: chapter.title,
                             onSelect: _onToneSelected,
                             onReadAlong: _showReadAlong,
@@ -1165,6 +1161,13 @@ class _AudioPageState extends State<AudioPage> {
   }
 
   Widget _statusLine(HomePalette palette) {
+    if (c._switchingVersion) {
+      return Text(
+        '正在切换声音…',
+        textAlign: TextAlign.center,
+        style: TextStyle(color: palette.muted, fontSize: 12.5),
+      );
+    }
     if (c._error case final message?) {
       return Column(
         children: [
@@ -1893,8 +1896,8 @@ class _AudioCommentsSheetState extends State<_AudioCommentsSheet> {
         ),
         const SizedBox(height: 6),
         if (comment.text.isNotEmpty)
-          Text(
-            comment.text,
+          CommentEmojiText(
+            text: comment.text,
             style: TextStyle(color: palette.ink, fontSize: 13, height: 1.65),
           ),
         if (comment.imageUrls.isNotEmpty) ...[

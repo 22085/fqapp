@@ -11,6 +11,7 @@ import '../services/api_client.dart';
 import '../services/backend_transport.dart';
 import '../services/library_store.dart';
 import '../services/player_history.dart';
+import '../services/video_catalogue.dart';
 import '../services/shelf_store.dart';
 import '../services/watched_episodes.dart' show WatchedEpisodes, watchedIndexes;
 import '../widgets/home/home_design.dart';
@@ -26,7 +27,8 @@ import '../widgets/series_detail/series_detail_top_bar.dart';
 import 'detail_page.dart' show openBookDetail;
 import 'player_page.dart' show PlayerPage;
 
-/// 短剧详情：版式照 `mockups/detail-redesign.html` 右机。
+/// 短剧详情：版式照 PR #200（`feat/series-detail-redesign`，提交 `2c3a3e3`）
+/// 定稿的设计稿右机——设计稿本身不在仓库里，版式规则以下面这段为准。
 ///
 /// 自上而下：顶栏（只有返回）→ 头部 → 播放 / 收藏 → 选集 → 简介 →
 /// 剧评 → 原著小说。页面跟随应用主题（浅色 / 深色 / 墨水屏 / OLED）；
@@ -247,19 +249,18 @@ class _SeriesDetailPageState extends State<SeriesDetailPage> {
       _episodesFailed = false;
     });
     try {
-      final volumes = await _request(
-        () =>
-            widget.directoryLoader?.call(widget.seriesId) ??
-            ApiClient.instance.directoryChapters(
-              widget.seriesId,
-              tab: widget.kind == 'manju' ? '漫剧' : '短剧',
-            ),
+      final episodes = await _request(
+        () => loadVideoCatalogue(
+          seriesId: widget.seriesId,
+          tab: widget.kind == 'manju' ? '漫剧' : '短剧',
+          loader: widget.directoryLoader == null
+              ? null
+              : () => widget.directoryLoader!(widget.seriesId),
+        ),
       );
       if (!mounted) return;
       setState(() {
-        _loadedEpisodes = volumes
-            .expand((volume) => volume)
-            .toList(growable: false);
+        _loadedEpisodes = episodes;
         _episodesDone = true;
         _syncEpisodes();
       });
@@ -284,6 +285,7 @@ class _SeriesDetailPageState extends State<SeriesDetailPage> {
 
   /// 选集区头部右侧的状态文案（官方实机：`已完结 共105集 ›`）。
   String? get _episodeStatusText {
+    if (!hasCompleteEpisodeCatalogue(_episodes)) return '完整目录暂不可用';
     final count = _detail.episodeCount > 0
         ? _detail.episodeCount
         : _episodes.length;
@@ -302,7 +304,10 @@ class _SeriesDetailPageState extends State<SeriesDetailPage> {
     if (!_episodesDone || !_historyDone) return '加载中…';
     if (_episodes.isEmpty) return _episodesFailed ? '暂不可播放' : '暂无剧集';
     if (_episodes[_currentIndex].disabled) return '暂不可播放';
-    return _hasProgress ? '继续播放 · 第${_currentIndex + 1}集' : '立即播放';
+    if (!_hasProgress) return '立即播放';
+    return _episodes[_currentIndex].hasKnownIndex
+        ? '继续播放 · 第${_currentIndex + 1}集'
+        : '继续播放 · 当前视频';
   }
 
   bool get _playable =>
@@ -350,7 +355,7 @@ class _SeriesDetailPageState extends State<SeriesDetailPage> {
           builder: (_) => PlayerPage(
             bookId: widget.seriesId,
             kind: widget.kind,
-            title: _titleText.isEmpty ? '第${target + 1}集' : _titleText,
+            title: _titleText.isEmpty ? '当前视频' : _titleText,
             cover: _coverText,
             eps: _episodes,
             startIndex: target,

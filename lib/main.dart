@@ -1,9 +1,10 @@
-import 'services/api_client.dart';
 import 'services/audio_downloader.dart';
 import 'widgets/desktop_app_frame.dart';
 import 'services/native_player.dart';
 import 'services/desktop_platform.dart';
+import 'services/platform_capabilities.dart';
 import 'services/platform_channel.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
@@ -14,7 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:hive_ce_flutter/hive_flutter.dart';
 
 import 'dart:async';
-import 'dart:ui' show ImageFilter;
+import 'services/linux_platform.dart';
 
 import 'pages/home_page.dart';
 import 'pages/audio_page.dart';
@@ -22,10 +23,15 @@ import 'pages/cached_books_page.dart';
 import 'pages/drama_page.dart';
 import 'pages/library_page.dart';
 import 'pages/mine_page.dart';
+import 'pages/theme_page.dart';
 import 'services/app_log.dart';
 import 'services/ad_route_observer.dart';
 import 'services/ad_service.dart';
 import 'services/app_theme.dart';
+import 'services/app_theme_style.dart';
+import 'services/api_client.dart';
+import 'services/ai_reading/ai_controller.dart';
+import 'services/webdav_sync_service.dart';
 import 'services/audio_download_store.dart';
 import 'services/audio_floating_routes.dart';
 import 'services/drama_cache_preferences.dart';
@@ -33,6 +39,7 @@ import 'services/audio_preferences.dart';
 import 'services/player_preferences.dart';
 import 'services/player_layout_preferences.dart';
 import 'services/backend_service.dart';
+import 'services/network_proxy_preferences.dart';
 import 'services/digg_store.dart';
 import 'services/drama_channel_preferences.dart';
 import 'services/drama_download_store.dart';
@@ -40,16 +47,24 @@ import 'services/drama_downloader.dart';
 import 'services/fair_memory.dart';
 import 'services/connectivity_status.dart';
 import 'services/home_feed_cache.dart';
+import 'services/haptic_preferences.dart';
 import 'services/library_store.dart';
+import 'services/legacy_ui_notice.dart';
 import 'services/rank_cache.dart';
 import 'services/player_style_config.dart';
 import 'services/short_series_font_scale.dart';
 import 'services/playlet_share.dart';
 import 'services/poster_cache.dart';
+import 'services/shelf_group_store.dart';
 import 'services/shelf_store.dart';
+import 'services/shelf_view_store.dart';
 import 'services/swipe_guide_store.dart';
 import 'widgets/ad_banner.dart';
+import 'services/third_party_licenses.dart';
 import 'widgets/lazy_indexed_stack.dart';
+import 'widgets/app_ui/app_ui_scope.dart';
+import 'widgets/shell_dock.dart';
+import 'widgets/unsupported_feature_page.dart';
 import 'widgets/home/home_design.dart';
 
 Future<void> main() async {
@@ -73,6 +88,8 @@ Future<void> main() async {
 /// `runApp` 之前的运行时装配：桌面窗口回调、应用内日志、分享与 Rust 日志的桥。
 /// 这些都不决定界面能不能起来，所以失败只记日志（见 [main]）。
 Future<void> _prepareRuntime() async {
+  registerPortedUiLicenses();
+  if (isLinuxDesktop) await LinuxPlatform.install();
   if (isWindowsDesktop) await DesktopPlatform.instance.initialize();
   // 应用内日志：接管 debugPrint 与 FlutterError.onError，未处理异步异常由
   // [main] 的 runZonedGuarded 捕获；文件持久化异步开启，失败只退回内存模式。
@@ -96,13 +113,13 @@ Future<void> _prepareRuntime() async {
   // Rust 核心日志的读取入口：日志页「Rust」视图读 runtime_dir/rust.log。
   // 核心只在 Android 落盘（桌面/测试构建不装 logger），读不到时页面给空态。
   RustLogSource.reader = BackendService.instance.readRustLog;
-  if (isWindowsDesktop) {
-    DesktopPlatform.instance.beforeClose = () async {
+  if (isWindowsDesktop || isLinuxDesktop) {
+    DesktopPlatform.instance.beforeClose = LinuxPlatform.beforeClose = () async {
       DramaDownloader.instance.pauseAll();
       AudioDownloader.instance.pauseAll();
       await FairMemoryService.instance.flushForExit();
       try {
-        await NativePlayer.pauseOthers();
+        if (isMediaDesktop) await NativePlayer.pauseOthers();
       } catch (error, stack) {
         // 退出路径继续往下走，但失败要留痕：否则「关闭后还有声音」无从查起。
         AppLog.w('exit', '退出前暂停播放器失败', error: error, stack: stack);
@@ -117,7 +134,13 @@ Future<void> _prepareRuntime() async {
   }
 }
 
-Future<void> _initializeLocalData() async {
+Future<void> _initializeLocalData() {
+  final initialization = _loadLocalData();
+  if (isLinuxDesktop) LinuxPlatform.localDataInitialization = initialization;
+  return initialization;
+}
+
+Future<void> _loadLocalData() async {
   await Hive.initFlutter();
   // 以下初始化互相独立（各开各的 box / 各读各的配置），串行等只会把
   // 磁盘 I/O 叠加到冷启动里；并行发起，失败语义与串行时一致：必需项
@@ -133,10 +156,17 @@ Future<void> _initializeLocalData() async {
   }
 
   await Future.wait<void>([
+    // Load before interactive pages mount, so a saved opt-out applies at launch.
+    optional(HapticPreferences.instance.load),
     LibraryStore.instance.init(),
     // The 加入书架 collection is optional data: a failure here must not block
     // startup, which is why it shares the retryable bootstrap with the history.
     ShelfStore.instance.init(),
+    // 书架分组与视图偏好都在书架数据之后装配：页面首帧就能读到版式，
+    // 分组只在就绪后参与筛选（未就绪时读 API 安全降级）。两者都是可选数据，
+    // 打不开时页面退化为「全部 / 默认版式」而不是拖住启动。
+    optional(ShelfGroupStore.instance.init),
+    optional(ShelfViewStore.instance.load),
     // 短剧 feed 的 点赞 也是可选本地数据，与书架同一处理：开箱失败不能让
     // 启动失败，否则一个纯装饰性的集合会拖住短剧页之外的所有功能。
     optional(() async {
@@ -176,7 +206,11 @@ Future<void> _initializeLocalData() async {
     optional(HiveDramaDownloadStore.instance.warmUp),
     // 听书音频离线记录箱：与短剧箱分开，同样只在就绪时才查离线命中。
     optional(HiveAudioDownloadStore.instance.warmUp),
+    // AI 设置/缓存/反馈箱：失败只让 AI 功能退化，不能拖住阅读。
+    optional(AiReadingController.instance.init),
   ]);
+  // WebDAV 为可选功能；网络或安全存储故障不阻塞本机阅读。
+  unawaited(optional(WebDavSyncService.instance.init));
   // 听书后台播放开关：异步读取 SharedPreferences，失败退化为默认开启。
   unawaited(AudioPreferences.instance.load());
   // 短剧「边看边往后缓存」的开关与集数：同一条装配链里读，避免播放页
@@ -209,6 +243,7 @@ Future<void> _initializeLocalData() async {
   // 否则广播到达时 Dart 侧还没有处理函数，原生侧只能按“未处理”回。
   FairMemoryService.instance.init();
   final sp = await SharedPreferences.getInstance();
+  await AppThemeStyleStore.instance.load();
   // Note: Optional preference schemas cannot block local data startup; see
   // .agents/notes/implemented/bug-fix/2026-09-17-persistent-data-and-web-cancellation.md.
   final savedTheme = sp.get(themeModeKey);
@@ -230,13 +265,30 @@ Future<void> _initializeLocalData() async {
 }
 
 class FqApp extends StatefulWidget {
-  const FqApp({super.key});
+  const FqApp({
+    super.key,
+    this.initializer,
+    this.backendStarter,
+    this.styleStore,
+  });
+
+  /// Test seams for the real production tree. Production leaves them null:
+  /// startup uses [_initializeLocalData] and the real backend, and appearance
+  /// reads the device-wide [AppThemeStyleStore.instance].
+  @visibleForTesting
+  final Future<void> Function()? initializer;
+  @visibleForTesting
+  final Future<void> Function()? backendStarter;
+  @visibleForTesting
+  final AppThemeStyleStore? styleStore;
 
   @override
   State<FqApp> createState() => _FqAppState();
 }
 
 class _FqAppState extends State<FqApp> {
+  AppThemeStyleStore get _styleStore =>
+      widget.styleStore ?? AppThemeStyleStore.instance;
   // Official tabbar + 18dp applies on every page. Our floating dock is 64
   // high with an 8px gap; the desktop shell has no bottom bar.
   final _audioRoutes = AudioFloatingRoutes(
@@ -249,9 +301,24 @@ class _FqAppState extends State<FqApp> {
   final _navigatorKey = isWindowsDesktop
       ? DesktopPlatform.navigatorKey
       : GlobalKey<NavigatorState>();
+  final _localDataReady = Completer<void>();
+
+  Future<void> _initializeData() async {
+    await (widget.initializer ?? _initializeLocalData)();
+    if (!_localDataReady.isCompleted) _localDataReady.complete();
+  }
+
+  Future<RecentListen?> _loadRecentListenWhenReady() async {
+    // Keep the Navigator and playback owner mounted during startup/retries,
+    // but read history only after the local stores have opened successfully.
+    await _localDataReady.future;
+    if (!mounted) return null;
+    return loadRecentListen();
+  }
 
   @override
   void dispose() {
+    if (!_localDataReady.isCompleted) _localDataReady.complete();
     BackendService.instance.cancelStartupTimeout();
     _audioRoutes.dispose();
     super.dispose();
@@ -270,54 +337,100 @@ class _FqAppState extends State<FqApp> {
               builder: (context, oled, _) {
                 // 墨水屏强制浅色纯黑白：深色反白在墨水屏上残影最重。
                 final effectiveMode = eink ? ThemeMode.light : mode;
-                return MaterialApp(
-                  navigatorKey: _navigatorKey,
-                  navigatorObservers: [_audioRoutes, _adRouteObserver],
-                  builder: (context, child) {
-                    final playback = AudioPlaybackScope(
-                      key: _audioScopeKey,
-                      navigatorKey: _navigatorKey,
-                      recentListen: loadRecentListen,
-                      child: child ?? const SizedBox.shrink(),
-                    );
-                    // 全局上下横幅：所有页面顶部与底部各一条，失败自动隐藏；
-                    // 桌面端 AdBanner 自身渲染为空。
-                    final framed = Column(
-                      children: [
-                        SafeArea(
-                          top: true,
-                          bottom: false,
-                          child: const AdBanner(),
+                return ValueListenableBuilder<AppThemeStyle>(
+                  valueListenable: _styleStore,
+                  builder: (context, style, _) => MaterialApp(
+                    navigatorKey: _navigatorKey,
+                    navigatorObservers: [_audioRoutes, _adRouteObserver],
+                    builder: (context, child) {
+                      final palette = HomePalette.of(context);
+                      final playback = AudioPlaybackScope(
+                        key: _audioScopeKey,
+                        navigatorKey: _navigatorKey,
+                        recentListen: _loadRecentListenWhenReady,
+                        child: child ?? const SizedBox.shrink(),
+                      );
+                      // 全局上下横幅：所有页面顶部与底部各一条，失败自动隐藏；
+                      // 桌面端 AdBanner 自身渲染为空。
+                      final framed = Column(
+                        children: [
+                          SafeArea(
+                            top: true,
+                            bottom: false,
+                            child: const AdBanner(),
+                          ),
+                          Expanded(child: playback),
+                          SafeArea(
+                            top: false,
+                            bottom: true,
+                            child: const AdBanner(),
+                          ),
+                        ],
+                      );
+                      // One live presentation scope above the root Navigator,
+                      // so pushed routes, nested Navigators and every Overlay
+                      // entry read the same discrete style. It is installed in
+                      // the builder (not in a page) on purpose; see
+                      // [AppUiScope].
+                      return AppUiScope(
+                        store: _styleStore,
+                        child: AnnotatedRegion<SystemUiOverlayStyle>(
+                          // Routes without an AppBar need a live fallback above
+                          // the Navigator; the covered root route cannot paint
+                          // its style. Reader/video annotations still override
+                          // this default.
+                          value:
+                              (palette.dark
+                                      ? SystemUiOverlayStyle.light
+                                      : SystemUiOverlayStyle.dark)
+                                  .copyWith(
+                                    statusBarColor: palette.canvas,
+                                    systemNavigationBarColor: palette.canvas,
+                                    systemNavigationBarDividerColor:
+                                        palette.canvas,
+                                    systemNavigationBarIconBrightness:
+                                        palette.dark
+                                        ? Brightness.light
+                                        : Brightness.dark,
+                                  ),
+                          child: AudioFloatingRouteScope(
+                            routes: _audioRoutes,
+                            child: isWindowsDesktop
+                                ? DesktopAppFrame(child: framed)
+                                : framed,
+                          ),
                         ),
-                        Expanded(child: playback),
-                        SafeArea(
-                          top: false,
-                          bottom: true,
-                          child: const AdBanner(),
-                        ),
-                      ],
-                    );
-                    return AudioFloatingRouteScope(
-                      routes: _audioRoutes,
-                      child: isWindowsDesktop
-                          ? DesktopAppFrame(child: framed)
-                          : framed,
-                    );
-                  },
-                  title: '什锦铺',
-                  debugShowCheckedModeBanner: false,
-                  // OLED 纯黑只在深色下生效（浅色时 createTheme 直接忽略）。
-                  theme: _theme(Brightness.light, eink: eink, oled: oled),
-                  darkTheme: _theme(Brightness.dark, eink: eink, oled: oled),
-                  themeMode: effectiveMode,
-                  // 全 App 文案是中文，系统文本菜单（复制/粘贴/全选）与 Material
-                  // 内置文案也必须跟着中文：缺 delegates 时一律回退英文（#79）。
-                  locale: const Locale('zh', 'CN'),
-                  supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
-                  localizationsDelegates: GlobalMaterialLocalizations.delegates,
-                  home: AppBootstrap(
-                    backendStarter: BackendService.instance.start,
-                    child: const RootShell(),
+                      );
+                    },
+                    title: '什锦铺',
+                    debugShowCheckedModeBanner: false,
+                    // OLED 纯黑只在深色下生效（浅色时 createTheme 直接忽略）。
+                    theme: _theme(
+                      Brightness.light,
+                      eink: eink,
+                      oled: oled,
+                      style: style,
+                    ),
+                    darkTheme: _theme(
+                      Brightness.dark,
+                      eink: eink,
+                      oled: oled,
+                      style: style,
+                    ),
+                    themeMode: effectiveMode,
+                    // 全 App 文案是中文，系统文本菜单（复制/粘贴/全选）与 Material
+                    // 内置文案也必须跟着中文：缺 delegates 时一律回退英文（#79）。
+                    locale: const Locale('zh', 'CN'),
+                    supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
+                    localizationsDelegates:
+                        GlobalMaterialLocalizations.delegates,
+                    home: AppBootstrap(
+                      backendStarter:
+                          widget.backendStarter ??
+                          BackendService.instance.start,
+                      initializer: _initializeData,
+                      child: RootShell(backendStarter: widget.backendStarter),
+                    ),
                   ),
                 );
               },
@@ -332,7 +445,13 @@ class _FqAppState extends State<FqApp> {
     Brightness brightness, {
     bool eink = false,
     bool oled = false,
-  }) => AppTheme.createTheme(brightness, einkMode: eink, oledMode: oled);
+    AppThemeStyle style = AppThemeStyle.archive,
+  }) => AppTheme.createTheme(
+    brightness,
+    einkMode: eink,
+    oledMode: oled,
+    style: style,
+  );
 }
 
 /// Opens local data before any page can access LibraryStore's boxes. Failed
@@ -447,9 +566,39 @@ class RootShell extends StatefulWidget {
   State<RootShell> createState() => _RootShellState();
 }
 
-class _RootShellState extends State<RootShell> {
+class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
   int _index = 0;
   bool _backendReady = false;
+  bool _legacyNoticeScheduled = false;
+
+  /// 页面滑动过渡动画：dock 点击 / 拖动松手 / 页面回调统一经 [_selectTab]
+  /// 驱动。页面用 Stack + Transform.translate 按动画值平移（与 PageView
+  /// 的滑动观感一致），但挂载时机完全可控——首次访问的目标页先在静止帧
+  /// 挂载完，再启动滑动，页面构建不会冻住滑动中的 dock 高亮。
+  late final AnimationController _pageMotion = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 260),
+  )..value = 1;
+
+  /// 滑动动画的起点页码（可为小数：打断上一次动画时从当前显示位置继续）。
+  double _pageFrom = 0;
+
+  /// 首次访问延迟挂载的目标页：静止帧里先挂载（不 Offstage 但 Transform
+  /// 放在屏外），挂载帧结束后清除并启动滑动。
+  int? _premount;
+
+  /// 预挂载世代令牌：每次实际切换自增，使待执行的预挂载 post-frame 回调
+  /// 失效——同帧多次选择时只有最新一次生效，过期回调不得覆盖 _index。
+  int _premountGeneration = 0;
+
+  /// 已挂载过的 tab。未访问的页不进 Stack，避免跨多页切换把沿途页面
+  /// （短剧视频流等）全部提前挂载。
+  final Set<int> _visitedTabs = {0};
+
+  /// 页面 widget 缓存：避免 AnimatedBuilder 每帧重建 widget 对象。
+  /// State 由框架保活，缓存的 widget 只是配置描述，不影响主题等
+  /// inherited 依赖的正常更新。
+  final Map<int, Widget> _tabCache = {};
 
   /// 首页 feed 的滚动控制器，由壳层持有以便底部栏触发回顶部。
   final ScrollController _homeScroll = ScrollController();
@@ -468,7 +617,39 @@ class _RootShellState extends State<RootShell> {
   /// 分类栏会自己重新吸住。
   void _selectTab(int index) {
     if (index != _index) {
-      setState(() => _index = index);
+      // 任何实际切换都使待执行的预挂载回调失效，防止过期回调覆盖新选择。
+      final generation = ++_premountGeneration;
+      if (_visitedTabs.contains(index) ||
+          einkModeNotifier.value ||
+          MediaQuery.disableAnimationsOf(context)) {
+        // 已访问过 / eink / 减弱动态效果：目标页已挂载（或不需要动画），
+        // 直接切换，不走预挂载帧。
+        final from = _currentPage();
+        setState(() {
+          _index = index;
+          _premount = null;
+          _visitedTabs.add(index);
+        });
+        _startPageMotion(from, index);
+        return;
+      }
+      // 首次访问：先在静止帧把目标页挂载完（不 Offstage 但 Transform
+      // 放在屏外，页面还停在旧 tab、dock 高亮未动），挂载帧结束后再
+      // 同步启动页面滑动与 dock 弹簧。页面构建的开销发生在动画开始前
+      // 而不是滑动中段，dock 高亮不会被冻结在中途项上再跳变。
+      setState(() {
+        _visitedTabs.add(index);
+        _premount = index;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || generation != _premountGeneration) return;
+        final from = _currentPage();
+        setState(() {
+          _index = index;
+          _premount = null;
+        });
+        _startPageMotion(from, index);
+      });
       return;
     }
     if (index != 0) return; // 只有首页有 feed 需要回顶
@@ -481,6 +662,56 @@ class _RootShellState extends State<RootShell> {
     _homeScroll.jumpTo(_homeScroll.position.minScrollExtent);
   }
 
+  /// 启动页面滑动：与 dock 高亮的弹簧滑动同帧开始、同起同终。
+  /// [from] 必须在 setState 改变 [_index] 之前捕获（否则起点=终点，
+  /// 动画无效）。eink / 系统减弱动态效果不做动画，直接落位。
+  void _startPageMotion(double from, int index) {
+    if (einkModeNotifier.value || MediaQuery.disableAnimationsOf(context)) {
+      _pageMotion.value = 1;
+      _pageFrom = index.toDouble();
+      return;
+    }
+    _pageFrom = from;
+    _pageMotion.forward(from: 0);
+  }
+
+  /// 当前显示的连续页码（动画中为小数，静止时等于 [_index]）。
+  double _currentPage() =>
+      _pageFrom +
+      (_index - _pageFrom) * Curves.easeOutCubic.transform(_pageMotion.value);
+
+  Widget _tabChild(int index) =>
+      _tabCache.putIfAbsent(index, () => _buildTabChild(index));
+
+  Widget _buildTabChild(int index) {
+    switch (index) {
+      case 0:
+        return HomePage(
+          scrollController: _homeScroll,
+          cueLoader: ApiClient.instance.searchCue,
+        );
+      case 1:
+        // iOS 首版没有原生播放器实现：把短剧页换成「暂不支持」占位，
+        // 避免进入播放页时触发缺失的 fqapp/native_player 通道。
+        return supportsVideoPlayback
+            ? const DramaPage()
+            : const UnsupportedFeaturePage(
+                icon: LucideIcons.clapperboard,
+                title: '短剧暂不支持',
+                description: '当前平台没有内置视频播放器。搜书、书架和阅读可以正常使用。',
+              );
+      case 2:
+        // 空书架上的「去书城找书」切回首页 tab；收藏空态的「找短剧」
+        // 切到短剧 tab。
+        return LibraryPage(
+          onBrowse: () => _selectTab(0),
+          onFindDrama: () => _selectTab(1),
+        );
+      default:
+        return const MinePage();
+    }
+  }
+
   String? _backendError;
 
   @override
@@ -489,11 +720,22 @@ class _RootShellState extends State<RootShell> {
     // 短剧频道在推荐（视频流）与浅色页之间切换时，悬浮 dock 和系统导航栏
     // 要跟着换肤，所以停在壳层的 build 里监听。
     dramaLightPageNotifier.addListener(_onDramaChromeChanged);
+    _pageMotion.addStatusListener(_onPageMotionStatus);
     _startBackend();
   }
 
   void _onDramaChromeChanged() {
     if (mounted) setState(() {});
+  }
+
+  /// 页面滑动动画结束时触发一次 rebuild：让 dock 恢复 BackdropFilter
+  /// 实时模糊（动画期间跳过了模糊以避免逐帧全屏高斯开销）。
+  void _onPageMotionStatus(AnimationStatus status) {
+    if ((status == AnimationStatus.completed ||
+            status == AnimationStatus.dismissed) &&
+        mounted) {
+      setState(() {});
+    }
   }
 
   Future<void> _startBackend() async {
@@ -504,6 +746,7 @@ class _RootShellState extends State<RootShell> {
       await (widget.backendStarter ?? BackendService.instance.start)();
       if (mounted) {
         setState(() => _backendReady = true);
+        _scheduleLegacyUiNotice();
       }
     } catch (e) {
       if (mounted) {
@@ -514,12 +757,63 @@ class _RootShellState extends State<RootShell> {
     }
   }
 
+  void _scheduleLegacyUiNotice() {
+    if (_legacyNoticeScheduled) return;
+    _legacyNoticeScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_maybeShowLegacyUiNotice());
+    });
+  }
+
+  Future<void> _maybeShowLegacyUiNotice() async {
+    if (!mounted || !await LegacyUiNotice.shouldShow()) return;
+    if (!mounted) return;
+    // Mark before showing: if the process is killed while the dialog is on
+    // screen, the next launch must not show it again.
+    await LegacyUiNotice.markSeen();
+    if (!mounted) return;
+    final goToTheme = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('界面UI已升级'),
+        content: const Text('新版默认使用档案界面。想继续使用经典界面，可以到「设置 → 主题」切换。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('知道了'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('去设置'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || goToTheme != true) return;
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => const ThemePage()));
+  }
+
+  Future<void> _retryWithDirectConnection() async {
+    setState(() => _backendError = null);
+    try {
+      await NetworkProxyPreferences.instance.save(const NetworkProxyConfig());
+      if (mounted) await _startBackend();
+    } catch (_) {
+      if (mounted) setState(() => _backendError = '代理配置保存失败，请重试。');
+    }
+  }
+
   @override
   void dispose() {
     dramaLightPageNotifier.removeListener(_onDramaChromeChanged);
+    _pageMotion.removeStatusListener(_onPageMotionStatus);
     _homeScroll.dispose();
+    _pageMotion.dispose();
     super.dispose();
   }
+
 
   @override
   Widget build(BuildContext context) {
@@ -566,6 +860,11 @@ class _RootShellState extends State<RootShell> {
                       onPressed: _startBackend,
                       child: const Text('重试'),
                     ),
+                    if (isWindowsDesktop)
+                      TextButton(
+                        onPressed: _retryWithDirectConnection,
+                        child: const Text('重置代理为直连并重试'),
+                      ),
                   ],
                 ],
               ),
@@ -582,7 +881,7 @@ class _RootShellState extends State<RootShell> {
           return LazyIndexedStack(
             index: index,
             children: [
-              HomePage(cueLoader: () => ApiClient.instance.searchCue()),
+              HomePage(cueLoader: ApiClient.instance.searchCue),
               const DramaPage(),
               LibraryPage(
                 onBrowse: () => desktopTab.value = 0,
@@ -601,107 +900,6 @@ class _RootShellState extends State<RootShell> {
     // 短剧的推荐频道压在全屏视频流上，dock 用深色玻璃；看剧/漫剧/最近/收藏
     // 是浅色页，dock 跟主题走，否则浅色外观下页面是奶白、dock 还是黑的。
     final dramaOnVideo = isDramaTab && !dramaLightPageNotifier.value;
-    final glassDark = isDark || dramaOnVideo;
-    // 墨水屏模式：本 build 由 Theme 变化触发重建（上面读了 Theme.of），
-    // 这里直接读 notifier 当前值即可拿到最新开关，不另加监听。
-    final eink = einkModeNotifier.value;
-    // OLED 纯黑只在深色外观下生效，浅色 / 墨水屏时该值为 false。
-    final oled = oledActive();
-    final navBar = NavigationBarTheme(
-      data: NavigationBarThemeData(
-        height: 64,
-        elevation: 0,
-        backgroundColor: Colors.transparent,
-        surfaceTintColor: Colors.transparent,
-        shadowColor: Colors.transparent,
-        indicatorColor: eink
-            ? Colors.black
-            : HomePalette.accent.withValues(alpha: glassDark ? 0.20 : 0.12),
-        indicatorShape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
-        iconTheme: WidgetStateProperty.resolveWith(
-          (states) => IconThemeData(
-            size: 22,
-            color: states.contains(WidgetState.selected)
-                ? (eink ? Colors.white : HomePalette.accent)
-                : (eink
-                      ? Colors.black
-                      : (glassDark
-                            ? Colors.white.withValues(alpha: 0.65)
-                            : palette.muted)),
-          ),
-        ),
-        labelTextStyle: WidgetStateProperty.resolveWith(
-          (states) => TextStyle(
-            fontSize: 11,
-            fontWeight: states.contains(WidgetState.selected)
-                ? FontWeight.w700
-                : FontWeight.w500,
-            color: states.contains(WidgetState.selected)
-                ? (eink
-                      ? Colors.black
-                      : (glassDark ? HomePalette.accent : palette.accentText))
-                : (eink
-                      ? Colors.black
-                      : (glassDark
-                            ? Colors.white.withValues(alpha: 0.65)
-                            : palette.muted)),
-          ),
-        ),
-      ),
-      child: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: _selectTab,
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(LucideIcons.house),
-            selectedIcon: Icon(LucideIcons.house),
-            label: '首页',
-          ),
-          NavigationDestination(
-            icon: Icon(LucideIcons.clapperboard),
-            selectedIcon: Icon(LucideIcons.clapperboard),
-            label: '短剧',
-          ),
-          NavigationDestination(
-            icon: Icon(LucideIcons.library_big),
-            selectedIcon: Icon(LucideIcons.library_big),
-            label: '书架',
-          ),
-          NavigationDestination(
-            icon: Icon(LucideIcons.circle_user_round),
-            selectedIcon: Icon(LucideIcons.circle_user_round),
-            label: '我的',
-          ),
-        ],
-      ),
-    );
-
-    // 静态半透明底：与毛玻璃同色，供短剧 tab 复用（短剧 tab 背后是每帧
-    // 变化的视频流，BackdropFilter 每帧重算模糊，GPU 满负荷；该 tab 下
-    // 用静态底，外观几乎不变；切出短剧 tab 后恢复毛玻璃）。OLED 纯黑直接
-    // 用不透明的近黑底：纯黑画布上毛玻璃只会晕出一圈灰，还白白模糊每帧。
-    final staticNavBar = Container(
-      decoration: BoxDecoration(
-        color: oled
-            ? const Color(0xFF0C0C0E)
-            : (glassDark
-                  ? const Color(0xFF161619).withValues(alpha: 0.72)
-                  : Colors.white.withValues(alpha: 0.82)),
-        borderRadius: BorderRadius.circular(28),
-        border: Border.all(
-          color: glassDark
-              ? Colors.white.withValues(alpha: 0.16)
-              : Colors.white.withValues(alpha: 0.75),
-          width: 0.8,
-        ),
-      ),
-      child: navBar,
-    );
-
     // 系统导航栏（Android 底部系统自绘的那条）按当前画布取色。Flutter 的
     // light / dark 两套预设都把它写成纯黑底 + 白图标，浅色页面下会在最底部
     // 留一条突兀的黑带；短剧只有视频流（推荐）背后是视频，仍用黑。
@@ -719,6 +917,11 @@ class _RootShellState extends State<RootShell> {
                     ? SystemUiOverlayStyle.light
                     : SystemUiOverlayStyle.dark)
                 .copyWith(
+                  // 状态栏显式铺成画布色：透明状态栏在 Android 10+ 会被系统
+                  // 叠一层对比度黑纱，奶白画布会被压成灰带。短剧视频流仍透明。
+                  statusBarColor: dramaOnVideo
+                      ? Colors.transparent
+                      : palette.canvas,
                   systemNavigationBarColor: dramaOnVideo
                       ? Colors.black
                       : palette.canvas,
@@ -729,79 +932,60 @@ class _RootShellState extends State<RootShell> {
                       ? Brightness.light
                       : Brightness.dark,
                 ),
-        child: LazyIndexedStack(
-          index: _index,
-          children: [
-            HomePage(
-              scrollController: _homeScroll,
-              cueLoader: () => ApiClient.instance.searchCue(),
-            ),
-            const DramaPage(),
-            // 空书架上的「去书城找书」切回首页 tab；收藏空态的「找短剧」
-            // 切到短剧 tab。
-            LibraryPage(
-              onBrowse: () => setState(() => _index = 0),
-              onFindDrama: () => setState(() => _index = 1),
-            ),
-            const MinePage(),
-          ],
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final width = constraints.maxWidth;
+            return AnimatedBuilder(
+              animation: _pageMotion,
+              builder: (context, _) {
+                final page = _currentPage();
+                return Stack(
+                  key: const ValueKey('root-page-stack'),
+                  fit: StackFit.expand,
+                  children: [
+                    for (var i = 0; i < 4; i++)
+                      if (_visitedTabs.contains(i))
+                        KeyedSubtree(
+                          key: ValueKey('root-tab-$i'),
+                          child: Offstage(
+                            key: ValueKey('root-tab-offstage-$i'),
+                            // 静止时只显示当前页；预挂载帧额外显示目标页
+                            // （Transform 放在屏外，完成 layout 但不显示）；
+                            // 动画中显示视口范围内的页（旧页滑出 + 新页滑入）。
+                            offstage:
+                                !(i == _index ||
+                                    i == _premount ||
+                                    (_pageMotion.isAnimating &&
+                                        (i - page).abs() < 1)),
+                            child: Transform.translate(
+                              offset: Offset((i - page) * width, 0),
+                              // RepaintBoundary 把页面内容缓存为独立图层：
+                              // 动画期间 Transform 只移动图层（GPU 合成），
+                              // 不触发页面内容的逐帧 repaint。
+                              child: RepaintBoundary(
+                                child: TickerMode(
+                                  enabled: i == _index,
+                                  child: _tabChild(i),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                  ],
+                );
+              },
+            );
+          },
         ),
       ),
-      bottomNavigationBar: SafeArea(
-        top: false,
-        left: false,
-        right: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          child: RepaintBoundary(
-            child: Container(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(28),
-                // 墨水屏：阴影是灰阶 + 刷新残影来源，直接去掉，改用实线边框。
-                boxShadow: eink
-                    ? null
-                    : [
-                        BoxShadow(
-                          color: Colors.black.withValues(
-                            alpha: glassDark ? 0.38 : 0.08,
-                          ),
-                          blurRadius: 22,
-                          offset: const Offset(0, 8),
-                        ),
-                        BoxShadow(
-                          color: HomePalette.accent.withValues(
-                            alpha: glassDark ? 0.06 : 0.03,
-                          ),
-                          blurRadius: 14,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(28),
-                // 墨水屏：BackdropFilter 毛玻璃会把底部栏变成一团灰，改实色。
-                // 短剧 tab：背后是每帧变化的视频流，BackdropFilter 每帧都要
-                // 重算模糊，GPU 一直满负荷；该 tab 下改用同色静态半透明底，
-                // 外观几乎不变，省掉每帧重栅格化。切出短剧 tab 后恢复毛玻璃。
-                child: eink
-                    ? Container(
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(28),
-                          border: Border.all(color: Colors.black, width: 0.8),
-                        ),
-                        child: navBar,
-                      )
-                    : isDramaTab || oled
-                    ? staticNavBar
-                    : BackdropFilter(
-                        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                        child: staticNavBar,
-                      ),
-              ),
-            ),
-          ),
-        ),
+      // 上游 Wenku8 GlassDock：胶囊、拖动预览和液态玻璃选中区；短剧视频流
+      // 与 OLED 纯黑下改用同色静态底板，不对每帧变化的画面做实时折射。
+      bottomNavigationBar: ShellDock(
+        selectedIndex: _index,
+        onSelected: _selectTab,
+        overVideo: dramaOnVideo,
+        staticMaterial: shellDockStaticMaterial(overVideo: dramaOnVideo),
+        animating: _pageMotion.isAnimating,
       ),
     );
   }

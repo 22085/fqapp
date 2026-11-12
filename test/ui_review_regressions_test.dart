@@ -18,6 +18,7 @@ import 'package:fqapp/widgets/reader/reader_status_bar.dart';
 
 import 'support/controlled_player.dart';
 import 'support/fakes.dart';
+import 'support/reader_settings_nav.dart';
 
 const _track = SubtitleTrack([
   SubtitleCue(startMs: 0, text: '第一句同步字幕'),
@@ -102,7 +103,10 @@ void main() {
     final subtitles = Completer<SubtitleTrack>();
     await _mount(tester, _AudioSession((_, _) => subtitles.future).app());
     await _openReadAlong(tester);
-    expect(find.byKey(const ValueKey('audio-read-along-empty')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('audio-read-along-empty')),
+      findsOneWidget,
+    );
     subtitles.complete(_track);
     await _flush(tester);
     expect(_currentSubtitle(tester), '第一句同步字幕');
@@ -129,7 +133,10 @@ void main() {
       await _flush(tester);
       expect(session.players, hasLength(2));
       expect(find.text('第二句同步字幕'), findsNothing);
-      expect(find.byKey(const ValueKey('audio-read-along-empty')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('audio-read-along-empty')),
+        findsOneWidget,
+      );
       expect(
         tester
             .widget<Text>(
@@ -159,7 +166,10 @@ void main() {
     );
     await _mount(tester, session.app());
     await _openReadAlong(tester);
-    expect(find.byKey(const ValueKey('audio-read-along-empty')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('audio-read-along-empty')),
+      findsOneWidget,
+    );
     expect(session.players.single.isPlaying, isTrue);
     expect(tester.takeException(), isNull);
   });
@@ -329,8 +339,10 @@ void main() {
         await _tapReaderCenter(tester);
         await tester.pumpAndSettle();
         await _openSettings(tester);
+        await openReaderSettingsCategory(tester, 'turn');
         expect(find.byKey(const ValueKey('reader-auto-turn')), findsOneWidget);
-        expect(find.text('自动翻页'), findsOneWidget);
+        // 行为区块里还有一行「自动翻页」秒数，所以这里允许出现多次。
+        expect(find.text('自动翻页'), findsWidgets);
       },
     );
   }
@@ -356,11 +368,8 @@ String? _currentSubtitle(WidgetTester tester) =>
     tester.widget<Text>(find.byKey(const Key('audio_subtitle_current'))).data;
 
 Future<void> _openReadAlong(WidgetTester tester) async {
-  // 字幕槽（有内容才在）与音色卡入口都通向「边听边读」，前者缺席时退回后者。
-  final subtitle = find.byKey(const Key('audio_inline_subtitle'));
-  final entry = subtitle.evaluate().isEmpty
-      ? find.byKey(const Key('audio_read_along'))
-      : subtitle;
+  // 两种朗读模式共用同一张「边听边读」入口。
+  final entry = find.byKey(const Key('audio_real_read_along'));
   await tester.ensureVisible(entry);
   await tester.tap(entry);
   await tester.pumpAndSettle();
@@ -444,6 +453,8 @@ Future<void> _startAutoTurn(WidgetTester tester) async {
   await _tapReaderCenter(tester);
   await tester.pumpAndSettle();
   await _openSettings(tester);
+  // 自动翻页在「翻页」分类里。
+  await openReaderSettingsCategory(tester, 'turn');
   await tester.tap(find.byKey(const ValueKey('reader-auto-turn')));
   await tester.pumpAndSettle();
 }
@@ -484,9 +495,14 @@ class _AudioSession {
   );
 }
 
-/// 从阅读菜单的「设置」直接打开阅读设置面板。
+/// 从阅读菜单的「外观」直接打开阅读设置面板。
 Future<void> _openSettings(WidgetTester tester) async {
-  if (find.text('阅读设置').evaluate().isNotEmpty) return;
+  if (find
+      .byKey(const ValueKey('reader-settings-close'))
+      .evaluate()
+      .isNotEmpty) {
+    return;
+  }
   await tester.tap(find.byKey(const ValueKey('reader-settings')));
   await tester.pumpAndSettle();
 }

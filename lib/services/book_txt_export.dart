@@ -11,13 +11,10 @@ import '../models/media_item.dart';
 class ExportTarget {
   const ExportTarget({required this.path, required this.isPublic});
 
-  /// Path shown to the user. Either the shared Downloads entry or, on Android
-  /// 9 and older, the app's own external directory.
+  /// Path chosen in the desktop save dialog or reported by Android.
   final String path;
 
-  /// Whether [path] is the shared Downloads collection instead of app-private
-  /// storage. The completion message has to tell the two apart: a private file
-  /// is not where the file manager looks.
+  /// Whether [path] is user-accessible rather than app-private storage.
   final bool isPublic;
 }
 
@@ -40,7 +37,7 @@ abstract class TxtSink {
   });
 }
 
-/// The system Downloads collection through the `fqapp/downloads` channel.
+/// Saves through `fqapp/downloads`: Android Downloads or a desktop save dialog.
 ///
 /// Android 10 (API 29) and newer insert into `MediaStore.Downloads`, which
 /// needs no storage permission; older devices fall back to the app's external
@@ -66,7 +63,7 @@ class PlatformTxtSink implements TxtSink {
     } on PlatformException catch (error) {
       throw ExportWriteException(error.message ?? '写入失败');
     } on MissingPluginException {
-      // Desktop and test hosts have no Android plugin: never report success.
+      // Hosts without a registered adapter must never report success.
       throw const ExportWriteException('当前平台不支持导出到 Downloads');
     }
     final path = result?['path'];
@@ -82,6 +79,7 @@ class PlatformTxtSink implements TxtSink {
 class BookTxtExportState {
   const BookTxtExportState({
     this.running = false,
+    this.writing = false,
     this.completed = 0,
     this.total = 0,
     this.failed = 0,
@@ -90,6 +88,9 @@ class BookTxtExportState {
   });
 
   final bool running;
+
+  /// The platform write has been submitted and cannot be cancelled.
+  final bool writing;
   final int completed;
   final int total;
 
@@ -105,14 +106,15 @@ class BookTxtExportState {
   final String? message;
 
   double get fraction => total == 0 ? 0 : completed / total;
+  bool get canCancel => running && !writing;
 }
 
 /// Whole-book TXT export: a fresh directory plus every chapter re-fetched from
 /// the network, assembled in the same shape the backend's `/api/download`
 /// serves (`# 标题` line, body, blank line).
 ///
-/// Nothing is written until the last chapter is in hand: a cancelled or failed
-/// export must not leave a half book in Downloads that looks complete.
+/// Nothing is written until the last chapter is in hand. Cancellation is only
+/// available during fetching; once saving begins, the platform result wins.
 ///
 /// Chapter bodies are fetched through [chapterLoader], which production wires to
 /// `ApiClient.contentText` — the single request funnel CRIT-005 requires.
@@ -180,6 +182,7 @@ class BookTxtExport extends ValueNotifier<BookTxtExportState> {
       completed++;
       value = BookTxtExportState(
         running: true,
+        writing: completed == chapters.length,
         completed: completed,
         total: chapters.length,
         failed: failed,
@@ -195,7 +198,7 @@ class BookTxtExport extends ValueNotifier<BookTxtExportState> {
       );
     } catch (_) {
       if (_alive(job)) {
-        value = const BookTxtExportState(message: '导出失败：写入 Downloads 失败，请重试');
+        value = const BookTxtExportState(message: '导出失败：文件写入失败，请重试');
       }
       return;
     }
@@ -209,9 +212,10 @@ class BookTxtExport extends ValueNotifier<BookTxtExportState> {
     );
   }
 
-  /// Stops the running export. Nothing was written yet, so nothing is left
-  /// behind in Downloads.
+  /// Stops fetching before any file is written. A submitted platform write
+  /// must finish and report its actual result.
   void cancel() {
+    if (_disposed || !value.canCancel) return;
     ++_job;
     final state = value;
     value = BookTxtExportState(

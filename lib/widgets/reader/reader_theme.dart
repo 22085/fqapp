@@ -29,6 +29,7 @@ extension ReaderThemeColors on ReaderThemePreset {
     ReaderThemePreset.parchment => '纸张',
     ReaderThemePreset.dark => '夜间',
     ReaderThemePreset.eink => '墨水屏',
+    ReaderThemePreset.mistBlue => '雾蓝',
   };
 
   Color get backgroundColor => switch (this) {
@@ -37,6 +38,7 @@ extension ReaderThemeColors on ReaderThemePreset {
     ReaderThemePreset.parchment => const Color(0xFFF3E4C2),
     ReaderThemePreset.dark => isOled ? Colors.black : const Color(0xFF171717),
     ReaderThemePreset.eink => Colors.white,
+    ReaderThemePreset.mistBlue => const Color(0xFFD8E4F0),
   };
 
   Color get textColor => switch (this) {
@@ -45,9 +47,11 @@ extension ReaderThemeColors on ReaderThemePreset {
     ReaderThemePreset.parchment => const Color(0xFF493D2B),
     ReaderThemePreset.dark => const Color(0xFFD2D2D2),
     ReaderThemePreset.eink => Colors.black,
+    ReaderThemePreset.mistBlue => const Color(0xFF243447),
   };
 
   Color get accentColor => switch (this) {
+    ReaderThemePreset.mistBlue => const Color(0xFF3D668C),
     ReaderThemePreset.eyeCare => const Color(0xFF4F6F52),
     ReaderThemePreset.dark => const Color(0xFFE9AD82),
     ReaderThemePreset.eink => Colors.black,
@@ -65,6 +69,7 @@ extension ReaderThemeColors on ReaderThemePreset {
   /// 的 b4e-b4i 资源表):light #FA6725、parchment(纸) #CC8114、eyeCare(绿)
   /// #65992E;官方另有蓝色主题 #3D85CC,我们暂无对应预设。夜间走同一橙。
   Color get selectionAccentColor => switch (this) {
+    ReaderThemePreset.mistBlue => const Color(0xFF3D85CC),
     ReaderThemePreset.parchment => const Color(0xFFCC8114),
     ReaderThemePreset.eyeCare => const Color(0xFF65992E),
     ReaderThemePreset.eink => Colors.black,
@@ -74,8 +79,7 @@ extension ReaderThemeColors on ReaderThemePreset {
   /// The wash behind a text selection. 官方 markingConfig.b()(ReaderViewLayout
   /// 的 ie5.a 实现)= un4.j.C(theme, 0.16f) —— 强调色 @ 16%,C 会整体重设
   /// alpha,所以夜间也是 16% 橙。
-  Color get selectionWashColor =>
-      selectionAccentColor.withValues(alpha: 0.16);
+  Color get selectionWashColor => selectionAccentColor.withValues(alpha: 0.16);
 
   /// 控点实色(un4.j.t):夜间降到 60% 的橙,其余主题用强调色原色。
   Color get selectionHandleColor =>
@@ -96,6 +100,12 @@ extension ReaderThemeColors on ReaderThemePreset {
   Color get narrationHighlightColor => isEink
       ? Colors.black.withValues(alpha: 0.10)
       : Color.alphaBlend(textColor.withValues(alpha: 0.10), backgroundColor);
+
+  /// Dialogue uses a quiet theme accent, separate from the playback color.
+  Color get dialogueHighlightColor => Color.alphaBlend(
+    accentColor.withValues(alpha: isDark ? 0.18 : 0.12),
+    backgroundColor,
+  );
 
   Color get panelColor {
     if (isEink) return Colors.white;
@@ -121,6 +131,7 @@ extension ReaderThemeColors on ReaderThemePreset {
     if (isOled) return const Color(0xFF2E2E34);
     return textColor.withValues(alpha: 0.09);
   }
+
   /// 排版面板表面 = 阅读页背景本身(官方 bottombar/t.java 直接把面板根
   /// View 设为 readerConfig.getBackgroundColor(),面板与页面同色);chip/
   /// 控件底色另走 fieldColor(官方是白色 5% 叠加,x4 色表)。
@@ -193,9 +204,7 @@ extension ReaderThemeColors on ReaderThemePreset {
             surfaceContainerLow: isOled ? const Color(0xFF0C0C0E) : null,
             surfaceContainer: isOled ? const Color(0xFF121215) : null,
             surfaceContainerHigh: isOled ? const Color(0xFF17171A) : null,
-            surfaceContainerHighest: isOled
-                ? const Color(0xFF1F1F23)
-                : null,
+            surfaceContainerHighest: isOled ? const Color(0xFF1F1F23) : null,
             outlineVariant: isOled ? const Color(0xFF2E2E34) : null,
           );
     return base.copyWith(

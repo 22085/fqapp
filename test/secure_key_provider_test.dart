@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fqapp/services/secure_key_provider.dart';
@@ -8,6 +9,15 @@ import 'package:fqapp/services/secure_key_provider.dart';
 /// forever — a wedged Keystore, or an unmocked platform channel in widget
 /// tests, both present as a Future that never completes.
 void main() {
+  test('Linux never replaces a malformed persisted key', () async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
+    final storage = InMemorySecureKeyStorage();
+    await storage.write(SecureKeyProvider.hiveBoxKeyName, 'malformed');
+    expect(await SecureKeyProvider(storage: storage).getOrCreateKey(), isNull);
+    expect(await storage.read(SecureKeyProvider.hiveBoxKeyName), 'malformed');
+  });
+
   test('a never-resolving read degrades to null after the timeout', () async {
     final provider = SecureKeyProvider(
       storage: _HangingStorage(),
@@ -65,6 +75,9 @@ class _HangingStorage implements SecureKeyStorage {
   @override
   Future<void> write(String key, String value) =>
       Completer<void>().future;
+
+  @override
+  Future<void> delete(String key) => Completer<void>().future;
 }
 
 class _ThrowingStorage implements SecureKeyStorage {
@@ -74,6 +87,9 @@ class _ThrowingStorage implements SecureKeyStorage {
   @override
   Future<void> write(String key, String value) async =>
       throw StateError('no keystore');
+
+  @override
+  Future<void> delete(String key) async => throw StateError('no keystore');
 }
 
 class _MapStorage implements SecureKeyStorage {
@@ -85,5 +101,10 @@ class _MapStorage implements SecureKeyStorage {
   @override
   Future<void> write(String key, String value) async {
     values[key] = value;
+  }
+
+  @override
+  Future<void> delete(String key) async {
+    values.remove(key);
   }
 }

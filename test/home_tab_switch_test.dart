@@ -9,21 +9,12 @@ import 'package:fqapp/pages/home_page.dart';
 import 'package:fqapp/pages/home_provider.dart';
 import 'package:fqapp/services/api_client.dart';
 import 'package:fqapp/widgets/home/home_feed_states.dart';
-import 'package:fqapp/widgets/home/home_hero.dart';
+import 'package:fqapp/widgets/home/home_masthead.dart';
 import 'package:fqapp/widgets/home/home_skeleton.dart';
 import 'package:fqapp/widgets/tab_swipe_area.dart';
 
-/// 首页横滑切分类时「像短剧那样原地换一屏」。
-///
-/// 短剧页的顶栏在滚动视图外面，切频道只换内容，所以观感是「换了一屏」；首页
-/// 的搜索行（hero）和分类条都在同一个滚动视图里，以前切分类还会把视图跳回
-/// 别处、把还没进过的分类铺成满屏脉冲骨架——三件事叠起来就是用户说的「整页
-/// 重新加载了一个界面」。
-///
-/// 现在的约定：
-/// * 搜索行没滚出屏幕时切分类：位置一点不动；
-/// * 已经滚过搜索行：只把内容区摆回第一行（分类条吸顶处），不把搜索行带回来；
-/// * 切分类不铺整页骨架，用一行安静提示；冷启动首载才铺骨架。
+/// Headers stay outside the feed viewport and horizontal transform (#261).
+/// Switching categories resets only the feed, without a full-page skeleton.
 void main() {
   const surface = Size(400, 800);
   const itemsPerTabType = {2: 40, 8: 6, 24: 12, 5: 30};
@@ -91,10 +82,6 @@ void main() {
       .controller!
       .position;
 
-  /// 分类条吸顶时内容区的第一行：搜索行的高度。
-  double heroHeight(WidgetTester tester) =>
-      tester.getSize(find.byType(HomeHero)).height;
-
   /// 横滑切一个分类，并推进到迎入动画结束。
   Future<void> swipeTab(WidgetTester tester, double dx) async {
     await tester.drag(find.byKey(const Key('home_feed')), Offset(dx, 0));
@@ -108,9 +95,9 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
   }
 
-  testWidgets('横滑时搜索行和分类条不跟着走，只有内容在滑', (tester) async {
+  testWidgets('横滑时顶栏和分类条不跟着走，只有内容在滑', (tester) async {
     await pumpHome(tester);
-    final hero = tester.getRect(find.byType(HomeHero));
+    final hero = tester.getRect(find.byType(HomeMasthead));
     final firstTab = tester.getRect(
       find.byKey(const ValueKey('home_category_0')),
     );
@@ -124,9 +111,9 @@ void main() {
       // 顶栏属于「页面」，不属于「内容」：它跟着动的话，屏幕上就是整页
       // 被换掉（短剧页的顶栏在滑动区外面，所以从来不这样）。
       expect(
-        tester.getRect(find.byType(HomeHero)).left,
+        tester.getRect(find.byType(HomeMasthead)).left,
         hero.left,
-        reason: '第 $frame 帧：搜索行跟着横滑走了',
+        reason: '第 $frame 帧：顶栏跟着横滑走了',
       );
       expect(
         tester.getRect(find.byKey(const ValueKey('home_category_0'))).left,
@@ -137,18 +124,27 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('拖动时缺口里铺邻页内容，滚动视口不再裁掉钉住的顶栏', (tester) async {
+  testWidgets('拖动时缺口里铺邻页内容，顶栏位于裁剪和位移区外', (tester) async {
     await pumpHome(tester);
     final feed = find.byKey(const Key('home_feed'));
     expect(
       tester.widget<CustomScrollView>(feed).clipBehavior,
-      Clip.none,
-      reason: '顶栏被反向位移画到视口外，视口不能再裁；裁剪交给 TabSwipeArea',
+      Clip.hardEdge,
+      reason: '视口只包含内容，可以正常裁剪',
     );
     expect(
-      tester.widget<TabSwipeArea>(find.byType(TabSwipeArea)).isolateChild,
-      isFalse,
-      reason: '位移层套了重绘边界，钉住的顶栏会被栅格裁掉',
+      find.ancestor(
+        of: find.byType(HomeMasthead),
+        matching: find.byType(TabSwipeArea),
+      ),
+      findsNothing,
+    );
+    expect(
+      find.ancestor(
+        of: find.byKey(const ValueKey('home_category_0')),
+        matching: find.byType(TabSwipeArea),
+      ),
+      findsNothing,
     );
 
     final gesture = await tester.startGesture(tester.getCenter(feed));
@@ -166,33 +162,32 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('搜索行还在屏幕上时切分类：位置一点不动', (tester) async {
+  testWidgets('顶栏还在屏幕上时切分类：位置一点不动', (tester) async {
     await pumpHome(tester);
     final position = positionOf(tester);
     expect(position.pixels, 0);
 
     await swipeTab(tester, -260);
 
-    // 换内容，但视口原地不动，搜索行仍然在。
+    // 换内容，但视口原地不动，顶栏仍然在。
     expect(position.pixels, 0);
-    expect(tester.getRect(find.byType(HomeHero)).top, greaterThanOrEqualTo(0));
+    expect(tester.getRect(find.byType(HomeMasthead)).top, greaterThanOrEqualTo(0));
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('已经滚过搜索行时切分类：内容区回到第一行，搜索行不被带回来', (tester) async {
+  testWidgets('滚动内容后切分类：内容回到首行，顶栏保持固定', (tester) async {
     await pumpHome(tester);
     final position = positionOf(tester);
-    final pin = heroHeight(tester);
+    final hero = tester.getRect(find.byType(HomeMasthead));
 
     await scrollDown(tester, -600);
-    expect(position.pixels, greaterThan(pin));
+    expect(position.pixels, greaterThan(0));
+    expect(tester.getRect(find.byType(HomeMasthead)), hero);
 
     await swipeTab(tester, -260);
 
-    // 内容区回到分类条下方第一行 = 搜索行刚好滚出（pixels == 搜索行高度），
-    // 而不是被拉回顶部（那会是 0，搜索行重新出现，也就是「整页重载」的感觉）。
-    expect(pin, greaterThan(0));
-    expect(position.pixels, pin);
+    expect(position.pixels, 0);
+    expect(tester.getRect(find.byType(HomeMasthead)), hero);
     expect(tester.takeException(), isNull);
   });
 

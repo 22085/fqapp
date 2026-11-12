@@ -2,8 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:fqapp/services/network_proxy_preferences.dart';
 import 'package:fqapp/services/backend_service.dart';
 import 'package:fqapp/services/backend_transport.dart';
 
@@ -36,6 +39,7 @@ void main() {
   }
 
   setUp(() async {
+    SharedPreferences.setMockInitialValues({});
     directory = await Directory.systemTemp.createTemp('fqapp_backend_test_');
   });
 
@@ -50,81 +54,91 @@ void main() {
     }
   });
 
-  test('concurrent starts run one initialization and share the result', () async {
-    final transport = _FakeRustTransport();
-    final backend = createBackend(transport: transport);
+  test(
+    'concurrent starts run one initialization and share the result',
+    () async {
+      final transport = _FakeRustTransport();
+      final backend = createBackend(transport: transport);
 
-    final first = backend.start();
-    final second = backend.start();
-    expect(identical(first, second), isTrue);
-    await Future.wait([first, second]);
+      final first = backend.start();
+      final second = backend.start();
+      expect(identical(first, second), isTrue);
+      await Future.wait([first, second]);
 
-    expect(transport.initCalls, 1);
-    expect(backend.isRunning, isTrue);
-    await backend.stop();
-    expect(transport.stopCalls, 1);
-    expect(backend.isRunning, isFalse);
-  });
+      expect(transport.initCalls, 1);
+      expect(backend.isRunning, isTrue);
+      await backend.stop();
+      expect(transport.stopCalls, 1);
+      expect(backend.isRunning, isFalse);
+    },
+  );
 
-  test('a failed core initialization surfaces and leaves nothing running', () async {
-    final transport = _FakeRustTransport(initResult: 'failed: listen busy');
-    final backend = createBackend(transport: transport);
+  test(
+    'a failed core initialization surfaces and leaves nothing running',
+    () async {
+      final transport = _FakeRustTransport(initResult: 'failed: listen busy');
+      final backend = createBackend(transport: transport);
 
-    await expectLater(backend.start(), throwsStateError);
-    expect(backend.isRunning, isFalse);
-    // A failed start performs its own cleanup so a retry is not blocked.
-    transport.initResult = 'running';
-    await backend.start();
-    expect(backend.isRunning, isTrue);
-    expect(transport.initCalls, 2);
-    await backend.stop();
-  });
+      await expectLater(backend.start(), throwsStateError);
+      expect(backend.isRunning, isFalse);
+      // A failed start performs its own cleanup so a retry is not blocked.
+      transport.initResult = 'running';
+      await backend.start();
+      expect(backend.isRunning, isTrue);
+      expect(transport.initCalls, 2);
+      await backend.stop();
+    },
+  );
 
   test('startup times out when the health endpoint never turns 200', () async {
-    final transport = _FakeRustTransport(healthy: false);
-    final backend = createBackend(
-      transport: transport,
-      timeout: const Duration(milliseconds: 200),
-    );
-
-    await expectLater(
-      backend.start().timeout(const Duration(seconds: 3)),
-      throwsStateError,
-    );
-    expect(backend.isRunning, isFalse);
-    expect(transport.healthChecks, greaterThan(0));
+    await _withControlledTimers((clock) async {
+      final transport = _FakeRustTransport(healthy: false);
+      final backend = createBackend(
+        transport: transport,
+        timeout: const Duration(seconds: 30),
+      );
+      final failure = expectLater(backend.start(), throwsStateError);
+      await transport.healthEntered.future;
+      clock.elapse(const Duration(seconds: 30));
+      await failure;
+      expect(backend.isRunning, isFalse);
+      expect(transport.healthChecks, greaterThan(0));
+    });
   });
 
-  test('a hung core initialization fails by the startup timeout and retries',
-      () async {
-    final transport = _FakeRustTransport(blockInit: true);
-    final backend = createBackend(
-      transport: transport,
-      timeout: const Duration(milliseconds: 200),
-    );
+  test(
+    'a hung core initialization fails by the startup timeout and retries',
+    () async {
+      await _withControlledTimers((clock) async {
+        final transport = _FakeRustTransport(blockInit: true);
+        final backend = createBackend(
+          transport: transport,
+          timeout: const Duration(seconds: 30),
+        );
+        final failure = expectLater(
+          backend.start(),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message.toString(),
+              'message',
+              contains('timeout'),
+            ),
+          ),
+        );
+        await transport.initEntered.future;
+        clock.elapse(const Duration(seconds: 30));
+        await failure;
+        expect(backend.isRunning, isFalse);
+        expect(transport.initCalls, 1);
 
-    // rustTransport.start() itself has no deadline of its own: a native init
-    // that never returns must still fail the launch instead of spinning.
-    await expectLater(
-      backend.start().timeout(const Duration(seconds: 3)),
-      throwsA(
-        isA<StateError>().having(
-          (error) => error.message.toString(),
-          'message',
-          contains('timeout'),
-        ),
-      ),
-    );
-    expect(backend.isRunning, isFalse);
-    expect(transport.initCalls, 1);
-
-    // The timed-out attempt must not wedge startup: the next one can succeed.
-    transport.allowInit.complete();
-    await backend.start();
-    expect(backend.isRunning, isTrue);
-    expect(transport.initCalls, 2);
-    await backend.stop();
-  });
+        transport.allowInit.complete();
+        await backend.start();
+        expect(backend.isRunning, isTrue);
+        expect(transport.initCalls, 2);
+        await backend.stop();
+      });
+    },
+  );
 
   test('stop during deployment waits and shuts the core down', () async {
     final assets = _BackendAssets(blockFirstLoad: true);
@@ -170,31 +184,40 @@ void main() {
     expect(backend.isRunning, isFalse);
   });
 
-  test('deploys nested runtime assets and keeps the registered device pool',
-      () async {
-    final transport = _FakeRustTransport();
-    final backend = createBackend(transport: transport);
-    await backend.start();
+  test(
+    'refreshes nested filters and preserves the device pool and retired files',
+    () async {
+      final transport = _FakeRustTransport();
+      final backend = createBackend(transport: transport);
+      await backend.start();
 
-    for (final path in _BackendAssets.runtimeAssets) {
-      final file = File(
-        '${directory.path}/backend/${path.substring('assets/'.length)}',
-      );
-      expect(await file.readAsString(), '{}', reason: path);
-    }
+      for (final path in _BackendAssets.runtimeAssets) {
+        final file = File(
+          '${directory.path}/backend/${path.substring('assets/'.length)}',
+        );
+        expect(await file.readAsString(), '{}', reason: path);
+      }
 
-    // The pool holds real device credentials: a restart must not overwrite it.
-    final pool = File('${directory.path}/backend/config/device_pool.json');
-    await pool.writeAsString('registered-device');
-    final pluginPage = File('${directory.path}/backend/plugins/player.html');
-    await pluginPage.writeAsString('old plugin page');
-    await backend.stop();
+      final pluginPage = File('${directory.path}/backend/plugins/player.html');
+      expect(await pluginPage.exists(), isFalse);
+      final filter = File('${directory.path}/backend/filters/nested/book.js');
+      await filter.writeAsString('outdated filter');
 
-    await backend.start();
-    expect(await pool.readAsString(), 'registered-device');
-    expect(await pluginPage.readAsString(), '{}');
-    await backend.stop();
-  });
+      // Retired files from an old installation are neither deployed nor deleted.
+      await pluginPage.parent.create(recursive: true);
+      await pluginPage.writeAsString('old plugin page');
+      // The pool holds real device credentials: a restart must not overwrite it.
+      final pool = File('${directory.path}/backend/config/device_pool.json');
+      await pool.writeAsString('registered-device');
+      await backend.stop();
+
+      await backend.start();
+      expect(await pool.readAsString(), 'registered-device');
+      expect(await filter.readAsString(), '{}');
+      expect(await pluginPage.readAsString(), 'old plugin page');
+      await backend.stop();
+    },
+  );
 
   test('the core is initialized with the deployed runtime paths', () async {
     final transport = _FakeRustTransport();
@@ -219,6 +242,36 @@ void main() {
     await backend.stop();
   });
 
+  test(
+    'startup and restart apply the platform routing policy without losing config',
+    () async {
+      final backend = createBackend();
+      await backend.start();
+      final file = File('${directory.path}/backend/config/config.json');
+      Map<String, dynamic> deployed() =>
+          jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+      expect(deployed()['network_proxy'], {'enabled': false, 'url': ''});
+      await NetworkProxyPreferences.instance.save(
+        const NetworkProxyConfig(enabled: true, url: 'http://127.0.0.1:7890'),
+      );
+      await backend.restartForConfiguration();
+      if (Platform.isWindows) {
+        expect(deployed()['network_proxy'], {
+          'enabled': true,
+          'url': 'http://127.0.0.1:7890',
+        });
+      } else {
+        // The proxy setting belongs to the Windows client. Other hosts keep
+        // ignoring even a saved value, rather than activating a mobile feature.
+        expect(deployed()['network_proxy'], {'enabled': false, 'url': ''});
+      }
+      expect(deployed()['port'], 18921);
+      await NetworkProxyPreferences.instance.save(const NetworkProxyConfig());
+      await backend.restartForConfiguration();
+      expect(deployed()['network_proxy'], {'enabled': false, 'url': ''});
+    },
+  );
+
   test('a config.json without a usable port leaves the core default', () async {
     final transport = _FakeRustTransport();
     final assets = _BackendAssets(configPort: null);
@@ -228,6 +281,19 @@ void main() {
     expect(transport.listenPort, isNull);
     await backend.stop();
   });
+}
+
+/// Advance deadlines only after the intended stage is reached. Real file I/O
+/// and its microtasks stay in the real zone, so disk speed cannot win the timer.
+Future<void> _withControlledTimers(Future<void> Function(FakeAsync) body) {
+  final clock = FakeAsync();
+  return runZoned(
+    () => body(clock),
+    zoneSpecification: ZoneSpecification(
+      createTimer: (self, parent, zone, duration, callback) =>
+          clock.run((_) => Timer(duration, zone.bindCallbackGuarded(callback))),
+    ),
+  );
 }
 
 /// A [RustBackendTransport] with the FFI calls replaced by counters, so the
@@ -243,6 +309,7 @@ class _FakeRustTransport extends RustBackendTransport {
   String initResult;
   bool healthy;
   final bool blockStop;
+
   /// Whether [start] holds until [allowInit] completes, standing in for a
   /// native init that hangs.
   final bool blockInit;
@@ -257,6 +324,8 @@ class _FakeRustTransport extends RustBackendTransport {
   int? listenPort;
   bool lanShare = false;
 
+  final initEntered = Completer<void>();
+  final healthEntered = Completer<void>();
   final stopEntered = Completer<void>();
   final allowStop = Completer<void>();
   final allowInit = Completer<void>();
@@ -274,6 +343,7 @@ class _FakeRustTransport extends RustBackendTransport {
     bool lanShare = false,
   }) async {
     initCalls += 1;
+    if (!initEntered.isCompleted) initEntered.complete();
     this.configPath = configPath;
     this.poolPath = poolPath;
     this.filterPath = filterPath;
@@ -306,6 +376,7 @@ class _FakeRustTransport extends RustBackendTransport {
   }) async {
     if (url.path == '/health') {
       healthChecks += 1;
+      if (!healthEntered.isCompleted) healthEntered.complete();
       if (!healthy) throw const SocketException('backend down');
       return BackendResponse(200, Uint8List(0), 'application/json');
     }
@@ -317,13 +388,14 @@ class _BackendAssets extends CachingAssetBundle {
   _BackendAssets({this.blockFirstLoad = false, this.configPort = 18921});
 
   final bool blockFirstLoad;
+
   /// Port written into the deployed `config.json`; null omits the key.
   final int? configPort;
   final loadEntered = Completer<void>();
   final allowLoad = Completer<void>();
   static const runtimeAssets = [
     'assets/filters/book.js',
-    'assets/plugins/player.html',
+    'assets/filters/nested/book.js',
   ];
 
   @override
