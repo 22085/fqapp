@@ -61,8 +61,10 @@ env:
   # Certificate the release APK must carry. The built APK is compared against
   # this, so a package signed with the wrong key -- or not signed at all --
   # fails here instead of being published. The matching keystore is stored
-  # as a repository secret.
-  RELEASE_SIGNER_SHA256: 'e8471cd8a935fd71fd8197355b5558d245449d5bc8294f60f88616f60451c550'
+  # as a repository secret. FORK PIN (rename-hide only): this is the fqapp
+  # fork keystore certificate, NOT the upstream release certificate; do not
+  # merge this change into master/upstream.
+  RELEASE_SIGNER_SHA256: '0af92385814b289c111f72096ee193364b6388e23d1e4dfec2586196e4283e93'
   FQAPP_USE_MAVEN_MIRRORS: 'false'
   # workers.max / CMAKE_BUILD_PARALLEL_LEVEL stay at 2. Raising them to 4 was
   # measured and made things WORSE on the 4-vCPU / 16 GB runner: the release APK
@@ -73,7 +75,10 @@ env:
   # kotlin.incremental is forced back on: gradle.properties disables it to dodge
   # a Windows file-locking bug ("Could not close incremental caches"), and CI is
   # Linux-only. A system property overrides the gradle.properties entry.
-  GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx1536m -XX:MaxMetaspaceSize=768m -XX:ReservedCodeCacheSize=256m" -Dorg.gradle.workers.max=2 -Dorg.gradle.daemon=false -Dkotlin.incremental=true'
+  # 注意：-Dorg.gradle.jvmargs 系统属性会覆盖 android/gradle.properties 里的同名项，
+  # 0290764 只改 gradle.properties 抬到 8G 没生效，实际一直是 1.5G，R8 在
+  # :app:minifyReleaseWithR8 直接 OutOfMemoryError。这里必须同样给足。
+  GRADLE_OPTS: '-Dorg.gradle.jvmargs="-Xmx8g -XX:MaxMetaspaceSize=2g -XX:ReservedCodeCacheSize=512m" -Dorg.gradle.workers.max=2 -Dorg.gradle.daemon=false -Dkotlin.incremental=true'
   CMAKE_BUILD_PARALLEL_LEVEL: '2'
   CARGO_BUILD_JOBS: '2'
   CARGO_TERM_COLOR: always
@@ -81,7 +86,7 @@ env:
 jobs:
   apk:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     defaults:
       run:
         shell: bash
