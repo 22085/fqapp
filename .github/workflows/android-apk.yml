@@ -54,7 +54,6 @@ concurrency:
 env:
   # pubspec.lock 与所有构建平台使用同一 Flutter 工具链，避免解析结果漂移。
   FLUTTER_VERSION: '3.50.0'
-  FQAPP_APPLICATION_ID: ${{ github.repository == 'Ethan13322836698/fqapp' && 'com.ethan.fqapp' || 'com.fqapp.fqapp' }}
   # Pinned flutter_rust_bridge toolchain. The Rust crate, the generated bindings
   # and the codegen binary must all be the same version.
   FRB_VERSION: '2.13.0'
@@ -65,7 +64,7 @@ env:
   # this, so a package signed with the wrong key -- or not signed at all --
   # fails here instead of being published. The matching keystore is stored
   # as a repository secret.
-  RELEASE_SIGNER_SHA256: ${{ github.repository == 'Ethan13322836698/fqapp' && vars.FORK_RELEASE_SIGNER_SHA256 || 'e8471cd8a935fd71fd8197355b5558d245449d5bc8294f60f88616f60451c550' }}
+  RELEASE_SIGNER_SHA256: 'e8471cd8a935fd71fd8197355b5558d245449d5bc8294f60f88616f60451c550'
   FQAPP_USE_MAVEN_MIRRORS: 'false'
   # workers.max / CMAKE_BUILD_PARALLEL_LEVEL stay at 2. Raising them to 4 was
   # measured and made things WORSE on the 4-vCPU / 16 GB runner: the release APK
@@ -356,25 +355,16 @@ jobs:
       - name: Restore the release signing identity
         id: signing
         env:
-          FORK_SIGNER_SHA256: ${{ vars.FORK_RELEASE_SIGNER_SHA256 }}
           KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
-          if [[ "$GITHUB_REPOSITORY" == 'Ethan13322836698/fqapp' && "$GITHUB_EVENT_NAME" != 'pull_request' && -z "${FORK_SIGNER_SHA256:-}" ]]; then
-            echo '::error::Run scripts/setup_fork_signing.ps1 once to configure the fork signing identity.'
-            exit 1
-          fi
           missing=()
           for name in KEYSTORE_BASE64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
             [[ -n "${!name}" ]] || missing+=("$name")
           done
           if [ "${#missing[@]}" -gt 0 ]; then
-            if [[ "$GITHUB_REPOSITORY" == 'Ethan13322836698/fqapp' && "$GITHUB_EVENT_NAME" != 'pull_request' ]]; then
-              echo '::error::Fork signing secrets are missing; run scripts/setup_fork_signing.ps1.'
-              exit 1
-            fi
             printf '::warning::No release signing secrets (%s); building an UNSIGNED package. It installs for inspection only and cannot be upgraded onto a signed build.\n' \
               "$(IFS=,; printf '%s' "${missing[*]}")"
             printf 'has_release_signing=false\n' >> "$GITHUB_OUTPUT"
@@ -472,11 +462,6 @@ jobs:
           # Each split APK is verified with its own ABI, into its own report
           # directory, so the two reports never overwrite each other.
           for abi in arm64-v8a armeabi-v7a; do
-            actual_package="$("$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/aapt" dump badging "build/app/outputs/flutter-apk/app-$abi-release.apk" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
-            if [[ "$actual_package" != "$FQAPP_APPLICATION_ID" ]]; then
-              echo "::error::Unexpected APK package: $actual_package (expected $FQAPP_APPLICATION_ID)"
-              exit 1
-            fi
             python3 scripts/verify_android_apk.py \
               --apk "build/app/outputs/flutter-apk/app-$abi-release.apk" \
               --abi "$abi" \

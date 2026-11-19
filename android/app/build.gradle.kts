@@ -39,9 +39,6 @@ val hasReleaseSigning = listOf(
     releaseKeyPassword,
 ).all { it != null }
 
-val appId = System.getenv("FQAPP_APPLICATION_ID")?.takeIf { it.isNotBlank() }
-    ?: "com.fqapp.fqapp"
-
 android {
     namespace = "com.fqapp.fqapp"
     compileSdk = flutter.compileSdkVersion
@@ -63,8 +60,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = appId
-        manifestPlaceholders["appLabel"] = if (appId == "com.fqapp.fqapp") "什锦铺" else "什锦铺 Ethan"
+        applicationId = "com.fqapp.fqapp"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
