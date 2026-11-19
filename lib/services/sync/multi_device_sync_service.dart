@@ -1,12 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:isolate';
+
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:hive_ce/hive.dart';
+
 import '../../models/library_backup.dart';
 import '../encrypted_hive.dart';
 import '../library_backup_service.dart';
@@ -15,6 +18,7 @@ import '../shelf_store.dart';
 import '../webdav_client.dart';
 import '../legacy_webdav_config_store.dart';
 import 'sync_document.dart';
+import 'sync_capture_work.dart';
 import 'sync_snapshot.dart';
 import 'sync_transport.dart';
 import 'cloud_sync_transport.dart';
@@ -344,7 +348,7 @@ class MultiDeviceSyncService extends ChangeNotifier
     status = enabled ? '等待同步' : '未启用多端同步';
   }
 
-  String _encodePreparedProfile(
+  static String _encodePreparedProfile(
     _PreparedProfile prepared, {
     required bool includeUpstream,
   }) => jsonEncode({
@@ -360,19 +364,21 @@ class MultiDeviceSyncService extends ChangeNotifier
 
   Map<String, dynamic>? _pendingRecovery;
   Future<void> _persist({Map<String, dynamic>? pending}) async {
-    await _box!.put(
-      _profile,
-      _encodePreparedProfile((
-        actor: _actor,
-        document: _document,
-        baseline: _baseline,
-        sequence: _sequence,
-        published: _published,
-        lastSuccess: lastSuccess,
-        upstreamEstablished: _upstreamEstablished,
-        pending: pending,
-      ), includeUpstream: _config['provider'] == 'webdav'),
+    final prepared = (
+      actor: _actor,
+      document: _document,
+      baseline: _baseline,
+      sequence: _sequence,
+      published: _published,
+      lastSuccess: lastSuccess,
+      upstreamEstablished: _upstreamEstablished,
+      pending: pending,
     );
+    final includeUpstream = _config['provider'] == 'webdav';
+    final encoded = await Isolate.run(
+      () => _encodePreparedProfile(prepared, includeUpstream: includeUpstream),
+    );
+    await _box!.put(_profile, encoded);
     await _box!.flush();
     _journalDirty = false;
   }
@@ -563,25 +569,29 @@ class MultiDeviceSyncService extends ChangeNotifier
     );
   }
 
+  late final _captureWork = CoalescedSyncWork(
+    enqueue: (action) => _serial(action),
+    run: () async {
+      if (!enabled || !ready || _stopping) return;
+      try {
+        if (await _capture()) _schedule();
+      } catch (_) {
+        status = '本地同步日志写入失败，记录仍保存在本机';
+        _schedule();
+        notifyListeners();
+      }
+    },
+  );
+
   void _changed() {
     if (!enabled || !ready || _stopping) return;
-    unawaited(
-      _serial(() async {
-        try {
-          if (await _capture()) _schedule();
-        } catch (_) {
-          status = '本地同步日志写入失败，记录仍保存在本机';
-          _schedule();
-          notifyListeners();
-        }
-      }),
-    );
+    _captureWork.request();
   }
 
   void _schedule() {
     if (_timer?.isActive ?? false) return;
-    // Persist every change immediately; coalesce network writes to avoid quota
-    // exhaustion while a player updates its position every few seconds.
+    // Local scans coalesce independently; throttle network writes while a
+    // player updates its position every few seconds.
     final elapsed = DateTime.now().difference(_lastAttempt ?? DateTime(2000));
     final wait = elapsed.inSeconds >= 30 ? 2 : 30 - elapsed.inSeconds;
     _timer = Timer(Duration(seconds: wait), () => unawaited(sync()));
@@ -606,9 +616,10 @@ class MultiDeviceSyncService extends ChangeNotifier
     );
   }
 
-  Future<SyncSnapshot> _current() async => SyncSnapshot.fromBackup(
-    await LibraryBackupService().capture(includeAi: false),
-  );
+  Future<SyncSnapshot> _current() async {
+    final backup = await LibraryBackupService().capture(includeAi: false);
+    return Isolate.run(() => SyncSnapshot.fromBackup(backup));
+  }
 
   static WebDavConfig _upstreamConfig(Map<String, String> config) =>
       WebDavConfig(
@@ -702,31 +713,13 @@ class MultiDeviceSyncService extends ChangeNotifier
   }
 
   Future<bool> _capture() async {
-    final current = await _current();
+    final backup = await LibraryBackupService().capture(includeAi: false);
     final pending = _pendingRecovery;
-    if (pending != null) {
-      final desired = Map<String, dynamic>.from(pending);
-      final keys = {..._baseline.values.keys, ...desired.keys};
-      for (final key in keys) {
-        if (syncJson(current.values[key]) == syncJson(desired[key])) {
-          if (desired[key] == null) {
-            _baseline.values.remove(key);
-          } else {
-            _baseline.values[key] = Map<String, dynamic>.from(
-              desired[key] as Map,
-            );
-          }
-        }
-      }
-      _pendingRecovery = null;
-    }
-    final keys = {...current.values.keys, ..._baseline.values.keys};
+    final captured = await prepareLocalSyncCapture(backup, _baseline, pending);
+    final current = captured.current;
     final firstCapture = _box!.get(_profile) == null;
-    var changed = false;
-    for (final key in keys) {
-      if (syncJson(current.values[key]) == syncJson(_baseline.values[key])) {
-        continue;
-      }
+    final changed = captured.changes.isNotEmpty;
+    for (final key in captured.changes.keys) {
       _document.change(
         key,
         current.values[key],
@@ -740,9 +733,9 @@ class MultiDeviceSyncService extends ChangeNotifier
                   .toInt()
             : DateTime.now().millisecondsSinceEpoch,
       );
-      changed = true;
     }
     _baseline = current;
+    _pendingRecovery = null;
     // Also persist recovery reconciliation when it produced no new operation.
     _journalDirty =
         _journalDirty ||
