@@ -11,6 +11,7 @@
 - [架构总览](#架构总览)
 - [项目结构](#项目结构)
 - [注释与公开依据](#注释与公开依据)
+- [代码格式](#代码格式)
 - [构建环境](#构建环境)
 - [构建 APK](#构建-apk)
 - [测试](#测试)
@@ -147,14 +148,30 @@ novel-sound/
 
 ---
 
+## 代码格式
+
+统一入口为 `scripts/format_all.ps1` / `scripts/format_all.sh`，首阶段覆盖 Dart、
+手写 Rust 与已有 JavaScript 脚本。首次运行 `npm ci --ignore-scripts` 安装锁定的
+Prettier；工具版本、排除范围、按改动格式化及 CI 策略见
+[脚本说明](scripts/README.md#统一代码格式)。
+
+```powershell
+.\scripts\format_all.ps1 -Since origin/master
+.\scripts\format_all.ps1 -Check -Since origin/master
+```
+
+Linux/macOS 对应 `bash scripts/format_all.sh --since origin/master`，加 `--check`
+只检查；省略改动范围则处理全部支持的源码。
+
 ## 构建环境
 
 ### 环境要求
 
 | 工具 | 版本 | 用途 |
 |---|---|---|
-| Flutter | 3.44.6 (stable) | 构建 App |
-| Dart SDK | 3.12+ | 随 Flutter |
+| Flutter | 3.50.0 (stable) | 构建 App |
+| Dart SDK | 3.14.0 | 随 Flutter |
+| Android 构建工具链 | Gradle 9.5.0 / AGP 9.3.3 / Kotlin 2.4.20 | 构建 APK |
 | Rust | stable (cargo/rustc) | 编译原生核心 `fqapi_core` |
 | flutter_rust_bridge | 2.13.0 | 生成 Flutter/Rust 绑定 |
 | Android SDK | 36 (platform) + Build-Tools | 编译 APK |
@@ -162,6 +179,10 @@ novel-sound/
 | Android NDK | 28.2.13676358 | 交叉编译 Rust ARM64 核心与 C 流式解密库 |
 | CMake | 3.22.1 | Android 构建自动编译 C 库 |
 | Visual Studio | 2022（「使用 C++ 的桌面开发」工作负载） | 仅构建 Windows 桌面端（可选） |
+
+> Flutter 3.50 已把 Material 与 Cupertino 拆到 `material_ui` / `cupertino_ui`。
+> 首方 Dart 源码统一导入这两个包；`package:flutter/material.dart` 和
+> `package:flutter/cupertino.dart` 已弃用，会让静态分析失败。
 
 > Windows 下构建注意：Kotlin 增量编译在部分环境会报 `Could not close incremental caches`，已在 `android/gradle.properties` 中关闭（`kotlin.incremental=false`）。
 
@@ -243,7 +264,7 @@ Rust 核心按 `arm64-v8a` 与 `armeabi-v7a` 两个 ABI 产出（`scripts/build_
 运行成功后，在该次运行的 **Artifacts** 中下载 `fqapp-arm64-运行编号`；其中包含
 `app-release.apk`、SHA-256、签名与 16 KiB 对齐报告、源码版本和工具版本，产物保留 14 天。
 
-[工作流](.github/workflows/android-apk.yml) 固定 Flutter `3.44.6`、Rust 工具链与
+[工作流](.github/workflows/android-apk.yml) 固定 Flutter `3.50.0`、Rust 工具链与
 flutter_rust_bridge `2.13.0`、JDK 17、NDK `28.2.13676358` 和 CMake `3.22.1`。
 Rust 核心与 C 解密库都会在 runner 上编译。CI 设置 `FQAPP_USE_MAVEN_MIRRORS=false`
 使用官方 Maven 源；本地构建默认仍使用国内镜像。
@@ -307,14 +328,13 @@ maven { url = uri("https://maven.aliyun.com/repository/public") }
 
 ### Gradle 发行版镜像
 
-若 `services.gradle.org` 下载慢，手动放入 `%USERPROFILE%\.gradle\wrapper\dists\gradle-9.1.0-all\<hash>\gradle-9.1.0-all.zip`（从腾讯云镜像 `https://mirrors.cloud.tencent.com/gradle/gradle-9.1.0-all.zip` 下载）。
+若 `services.gradle.org` 下载慢，手动放入 `%USERPROFILE%\.gradle\wrapper\dists\gradle-9.5.0-all\<hash>\gradle-9.5.0-all.zip`（从腾讯云镜像 `https://mirrors.cloud.tencent.com/gradle/gradle-9.5.0-all.zip` 下载）。
 
 ### 常见构建问题
 
 | 问题 | 解决 |
 |---|---|
 | `Could not close incremental caches` | 已在 `gradle.properties` 关闭 Kotlin 增量编译 |
-| 构建偶发 `IllegalStateException: The settings are not yet available for build` | Gradle 9.1.0 配置缓存推广处理器（`ConfigurationCachePromoHandler`）的偶发 bug，重跑即可恢复，无需修改配置（详见下方「已知问题与调试」） |
 | `Unable to locate Android SDK` | `flutter config --android-sdk C:\android-sdk` |
 | `Flutter requires Android SDK 36` | `sdkmanager "platforms;android-36"` |
 | maven.google.com 超时 | 已配置阿里云镜像 |
@@ -324,34 +344,35 @@ maven { url = uri("https://maven.aliyun.com/repository/public") }
 
 ## 测试
 
-### WebDAV 自动同步
+### 多端同步与旧 WebDAV 迁移
 
-「备份与导入 → WebDAV 同步」填写 HTTPS WebDAV 目录（缺失目录自动创建）、用户名与
-应用专用密码，保存后启用自动同步。各设备使用同一目录；应用在其中维护
-`fqapp-sync.json`。凭证保存在设备安全存储中，不进入备份或同步文件。
+「备份与导入 → WebDAV 同步」现在只提供安全迁移说明，再进入「多端同步」设置。
+旧版按云端覆盖本机的服务已移除，升级启动和迁移失败都不会恢复旧流程。
+原有地址和账号只读预填；重新连接 HTTPS WebDAV、选择目录并预览合并结果后，
+才能保存启用。预览后本机记录或云端版本变化时必须重新预览，取消或失败不覆盖本机进度。
 
-启动、返回应用和书架/进度变化后会同步，前台每两分钟也会检查云端；离线失败
-不影响本机阅读，后续自动重试。系统终止或挂起应用期间不保证执行同步。
-云端文件存在时，强制覆盖本机在线书架、阅读进度和已看剧集，包括移除本机独有的
-在线收藏、替换较新的本机进度。本机新增收藏和进度不会自动回写已有云端文件。
-删除已同步的收藏、历史或已看记录则会持久保存待同步删除，并通过条件写入传播到云端；
-离线失败或进程重启后继续重试。空白新设备不推断删除。已有云端文件消失时停止自动重建。只有云端
-文件不存在时，才使用本机快照建立初始备份；创建竞争失败则重新读取并以云端为准。
-AI 资产仍使用便携备份恢复的合并规则。
-本地 TXT/EPUB、缓存和外观设置不参与同步。云端文件含阅读数据，应使用私人目录。
+当前多端同步范围仅包含番茄收藏、阅读播放记录和已看剧集。各设备使用同一目录；
+WebDAV 维护公开备份 `fqapp-sync.json` 和条件写入合并日志
+`fqapp-webdav-state.json`。较新的进度按记录时间合并，包括主动回到前面章节后的新进度；
+本机独有收藏会参与合并。已观察的删除通过日志传播，空白新设备不推断删除。
+原 WebDAV 文件中的书旗、分组和 AI 数据会保留，不参与多端同步，也不会自动恢复到本机。
+本地 TXT/EPUB、正文、视频、缓存、外观和登录凭据不参与同步。
 
-同步应用阶段只修改仍与请求前快照一致的书架、历史和已看记录；期间的本机删除
-保留并在同一轮的下一次条件写入中补传。历史删除与已看删除分别按各自身份处理，
-删除同 ID 的小说历史不会连带删除视频已看记录。切换配置会等待旧任务退出后
-立即启用新目标，每个异步应用边界重新检查配置代次。
+成功启用后，启动、返回应用、收藏和进度变化会触发同步；前台 WebDAV 每两分钟检查，
+离线失败保留本机记录并重试，系统终止或挂起期间不保证执行。应用合并结果时重新核对
+本机快照，期间的本机编辑继续参与后续合并。已有 WebDAV 公开文件或合并日志消失时停止
+自动重建。服务器需支持强 ETag 和 `If-Match` / `If-None-Match` 条件写入；并发冲突重新
+读取后合并。重定向不携带认证信息自动跟随，HTTP 明文 WebDAV 不受支持。
+同步内容仍经过便携备份的字段白名单和大小校验。
 
-当前小说与视频/漫剧仍沿用旧版裸 ID 存储。云端若同时包含会映射到同一个本机键的
-不同类型历史，同步会在任何远程删除或本机覆盖前明确拒绝，保留双方原数据；
-不将“安全拒绝”称为已支持跨类型同 ID 恢复，也不在本 PR 扩大迁移历史/统计契约。
+FTP/FTPS 和 SMB 当前在 Android 提供。FTP/FTPS 的服务器根目录不能用作同步目录，
+SMB 必须选择共享内的子目录；地址本身已包含有效子目录时可直接选择。
+WebDAV 可选择当前根目录，云盘需选择或创建实际子目录。凭证只保存在设备安全存储中，
+云端文件含阅读数据，应使用私人目录。
 
-服务器需支持强 ETag 和 `If-Match` / `If-None-Match` 条件写入；并发冲突会重新
-读取并以云端为准，最多尝试三次。重定向不会携带认证信息自动跟随，请填写最终目录。
-HTTP 明文连接不受支持。同步格式验证和大小限制沿用便携备份的字段白名单。
+便携备份允许未知收藏时间 `addedAt: 0`；本机旧收藏的缺失或损坏时间统一规范化为 epoch 0，
+读书架和比较同步快照使用同一结果。外部备份的负数、越界或错误类型时间仍严格拒绝。
+阅读设置中正文「字号」只改变正文，独立「标题字号」保持原值并单独保存。
 
 ```bash
 flutter test --no-pub test/webdav_sync_test.dart test/webdav_sync_page_test.dart
@@ -421,13 +442,12 @@ $serial = '127.0.0.1:16384' # 仅为已验证示例，必须按本次 info 输�
 
 官方参考：[ADB 连接说明](https://mumu.163.com/help/20240807/40912_1073151.html)、[MuMuManager 命令行说明](https://mumu.163.com/help/20240726/35047_1170006.html)。
 
-**本地 Flutter 工具链一致性**：`pubspec.lock` 与 CI（`FLUTTER_VERSION: '3.47.9'`）已升到 3.47.9，`.dart_tool/package_config.json` 也指向 `E:\ctf-aaa\.toolchains\flutter-3.47.9`；PATH 上的 `C:\Users\ch6vip\flutter\bin` 仍是 3.44.6 / Dart 3.12.2。混用会让 `flutter test` 报 `petitparser` 语言版本 3.13 过高及 `ui.HitTest*` 类型缺失；切到 3.47.9 后若出现 `Invalid kernel binary format version (expected 138, found 130)`，是 `.dart_tool/hooks_runner` 里旧 SDK 编译的 `hook.dill`，删除该生成目录即可，不必改动源码。
+**本地 Flutter 工具链一致性**：`pubspec.lock` 与 CI 使用 Flutter 3.50.0 / Dart 3.14.0；`pubspec.yaml` 保留 Dart 3.12.2 的兼容下限，使升级工具链不会顺带提高包语言版本。PATH 上的 `C:\Users\ch6vip\flutter\bin` 使用同一 Flutter 版本。切换 SDK 后若出现 kernel 版本冲突，删除 `.dart_tool/hooks_runner` 中旧 SDK 生成的缓存即可，不必修改源码。
 
 会话级临时指定（不修改全局 PATH）：
 
 ```powershell
-$env:PATH = 'E:\ctf-aaa\.toolchains\flutter-3.47.9\flutter\bin;' + $env:PATH
-Remove-Item -Recurse -Force .dart_tool\hooks_runner  # 仅在出现 kernel 版本冲突时
+flutter --version
 flutter analyze --no-pub
 bash scripts/test_quick.sh home
 ```
@@ -516,9 +536,19 @@ MuMu 实例 `0` / Android 12 / `127.0.0.1:16385` 已在公共修复包 `a9e68a0d
 
 ### 分层跑测试
 
+#### 经典阅读器：书旗自动缓存与来源契约（PR #348）
+
+书旗正文阅读与全文搜索保留自动加密章节缓存，缓存键使用 `shuqi:<原始数字 ID>`，与番茄相同数字 ID 隔离。这是对下文 #270「不写章节缓存」历史行为的有意调整。#377 起本机历史也使用相同作用域，保存章节和章内文本位置；目录主动选章按所选章节打开，详情「继续阅读」、书架、浏览历史及首页续读恢复上次位置。历史以 `source=shuqi`、原始数字 `contentId` 关联书架，运行时 `id/bookId` 保留 `shuqi:` 前缀。书旗仍不写阅读时长，也不开放番茄的评论、音视频、手动下载和分享入口。`ReaderPage.localOnly` 表示禁用这些番茄在线能力，不再代表禁止全部磁盘缓存，来源必须独立判断。本地 TXT/EPUB 导入书仍读本地文件，不进入远程章节缓存。
+
+缓存管理必须保留来源：书旗缓存可查看、删除和重开；重开使用 `source=shuqi` 和原始数字书架 ID，缺章及导出只允许使用书旗加载器，禁止把 `shuqi:` ID 交给番茄目录、正文、详情、作者或链接分享。已有目录结构不增加新身份格式；书架仍遵守 #270 的 `ShelfIdentity` 规则。自动缓存沿用既有容量、淘汰与加密策略，缓存缺失不伪装为已有完整下载。
+
+便携备份中的书旗进度使用原始数字 `id/bookId` 与 `source=shuqi`，恢复时重建运行时作用域。含书旗历史时备份格式为 v3（AI 分段可选），旧客户端会在写入前拒绝此格式，避免把书旗进度误当番茄进度；纯番茄历史继续使用原有 v1/v2。历史去重、删除和现有同步合并均按来源、类型及内容 ID 区分，不新增上游写入能力。
+
+全文搜索在显示文本上逐章串行扫描；已有缓存跳过网络，未缓存请求至少间隔 300ms，可停止或改词取消后续工作。摘要上限仅限制展示，不截断扫描或总匹配统计。经典 AI 入口按有效章节视图显示；档案 AI 策略另行处理。书籍面板保留下滑、遮罩和系统返回关闭，不另设可见关闭按钮。
+
 #### 2026-11-10 书旗书架来源修复（#270）
 
-基于主线 `16ee87b` 独立处理，不包含 #304 的只读边界改动。书旗详情进入阅读器时传入 `ShuqiBook.toMediaItem()`，阅读菜单加入本机书架使用 `source=shuqi` 和原始数字 ID，不再把阅读会话 ID `shuqi:<id>` 当作番茄书籍。书旗仍不写阅读历史、阅读时长或章节缓存。
+基于主线 `16ee87b` 独立处理，不包含 #304 的只读边界改动。书旗详情进入阅读器时传入 `ShuqiBook.toMediaItem()`，阅读菜单加入本机书架使用 `source=shuqi` 和原始数字 ID，不再把阅读会话 ID `shuqi:<id>` 当作番茄书籍。当时书旗不写阅读历史、阅读时长或章节缓存；当前历史与缓存行为见上节 #348/#377，阅读时长边界保持不变。
 
 `ShelfStore` 初始化时只迁移符合旧阅读器输出形状的 `shelf_v1:book:shuqi:<数字 ID>` 记录：保留全部元数据及 `addedAt`，写入 `shelf_v1:shuqi/book:<数字 ID>` 并落盘后才删除旧键；已有有效目标记录不覆盖，无法确定身份的记录不改。旧错误键不符合分组标识校验，不能经现有分组入口产生有效归属；本次不扩大分组或备份协议的接受范围，也不保留双读别名。
 
@@ -749,6 +779,8 @@ App 通过 `ApiClient` 调用后端 **`/api/v1/*` 业务路由**（Rust 核心 `
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/v1/recommend/homepage?tab_type=&offset=&session_id=` | 首页分类推荐及游标分页 |
+| GET | `/api/v1/recommend/ugc-stories?offset=&session_id=` | 首页短篇专栏，使用官方 UGC 推荐流及响应游标 |
+| GET | `/api/v1/novels/{postId}` | 短篇可读状态、关联书籍与章节及截断信息；帖子 ID 与书籍 ID 分开使用 |
 | GET | `/api/v1/search?query=&tab_type=&offset=&count=10` | 搜索页按分类请求：综合 `1`、小说 `3`（上游标题书籍）、短剧/漫剧 `11`、漫画 `8`、听书 `2`，使用返回的游标；评分门槛仅筛选客户端已加载结果，不改变请求参数与游标 |
 | GET | `/api/v1/books/{id}/detail` | 按作品 ID 精确查询名称、封面和类型；详情不可用时使用同一路径的 `/directory` 中的 `book_info`。详情页的全部富元数据（分类/完结状态/字数/在读人数/评分/标签/作者等级/榜单）都取自这一份响应，不额外发请求 |
 | GET | `/api/v1/series/{id}` | 短剧／漫剧系列详情：标题、简介、集数、播放量、分类，以及**演员表**（`data.video_data.celebrities`，含 `nickname`/`role_name`/`avatar`）。也可经 `/api/v1/videos/{id}/detail` 访问。阅读类接口不含演员字段 |
@@ -769,7 +801,6 @@ App 通过 `ApiClient` 调用后端 **`/api/v1/*` 业务路由**（Rust 核心 `
 | GET | `/api/content?source=番茄&item_id=&tab=` | 正文（小说/漫画/听书/短剧分发） |
 | GET | `/api/content?source=番茄&item_id=&tab=短剧&mode=stream` | 短剧和漫剧视频流地址与内容密钥 |
 | GET | `/api/resolve?url=` | 分享链接解析 |
-| GET | `/api/download?source=番茄&book_id=` | 整本 TXT 下载 |
 | GET | `/health` | 健康检查（返回设备池数量） |
 
 **响应信封**：客户端接受 `code=200`（Web 桥接）或 `code=0`（上游兼容接口）的成功响应；
@@ -781,6 +812,7 @@ App 通过 `ApiClient` 调用后端 **`/api/v1/*` 业务路由**（Rust 核心 `
 再按条目实际 `kind` 筛选。综合保留全部作品；短剧、漫剧、漫画、听书分别只展示 `video`、`manju`、`manga`、`audio`。
 每个分类独立保存结果、错误和 `next_offset`，空页或重复页有前进游标时可继续加载，失败重试保留原偏移量。
 旧桥接的 `normalizeSearchTabs` 会将综合结果复制到空分类，且按页码换算偏移量，因此搜索页直接使用 v1 接口。
+首页听书推荐流不可用或耗尽时，同样使用 `tab_type=2` 的 v1 搜索，仅保留听书条目并沿用返回的 `next_offset`；首页“全部”降级来源的听书搜索也使用这一规则。兜底实际取到内容或可前进游标后继续分页，推荐流和搜索均失败时保留原内容并显示重试。
 
 **漫剧与漫画参数不同**：首页的漫剧为 `24`、看剧为 `8`、漫画为 `9`；搜索的视频为 `11`、漫画为 `8`、听书为 `2`。
 当前漫剧搜索复用视频 tab，漫剧详情和目录继续使用桥接参数 `tab=短剧`，目录对应 `/api/v1/manga/videos/{series_id}`。
@@ -820,10 +852,11 @@ App 通过 `ApiClient` 调用后端 **`/api/v1/*` 业务路由**（Rust 核心 `
 ## 页面说明
 
 ### 首页（`home_page.dart`）
-- 提供推荐、小说、短剧、漫剧、漫画和听书分类；搜索行与分类条固定在顶部，只有下方内容参与横滑切类、竖向滚动和下拉刷新
+- 提供推荐、小说、短剧、漫剧、漫画、听书和短篇分类；搜索行与分类条固定在顶部，只有下方内容参与横滑切类、竖向滚动和下拉刷新
 - 分类选中项使用浅背景与短下划线；各项预留选中字号的宽度，切换时不挤动相邻标签，墨水屏改用描边
 - 切分类只把内容区复位到顶部；横滑时预览相邻分类最近显示的内容，未访问的分类显示骨架，窗口宽度或字号变化后重新生成预览；首次进入后再切分类使用轻量加载态
 - 优先调用真实 `/api/v1/recommend/homepage`，推荐接口不可用时回退搜索结果
+- 短篇使用独立 UGC 推荐流，按响应的 `next_offset` / `session_id` 分页并按帖子 ID 去重；追加失败重试保留原游标，刷新失败保留已有内容并重试首屏。连续三页没有新增内容时停止自动追页，显示“继续加载短篇”；切走取消请求，已加载内容保留。点击先确认可读范围，截断内容明确提示试读及未返回字数，再进入现有的关联书籍详情或官方阅读；摘要与截断正文不写入标准章节缓存
 - 推荐页的漫剧与小说都取各自的专属推荐流（`tab_type=24` / `2`），短剧、漫画、听书取搜索结果；
   漫剧的推荐流没有翻页游标，后续页仍由漫剧搜索承接
 - 漫剧首屏使用专属推荐，后续按视频搜索的实际游标加载；筛选后空页或重复页仍可继续，来源耗尽后停止请求
@@ -892,6 +925,7 @@ App 通过 `ApiClient` 调用后端 **`/api/v1/*` 业务路由**（Rust 核心 `
 - 当前阅读页也显示本书的播放错误提示，包括未安装系统 TTS 引擎；全局浮窗隐藏不再吞掉这些错误。提示沿用会话级去重，页面被遮挡、离开或当前会话已切到别书时不借阅读页弹出
 - 阅读设置 → 更多设置 → 显示提供独立的“系统状态栏”和“底部导航栏”开关。底部导航栏默认关闭，保持旧版沉浸效果；开启后由 Android 显示当前系统导航方式的小白条或导航键，不切换系统导航模式。偏好经 `reader_show_system_navigation_bar` 保存，随阅读会话在恢复焦点时重应用；离开阅读或会话结束时仍还原进入前的系统栏状态（#258）
 - 从 #223 仅迁移非正文页隐藏播放/同步按钮、上游时间点优先高亮和后台起播异常返回失败；时间点的原文偏移经正文替换映射转换后再高亮。保留字幕兜底、双击跳读、高亮颜色/下划线与手动翻页不停播。#224 的别名复用、音色切换、阅读菜单内原地音色面板和重复打开保护沿用当前实现，不恢复旧胶囊或旧测试
+- 字幕与时间点的瞬态请求失败保留错误，由播放控制器有限重试；真人时间点缺少原著章节映射时回落到关联时间点，明确无轨道直接结束，换章或关闭会话取消旧请求。轨道与就绪状态同步发布，一集音频跨原著多章时按当前时间点更新章节映射，恢复数据不重新开启用户已关闭的跟随
 - “看”的关联查询与点击后的打开请求分别持有取消句柄；收起菜单、离开当前阅读路由、切章、进入后台或修改相关设置会使旧打开请求失效，旧请求的清理不会覆盖新请求。关联查询不因收起菜单丢失
 - 阅读菜单右侧的“看”入口通过 `/api/v1/books/{id}/video-match` 查询本书关联剧，后端按官方 V2 的 `VideoTimePointReqType.MatchMotionComic=2` 调用只读 `/reading/reader/video/timepoint/`。无关联、本地书或用户关闭展示时不显示；请求失败不打断正文，下次打开菜单可重试
 - “看”按钮使用官方 `g6h` 的 56dp 主题图；有效封面加载后可展开一次引导，墨水屏和系统减少动画模式不展开。设置 → 更多设置 → 改编剧可分别关闭入口和阅读章节同步；按真实 `NovelToVideoMap` 的剧/集 ID 定位，缺失映射则使用已有观看记录或首集，不伪造进度
@@ -979,6 +1013,29 @@ App 通过 `ApiClient` 调用后端 **`/api/v1/*` 业务路由**（Rust 核心 `
 （`catalog` 形态竖屏、feed 卡片、通用播放器）视频设置里保留一行入口（行尾当前档，
 点开同一个弹层）；分屏紧凑条已有当前档，不再重复给入口。
 
+取流响应的 `variants[].width` / `height` 是原始像素尺寸，
+`variants[].quality_height` 是画质短边，播放选档、下载上限与自动缓存共用后者。
+竖屏 `720×1280` 对应 `720P`，下载上限 `720` 会选择这一档。缺少短边元数据时
+保持画质未知；默认流的画质可在解码宽、高都已知后取短边，不能单凭像素高度推断。
+旧下载偏好一次迁到 `drama_download_max_quality_height`，成功写入后移除旧键；
+已有缓存与断点记录保留文件、原始高度和流身份，并优先从原档位名称恢复短边。
+
+后端短剧取址保留单一的 v5 播放门，以最终 gzip 字节同时生成签名和请求体；
+stream 与整集下载共用这一次模型解析。HTTP 401/403 仍按设备鉴权失败轮换，
+429/5xx 与传输错误在同设备上做有限退避；HTTP 200 空模型只报取流失败，
+不再替换或隔离设备。模型自己的列表会与同次请求可用的 `fallback_api`
+响应合并，清晰度短边与 `bytevc2` 拒绝门保持不变。规范化响应的
+`source_trace_id` 可关联 Rust 的 `stream trace` 与 Dart 的 `player-quality`
+日志；旧格式原始响应仍完整透传，诊断不记录播放地址或内容密钥。
+同一播放地址只展示一档，拒绝的别名不占用后续真实流的档位名称。
+
+2026-11-15 在 MuMu 6.8.8 / Android 12 / 实例 0 的实际上游路径中，横屏和竖屏
+样本均显示 1080P、720P、540P、480P、360P，Rust 与 Dart 同次请求记录的档位数一致。
+下载上限 720 的文件实际为横屏 1280×720、竖屏 720×1280，重开均从离线文件出首帧；
+旧偏好 1280 迁为 720，已有 68 个缓存文件逐文件哈希保持一致。实际 dispatcher 的
+本地响应对照确认已返回模型在取消后保留、成功 fallback 只请求一次，以及同 URL
+不同档位只保留一行。MuMu 使用 ARM 转译，这些结果不证明真机解码性能。
+
 **横屏「下一集」卡**（`video_player_chrome.dart` 的 `_nextEpisodeCard`）：
 
 - **16:9 为理想比例**；封面按「3 倍卡高」铺进去并上移一个卡高，窗口里只露出封面中间 **1/3**。
@@ -1011,6 +1068,7 @@ App 通过 `ApiClient` 调用后端 **`/api/v1/*` 业务路由**（Rust 核心 `
 - 顶部模式切换始终占据同一位置，暂无可用音色或切源期间禁用对应项；切源保持页面身份与当前作品的背景色相，不因音频书 ID 或暂时为空的附加信息重建整页。播放仍切换真实目标书和章节 ID，已知的真人／智能类型不依赖附加信息加载完成
 - 字幕、加载、错误重试和连播倒计时共用固定槽位，字幕与槽位随系统字号等比例增大，状态变化不推移进度与控制行；小屏可竖向滚动。当前句高亮并显示上下文，真人模式保留有时间轴时展开原著全文的入口
 - 边听边读入口在两种模式下保持位置；智能朗读打开字幕，真人讲书按时间轴打开原著对应章节，无字幕或原著映射时禁用并说明原因
+- 字幕和时间点的瞬态失败先有限重试三次；耗尽后只在实际播放中每 30 秒尝试恢复当前章，合法空轨与确定性错误结束重试。暂停、章末、换章、挂起或关闭取消恢复请求；成功同步更新原著章节映射，保留用户关闭的跟随，非空服务端字幕替换本地估算字幕
 - 操作行：语速 / 加入书架 / 下载 / 书评 / 更多
 - `-15s` 进度条 `+15s` 与 `时:分/总时长`；控制行：目录 / 上一章 / 播放暂停 / 下一章 / 定时
 - 两种模式通过同一紧凑声音行打开音色面板，保留多角色对话、智能音色与真人版本；同书切换音色保留播放位置，跨书版本沿用目标目录的章节匹配与历史恢复
@@ -1104,26 +1162,7 @@ curl http://127.0.0.1:18080/health
 ### 3. 设备池过期
 若 content/full 解密乱码，删除 `files/backend/config/device_pool.json` 重启 App 即可自动重注册。
 
-### 4. 构建偶发 `The settings are not yet available for build`
-
-**现象**：`flutter build` / `gradlew` 偶发报
-`IllegalStateException: The settings are not yet available for build`，
-但重跑即恢复（daemon 日志显示失败后紧接着的 daemon 几秒内成功）。
-
-**根因**（已定位到 Gradle 9.1.0 字节码）：调用链为
-`ConfigurationCachePromoHandler.beforeComplete()` →
-`runWithoutBuildDefinition()` → `ResolvedBuildLayout.isBuildDefinitionMissing()` →
-`DefaultGradle.getSettings()`。`getSettings()` 在 settings 尚未 attach 时直接抛异常；
-该处理器是 Gradle 9.1.0 新增的「配置缓存推广」功能（构建结束时打印
-`Consider enabling configuration cache`），在复合构建（`settings.gradle.kts` 中
-`includeBuild(flutter_tools)` + 子工程 `:gradle`）首次初始化的时序里偶发踩中此状态。
-
-**结论**：这是 Gradle 9.1.0 自身缺陷，非项目代码问题，且无法稳定复现。
-
-**处理**：无需修改代码/配置；偶发时重跑即可。若想彻底规避，可升级 Gradle
-补丁版本（9.1.x / 9.2，需先确认与 AGP 9.0.1 兼容）。
-
-> 注意：`Daemon compilation failed`（Kotlin 2.3.20，见
+> 注意：`Daemon compilation failed`（Kotlin 2.4.20，见
 > `android/.kotlin/errors/*.log`）是另一独立问题 —— Kotlin 编译守护进程崩溃，
 > 已通过 `gradle.properties` 的 `kotlin.incremental=false` 与
 > `kotlin.compiler.execution.strategy=in-process` 规避，勿因 AGP 9 弃用警告而删除这些配置。
@@ -1148,10 +1187,10 @@ curl http://127.0.0.1:18080/health
 - [ ] 16 KB 页 Android 设备上的加密播放与生命周期验证
 - [x] 漫画原生阅读页、章节目录、单图重试与进度恢复
 - [x] 听书前台播放、目录、倍速和进度恢复
-- [x] 小说章节下载/离线缓存
+- [x] 小说章节下载/离线缓存（最多预取 3 章正文，按目录顺序发布和写盘；复用可读缓存，在写盘前重查驱逐及阅读器刷新结果，停止后丢弃在途返回）
 - [x] 发现类入口：搜索联想词与热搜、作者主页、排行榜、书评回复、章节试读预览
 - [x] Release 签名配置与 R8 混淆
-- [x] 整本 TXT 导出（离线缓存页每行「导出 TXT」→ 系统「下载」；重取最新目录与每章正文，按后端 `/api/download` 同形组装。取文时可取消且不写文件；进入「正在保存文件」后等待系统回报成功或失败，期间不能取消或返回）
+- [x] 整本 TXT 导出（离线缓存页每行「导出 TXT」→ 系统「下载」；重取最新目录，复用所属来源的可读缓存，仅补取缺章，最多预取 3 章并按目录顺序组装。每章只保留一个首标题，段落换行归一化，丢弃仅由空白、零宽空格和 BOM 组成的段落，章节间保留一个空行；正文后续引用同名标题仍保留。缓存可读判断与导出正文使用同一规则，只有标题和不可见空白的缓存会补取正文。取文时可取消且不写文件；进入「正在保存文件」后等待系统回报成功或失败，期间不能取消或返回。旧 Web UI 的 `/api/download` 已删除）
 - [ ] **按职责整理 `lib/widgets/video_player_chrome.dart`**（实测 5004 行，其中
       `_VideoPlayerChromeState` 一个类占 4580 行（311–4890），`part` 只切出一份 22 行的横屏进度条）。
       拆的是**职责**不是行数：每一块都改成「传值 + 回调」的无状态 widget，留在同一个 State
@@ -1211,7 +1250,7 @@ WebDAV 配置与诊断由数据同步功能负责。
 第四批提供实验性 Arch 打包脚本与 Linux CI artifact，不提供正式 Release。
 构建溯源、安装/卸载、升级回退边界与依赖见 [LINUX.md](LINUX.md)。
 
-Arch 构建依赖：Flutter stable（本批验证 3.47.9 / Dart 3.13.7）、Rust stable
+Arch 构建依赖：Flutter stable（目标工具链 3.50.0 / Dart 3.14.0）、Rust stable
 及 x86_64-unknown-linux-gnu target、clang、cmake、ninja、pkgconf、gtk3、libsecret。
 运行需要 GTK3、libsecret、glibc（含 iconv）、xdg-user-dirs 和图形会话，
 以及已启动且已解锁的 Secret Service（如 GNOME Keyring）。不要用 sudo 运行应用。

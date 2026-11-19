@@ -97,6 +97,13 @@ impl Upstream {
         }
     }
 
+    pub async fn v5_playback(&self, base: &str, body: &[u8]) -> ApiResult<Vec<u8>> {
+        self.up
+            .v5_playback(base, body)
+            .await
+            .map_err(map_client_error)
+    }
+
     pub async fn raw_with_device(
         &self,
         spec: &UpstreamRequestSpec,
@@ -158,7 +165,7 @@ pub fn dragon_read_json_headers() -> Vec<(String, String)> {
     ]
 }
 
-pub fn phoenix_player_headers() -> Vec<(String, String)> {
+pub fn video_detail_headers() -> Vec<(String, String)> {
     vec![
         (
             "User-Agent".to_string(),
@@ -174,9 +181,9 @@ pub fn phoenix_player_headers() -> Vec<(String, String)> {
     ]
 }
 
-pub fn phoenix_player_url() -> String {
+pub fn video_detail_url() -> String {
     format!(
-        "{HOST_FQNOVELB}/novel/player/multi_video_model/v1/?iid={{install_id}}\
+        "{HOST_FQNOVELB}/novel/player/video_detail/v1/?iid={{install_id}}\
 &device_id={{device_id}}&ac=wifi&channel=update_64&aid=8662&app_name=novelread&version_code=71332&version_name=7.1.3.32&device_platform=android&os=android&ssmix=a&device_type=25053RT47C&device_brand=Redmi&language=zh&os_api=36&os_version=16&manifest_version_code=71332&resolution=1280*2772&dpi=520&update_version_code=71332&host_abi=arm64-v8a&dragon_device_type=phone&pv_player=71332&compliance_status=0&need_personal_recommend=1&player_so_load=1&is_android_pad_screen=0"
     )
 }

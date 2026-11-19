@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../../services/chapter_text_formatter.dart';
 import '../../services/reader_preferences.dart';
@@ -25,6 +25,8 @@ class ReaderLayoutSpec {
   final double horizontalPadding;
   final double verticalPadding;
   final double paragraphSpacing;
+  final bool firstLineIndent;
+  final bool justifyText;
 
   ReaderLayoutSpec({
     required this.viewport,
@@ -34,12 +36,14 @@ class ReaderLayoutSpec {
   }) : horizontalPadding = preferences.horizontalPadding,
        verticalPadding = preferences.verticalPadding,
        paragraphSpacing = preferences.paragraphSpacing,
+       firstLineIndent = preferences.firstLineIndent,
+       justifyText = preferences.justifyText,
        titleAlign = preferences.titleAlignment == ReaderTitleAlignment.center
            ? TextAlign.center
            : TextAlign.start,
        bodyStyle = TextStyle(
          inherit: false,
-         color: preferences.themePreset.textColor,
+         color: preferences.effectiveTextColor,
          fontFamily: fontFamily,
          fontSize: preferences.fontSize,
          fontWeight: FontWeight.values[preferences.fontWeight ~/ 100 - 1],
@@ -49,7 +53,7 @@ class ReaderLayoutSpec {
        ),
        titleStyle = TextStyle(
          inherit: false,
-         color: preferences.themePreset.textColor,
+         color: preferences.effectiveTextColor,
          fontFamily: fontFamily,
          fontSize: preferences.titleSize,
          fontWeight: FontWeight.w600,
@@ -74,7 +78,9 @@ class ReaderLayoutSpec {
       titleAlign == other.titleAlign &&
       horizontalPadding == other.horizontalPadding &&
       verticalPadding == other.verticalPadding &&
-      paragraphSpacing == other.paragraphSpacing;
+      paragraphSpacing == other.paragraphSpacing &&
+      firstLineIndent == other.firstLineIndent &&
+      justifyText == other.justifyText;
 
   @override
   int get hashCode => Object.hash(
@@ -86,6 +92,8 @@ class ReaderLayoutSpec {
     horizontalPadding,
     verticalPadding,
     paragraphSpacing,
+    firstLineIndent,
+    justifyText,
   );
 }
 
@@ -676,7 +684,8 @@ class ReaderChapterLayout {
     return block.start + block.lines[line].start;
   }
 
-  double scrollForTextOffset(int offset) {
+  /// Positions the line below [leadingInset] when the scroll extent allows it.
+  double scrollForTextOffset(int offset, {double leadingInset = 0}) {
     if (offset <= 0) return 0;
     if (offset >= textLength) return maxScroll;
     final block =
@@ -690,14 +699,20 @@ class ReaderChapterLayout {
       );
       return visible.isEmpty
           ? maxScroll
-          : (spec.verticalPadding + visible.first.top).clamp(0, maxScroll);
+          : (spec.verticalPadding + visible.first.top - leadingInset).clamp(
+              0,
+              maxScroll,
+            );
     }
     final line =
         block.lines[_floorIndex(
           block.lines.length,
           (index) => block.start + block.lines[index].start <= offset,
         )];
-    return (spec.verticalPadding + block.top + line.top).clamp(0, maxScroll);
+    return (spec.verticalPadding + block.top + line.top - leadingInset).clamp(
+      0,
+      maxScroll,
+    );
   }
 
   /// New positions are independent of font, page count and viewport size.
@@ -745,6 +760,7 @@ class ReaderChapterLayout {
   /// First-line indent width. Shared by [_measureBlock] and [blockPainter] so
   /// hit-testing and glyph boxes wrap exactly like the rendered text.
   static double _indentWidth(TextStyle style, ReaderLayoutSpec spec) {
+    if (!spec.firstLineIndent) return 0;
     final scale = spec.textScaler.scale(style.fontSize!) / style.fontSize!;
     return math.min(
       (style.fontSize! + (style.letterSpacing ?? 0)) * 2,
@@ -918,7 +934,11 @@ class ReaderChapterLayout {
       decorationStyle: TextDecorationStyle.solid,
       decorationThickness: 1.6,
     );
-    final align = title ? spec.titleAlign : TextAlign.justify;
+    final align = title
+        ? spec.titleAlign
+        : spec.justifyText
+        ? TextAlign.justify
+        : TextAlign.start;
     final indent = _indentWidth(style, spec);
     // The bubble rides at the very end of the paragraph's text, so it follows
     // the last line and wraps only when that line has no room left. Measuring it

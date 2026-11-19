@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive_ce/hive.dart';
@@ -161,12 +161,15 @@ void main() {
       );
       expect(bar.height, 64);
       // 同心圆角：选中背景圆角 28 = 外轮廓 32 − 内缩间距 4；高亮是全局
-      // 唯一的浮动背景块，selectedIndex=2 时落在“书架”位置。
+      // 唯一的浮动背景块，selectedIndex=2 时落在“书架”位置。形状必须是
+      // 连续曲率 squircle（对齐 PiliPlus FloatingNavigationBar）。
       final selection = tester.widget<DecoratedBox>(
         find.byKey(const ValueKey('classic-dock-selection')),
       );
       expect(
-        (selection.decoration as BoxDecoration).borderRadius!
+        ((selection.decoration as ShapeDecoration).shape
+                as RoundedSuperellipseBorder)
+            .borderRadius
             .resolve(TextDirection.ltr)
             .topLeft
             .x,
@@ -178,10 +181,7 @@ void main() {
             .getRect(find.byKey(const ValueKey('classic-dock-selection')))
             .center
             .dx,
-        moreOrLessEquals(
-          tester.getRect(find.text('书架')).center.dx,
-          epsilon: 1,
-        ),
+        moreOrLessEquals(tester.getRect(find.text('书架')).center.dx, epsilon: 1),
       );
       await tester.tap(find.text('我的'));
       await tester.pumpAndSettle();

@@ -8,8 +8,9 @@ extension _ReaderPageProgress on _ReaderPageState {
       viewport: constraints.biggest,
       textScaler: MediaQuery.textScalerOf(context),
       preferences: _displayPreferences,
-      fontFamily:
-          _fontFamily ?? Theme.of(context).textTheme.bodyLarge?.fontFamily,
+      fontFamily: _displayPreferences.builtinSerifFont
+          ? 'Home Serif'
+          : _fontFamily ?? Theme.of(context).textTheme.bodyLarge?.fontFamily,
     );
     if (_chapterLayout?.spec == spec &&
         _layoutMode == _preferences.pageMode &&
@@ -159,7 +160,11 @@ extension _ReaderPageProgress on _ReaderPageState {
   /// Settles the reading-time delta since the last event, legado-style:
   /// the time between this event and the previous one counts as reading.
   void _settleReadTime() {
-    if (!_sessionActive || _content.isEmpty) return;
+    if (!_sessionActive ||
+        _content.isEmpty ||
+        shuqiBookIdFromReaderId(widget.bookId) != null) {
+      return;
+    }
     final now = DateTime.now();
     final delta = now.difference(_readStart).inMilliseconds / 1000;
     if (delta >= 1) {
@@ -194,11 +199,13 @@ extension _ReaderPageProgress on _ReaderPageState {
   }
 
   void _onPageChanged(int page) {
+    // Layout restoration and explicit location jumps also report a page. They
+    // already own the exact text anchor; only a real page change replaces it.
+    if (!_progressReady || _changingChapter || page == _pageIndex) return;
     // Turning the page cancels the selection: the handles belong to the text,
     // the action bar's anchor would be stale. Reselecting is one long press.
     _closeSelectionBar(clearSelection: true);
     _clearLocationHighlight();
-    if (!_progressReady || _changingChapter || page == _pageIndex) return;
     if (_settingsPreviewSourceOffset == null) {
       _setState(() {
         _pageIndex = page;
@@ -264,6 +271,10 @@ extension _ReaderPageProgress on _ReaderPageState {
       direction: direction,
       page: layout.pages[_pageIndex.clamp(0, layout.pages.length - 1)],
       spec: layout.spec,
+      bookmarked:
+          AppUiScope.isClassic(context) &&
+          _bookmarkedPagesFor(layout).contains(_pageIndex),
+      bookmarkColor: _effectivePreset.selectionAccentColor,
     );
   }
 
@@ -351,11 +362,13 @@ extension _ReaderPageProgress on _ReaderPageState {
       maxScroll: max,
       index: index,
     );
+    final shuqiId = shuqiBookIdFromReaderId(widget.bookId);
     final entry = {
       'id': widget.bookId,
       'kind': 'book',
       'title': widget.title,
       'bookId': widget.bookId,
+      if (shuqiId != null) ...{'contentId': shuqiId, 'source': shuqiSourceId},
       'chapterId': chapterId,
       'episode': index,
       // 总章数：书架靠「第 N/M 章」区分「读到末尾」与「全书读完」
@@ -422,6 +435,7 @@ extension _ReaderPageProgress on _ReaderPageState {
     _pauseListenFollow();
     _finishChapterPreview();
     _changingChapter = true;
+    final completion = _chapterNavigationCompletion = Completer<void>();
     try {
       _settleReadTime();
       await _persistProgress();
@@ -431,6 +445,8 @@ extension _ReaderPageProgress on _ReaderPageState {
       await _load(startAtEnd: startAtEnd, chapterTurn: turn);
     } finally {
       _changingChapter = false;
+      _chapterNavigationCompletion = null;
+      completion.complete();
     }
   }
 
@@ -445,6 +461,7 @@ extension _ReaderPageProgress on _ReaderPageState {
     _pauseListenFollow();
     _finishChapterPreview();
     _changingChapter = true;
+    final completion = _chapterNavigationCompletion = Completer<void>();
     try {
       _settleReadTime();
       await _persistProgress();
@@ -480,6 +497,8 @@ extension _ReaderPageProgress on _ReaderPageState {
       await _load(chapterTurn: turn);
     } finally {
       _changingChapter = false;
+      _chapterNavigationCompletion = null;
+      completion.complete();
     }
   }
 
@@ -499,6 +518,7 @@ extension _ReaderPageProgress on _ReaderPageState {
       return;
     }
     _changingChapter = true;
+    final completion = _chapterNavigationCompletion = Completer<void>();
     try {
       // 闸门要排在结算/存盘**前面**：被闩锁挡住的这次跟随切章什么都没做，
       // 而在后面的话轮询每 100ms 都会存一次进度。
@@ -542,6 +562,8 @@ extension _ReaderPageProgress on _ReaderPageState {
       await _load();
     } finally {
       _changingChapter = false;
+      _chapterNavigationCompletion = null;
+      completion.complete();
     }
   }
 

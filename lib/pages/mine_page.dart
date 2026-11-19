@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import 'package:flutter/cupertino.dart';
-import 'package:flutter/material.dart';
+import 'package:cupertino_ui/cupertino_ui.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../models/media_item.dart';
@@ -107,6 +107,7 @@ class _MinePageState extends State<MinePage> {
       badge: '',
       ep: '',
       kind: '${entry['kind'] ?? 'book'}',
+      source: historySource(entry),
       seriesId: entry['seriesId']?.toString(),
       episodeId: entry['episodeId']?.toString(),
     ),

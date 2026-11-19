@@ -6,7 +6,7 @@ extension _ReaderPageBuild on _ReaderPageState {
     if (!isWindowsDesktop) return _buildReaderSurface(context);
     return LayoutBuilder(
       builder: (context, bounds) => ColoredBox(
-        color: _effectivePreset.backgroundColor,
+        color: _effectiveBackgroundColor,
         child: Row(
           children: [
             if (bounds.maxWidth >= 1000)
@@ -94,14 +94,14 @@ extension _ReaderPageBuild on _ReaderPageState {
       },
       child: AnnotatedRegion<SystemUiOverlayStyle>(
         value: overlayStyle.copyWith(
-          statusBarColor: preset.backgroundColor,
-          systemNavigationBarColor: preset.backgroundColor,
+          statusBarColor: _effectiveBackgroundColor,
+          systemNavigationBarColor: _effectiveBackgroundColor,
         ),
         child: Theme(
           data: preset.theme(Theme.of(context)),
           child: Scaffold(
             resizeToAvoidBottomInset: false,
-            backgroundColor: preset.backgroundColor,
+            backgroundColor: _effectiveBackgroundColor,
             body: Stack(
               fit: StackFit.expand,
               children: [
@@ -197,7 +197,34 @@ extension _ReaderPageBuild on _ReaderPageState {
                               : null,
                           child: SizedBox.expand(
                             key: _viewportKey,
-                            child: _buildContent(preset, windowPadding),
+                            child: AnimatedBuilder(
+                              animation: _scrollController,
+                              child: _buildContent(preset, windowPadding),
+                              builder: (context, content) => ReaderBookmarkPull(
+                                enabled:
+                                    classic &&
+                                    !_loading &&
+                                    _error == null &&
+                                    _progressReady &&
+                                    _selection == null &&
+                                    !_controlsVisible,
+                                paged: _paged,
+                                preset: preset,
+                                showSavedRibbon: !_paged,
+                                ribbonTextInset:
+                                    _chapterLayout?.spec.horizontalPadding ??
+                                    _preferences.horizontalPadding,
+                                locationKey: (
+                                  widget.bookId,
+                                  _chapter.itemId,
+                                  _paged ? _pageIndex : _textOffset,
+                                ),
+                                isBookmarked: classic && _currentPageBookmarked,
+                                onAdd: _addCurrentBookmark,
+                                onRemove: _removeVisiblePageBookmarks,
+                                child: content!,
+                              ),
+                            ),
                           ),
                         ),
                       ),
@@ -229,6 +256,12 @@ extension _ReaderPageBuild on _ReaderPageState {
                     ),
                   ),
                 ),
+                if (classic)
+                  ReaderToast(
+                    message: _readerToastMessage,
+                    immediateDismiss: _readerToastImmediateDismiss,
+                    reduceMotion: preset.isEink || _reduceReaderMotion,
+                  ),
                 // 墨水屏软件白闪：盖全屏白帧，迫使 EPD 控制器全量刷新。
                 if (_einkFlashVisible)
                   const Positioned.fill(child: ColoredBox(color: Colors.white)),
@@ -345,10 +378,9 @@ extension _ReaderPageBuild on _ReaderPageState {
       valueListenable: ShelfStore.instance.listenable,
       builder: (context, _, _) => ReaderClassicToolbar(
         preset: preset,
-        title: widget.title,
-        chapterNumber: _index + 1,
-        showCache: !widget.localOnly,
+        showCache: !widget.localOnly && !_readerBookIsImported,
         showComments:
+            !_readerBookIsImported &&
             !_loading &&
             _error == null &&
             _ideas.total > 0 &&
@@ -358,61 +390,108 @@ extension _ReaderPageBuild on _ReaderPageState {
         onCache: () => unawaited(_showCache()),
         onComments: () =>
             unawaited(_showIdeas(focusParaIndex: _chapterEndParagraph())),
-        onShelf: () => unawaited(toggleShelf(context, _shelfEntry)),
-        onCollapse: _toggleControls,
+        onShelf: () => unawaited(
+          toggleShelf(context, _shelfEntry, onMessage: _showMessage),
+        ),
+        onShare: widget.localOnly || _readerBookIsImported
+            ? null
+            : () => unawaited(_shareBook()),
+        onMore: () => unawaited(_showClassicMore()),
       ),
     );
   }
 
-  Future<void> _showReaderActions(BuildContext anchor) async {
+  /// [keyPrefix] keeps the classic overflow menu's keys distinct from the
+  /// toolbar's direct entries, which stay visible while the menu is open.
+  /// [includeBookmarks] adds the classic-only 书签 entry; the archive glass
+  /// dock already exposes it directly. [includeDisplayEntries] keeps
+  /// 阅读设置/专注阅读·隐藏控件 in the menu for the archive toolbar; the
+  /// classic chrome already exposes both (底板 设置 / 点正文中央).
+  /// [compactWidth] shrinks the card to its labels for the classic reader.
+  Future<void> _showReaderActions(
+    BuildContext anchor, {
+    String keyPrefix = '',
+    bool preferBelow = false,
+    bool compactWidth = false,
+    bool includeBookmarks = false,
+    bool includeDisplayEntries = true,
+  }) async {
     _readerPanelOpen = true;
     final action = await showGlassMenu<String>(
       context: anchor,
       reduceMotion: _reduceReaderMotion,
-      builder: (menu) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (!widget.localOnly)
+      preferBelow: preferBelow,
+      compactWidth: compactWidth,
+      builder: (menu) {
+        final column = Column(
+          mainAxisSize: MainAxisSize.min,
+          // Compact classic menus hug their widest label; stretching every row
+          // to that width keeps the icons/labels on one left edge.
+          crossAxisAlignment: compactWidth
+              ? CrossAxisAlignment.stretch
+              : CrossAxisAlignment.center,
+          children: [
+            if (!widget.localOnly && !_readerBookIsImported)
+              GlassMenuItem(
+                key: ValueKey('${keyPrefix}reader-cache'),
+                icon: CupertinoIcons.tray_arrow_down,
+                label: '缓存',
+                onPressed: () => Navigator.pop(menu, 'cache'),
+              ),
+            if (!_loading &&
+                _error == null &&
+                _ideas.total > 0 &&
+                _chapterEndParagraph() != null)
+              GlassMenuItem(
+                key: ValueKey('${keyPrefix}reader-toolbar-chapter-comments'),
+                icon: CupertinoIcons.chat_bubble,
+                label: '本章评论',
+                order: 1,
+                onPressed: () => Navigator.pop(menu, 'comments'),
+              ),
             GlassMenuItem(
-              key: const ValueKey('reader-cache'),
-              icon: CupertinoIcons.tray_arrow_down,
-              label: '缓存',
-              onPressed: () => Navigator.pop(menu, 'cache'),
+              key: ValueKey('${keyPrefix}reader-shelf-button'),
+              icon: inShelf(_shelfEntry)
+                  ? CupertinoIcons.bookmark_fill
+                  : CupertinoIcons.bookmark,
+              label: inShelf(_shelfEntry) ? '已在书架' : '加入书架',
+              order: 2,
+              onPressed: () => Navigator.pop(menu, 'shelf'),
             ),
-          if (!_loading &&
-              _error == null &&
-              _ideas.total > 0 &&
-              _chapterEndParagraph() != null)
-            GlassMenuItem(
-              key: const ValueKey('reader-toolbar-chapter-comments'),
-              icon: CupertinoIcons.chat_bubble,
-              label: '本章评论',
-              order: 1,
-              onPressed: () => Navigator.pop(menu, 'comments'),
-            ),
-          GlassMenuItem(
-            key: const ValueKey('reader-shelf-button'),
-            icon: inShelf(_shelfEntry)
-                ? CupertinoIcons.bookmark_fill
-                : CupertinoIcons.bookmark,
-            label: inShelf(_shelfEntry) ? '已在书架' : '加入书架',
-            order: 2,
-            onPressed: () => Navigator.pop(menu, 'shelf'),
-          ),
-          GlassMenuItem(
-            icon: CupertinoIcons.textformat,
-            label: '阅读设置',
-            order: 3,
-            onPressed: () => Navigator.pop(menu, 'settings'),
-          ),
-          GlassMenuItem(
-            icon: CupertinoIcons.chevron_up,
-            label: '专注阅读 · 隐藏控件',
-            order: 4,
-            onPressed: () => Navigator.pop(menu, 'hide'),
-          ),
-        ],
-      ),
+            // 经典主题把底部动作行的 书签 移到这里；档案主题的玻璃坞仍直接
+            // 提供，不重复。
+            if (includeBookmarks)
+              GlassMenuItem(
+                key: ValueKey('${keyPrefix}reader-bookmarks-entry'),
+                icon: CupertinoIcons.bookmark,
+                label: '书签',
+                order: 3,
+                onPressed: () => Navigator.pop(menu, 'bookmarks'),
+              ),
+            // 经典主题的菜单只保留动作项；阅读设置与隐藏控件分别由底板“设置”
+            // 和点击正文中央承担，菜单里不再重复。
+            if (includeDisplayEntries)
+              GlassMenuItem(
+                key: ValueKey('${keyPrefix}reader-more-settings'),
+                icon: CupertinoIcons.textformat,
+                label: '阅读设置',
+                order: 4,
+                onPressed: () => Navigator.pop(menu, 'settings'),
+              ),
+            if (includeDisplayEntries)
+              GlassMenuItem(
+                key: ValueKey('${keyPrefix}reader-more-hide'),
+                icon: CupertinoIcons.chevron_up,
+                label: '专注阅读 · 隐藏控件',
+                order: 5,
+                onPressed: () => Navigator.pop(menu, 'hide'),
+              ),
+          ],
+        );
+        // IntrinsicWidth resolves the widest row, then stretch fills exactly
+        // that width; without it stretch would take the whole 248dp cap.
+        return compactWidth ? IntrinsicWidth(child: column) : column;
+      },
     );
     if (!mounted) return;
     switch (action) {
@@ -422,6 +501,8 @@ extension _ReaderPageBuild on _ReaderPageState {
         await _showIdeas(focusParaIndex: _chapterEndParagraph());
       case 'shelf':
         await toggleShelf(context, _shelfEntry);
+      case 'bookmarks':
+        await _showBookmarks();
       case 'settings':
         await _showAppearanceSettings();
       case 'hide':
@@ -460,13 +541,13 @@ extension _ReaderPageBuild on _ReaderPageState {
             // clearance) identical while it slides, and reduce-motion/e-ink
             // already jump `_chrome` straight to its end value.
             ? ReaderChromeLayer(
+                key: _classicControlsKey,
                 animation: _chrome,
                 interactionThreshold: 0,
                 maintainSize: true,
                 slide: const Offset(0, 1),
                 clip: false,
                 child: ReaderClassicControls(
-                  // Two progress meanings live in this sheet; see the widget.
                   key: const ValueKey('reader-classic-controls'),
                   preset: preset,
                   chapterIndex: _index,
@@ -474,24 +555,15 @@ extension _ReaderPageBuild on _ReaderPageState {
                   chapterTitleAt: (index) => widget
                       .chapters[index.clamp(0, widget.chapters.length - 1)]
                       .title,
-                  fraction: _chapterLocalFraction,
                   onPrevious: _index > 0 && !_loading ? _prev : null,
                   onNext: _index < widget.chapters.length - 1 && !_loading
                       ? _next
                       : null,
                   onSeekEnd: (index) => unawaited(_jumpToChapter(index)),
-                  onPreview: _previewChapterFraction,
-                  onCommitted: _commitChapterFraction,
-                  onPreviewChanged: _setChapterPreview,
                   onDirectory: _showDirectory,
-                  onBookmarks: _showBookmarks,
-                  onFind: _loading || !_progressReady ? null : _showFind,
                   onNight: _toggleNightTheme,
                   onAppearance: _showAppearanceSettings,
-                  onOperations: () => _showAppearanceSettings(
-                    section: ReaderSettingsSection.operations,
-                  ),
-                  onAi: _currentAiView?.aiEnabled == true ? _showAiPanel : null,
+                  onAi: _currentAiView != null ? _showAiPanel : null,
                   aiLabel: _currentAiView?.hasCache == true
                       ? 'AI 已校对'
                       : 'AI 校对',

@@ -18,7 +18,7 @@
 // read-time listeners) is unchanged.
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../models/media_item.dart';
 import '../models/reading_stats.dart';
@@ -134,6 +134,7 @@ class _ReadingStatisticsPageState extends State<ReadingStatisticsPage> {
         badge: '',
         ep: '',
         kind: '${entry['kind'] ?? 'book'}',
+        source: historySource(entry),
         seriesId: entry['seriesId']?.toString(),
         episodeId: entry['episodeId']?.toString(),
       ),

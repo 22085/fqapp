@@ -10,14 +10,15 @@
 // assets), the group counts and the 番茄 import route are shared by both.
 import 'dart:async';
 
-import 'package:flutter/cupertino.dart';
-import 'package:flutter/material.dart';
+import 'package:cupertino_ui/cupertino_ui.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 
 import '../models/library_backup.dart';
 import '../services/app_theme_style.dart';
 import '../services/library_backup_service.dart';
+import '../services/linux_platform.dart';
 import '../services/shelf_group_store.dart';
 import '../widgets/app_ui/app_ui_scope.dart';
 import '../widgets/data_transfer_widgets.dart';
@@ -28,7 +29,9 @@ import '../widgets/settings/settings_scroll_anchor.dart';
 import '../widgets/wenku/wenku_ui.dart';
 import 'ai_reading/settings/ai_settings_widgets.dart';
 import 'fanqie_history_import_page.dart';
+import 'multi_device_sync_page.dart';
 import 'webdav_sync_page.dart';
+import '../services/sync/multi_device_sync_service.dart';
 
 class LibraryBackupPage extends StatefulWidget {
   const LibraryBackupPage({super.key});
@@ -155,7 +158,7 @@ class _LibraryBackupPageState extends State<LibraryBackupPage> {
         _message = saved
             ? '备份文件已保存：${_counts(backup)}。\n'
                   'AI 反馈、保护、提示词和用量已一并导出，API Key 不在文件中。\n'
-                  '将这个文件传到新手机，在本页选择导入即可。'
+                  '将这个文件传到新设备，在本页选择导入即可。'
                   '${_service.lastAiExportNote == null ? '' : '\n${_service.lastAiExportNote}'}'
                   '${backup.excludedLocalRecords > 0 ? '\n已排除 ${backup.excludedLocalRecords} 条本地书籍相关记录。' : ''}'
                   '${groupsReady ? '' : '\n本次备份不含书架分组。'}'
@@ -301,19 +304,39 @@ class _LibraryBackupPageState extends State<LibraryBackupPage> {
       const SizedBox(height: 24),
       KeyedSubtree(
         key: _anchor.keyFor('webdav'),
-        child: const SettingsSection(title: '云端同步', code: 'SYNC / WEBDAV'),
+        child: const SettingsSection(title: '云端同步', code: 'SYNC'),
       ),
       const SizedBox(height: 14),
-      SettingsEntryCard(
-        key: const ValueKey('backup-webdav'),
-        icon: LucideIcons.cloud,
-        title: 'WebDAV 同步',
-        subtitle: '自动同步书架和阅读进度',
-        enabled: enabled,
-        onTap: () => Navigator.push(
-          context,
-          MaterialPageRoute<void>(builder: (_) => const WebDavSyncPage()),
-        ),
+      ListenableBuilder(
+        listenable: MultiDeviceSyncService.instance,
+        builder: (context, _) =>
+            !MultiDeviceSyncService.instance.hasSelectedSyncBackend
+            ? SettingsEntryCard(
+                key: const ValueKey('backup-webdav'),
+                icon: LucideIcons.cloud,
+                title: 'WebDAV 同步',
+                subtitle: '旧版安全升级，先预览再启用多端同步',
+                enabled: enabled,
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => const WebDavSyncPage(),
+                  ),
+                ),
+              )
+            : SettingsEntryCard(
+                key: const ValueKey('backup-multi-device'),
+                icon: LucideIcons.cloud,
+                title: '多端同步',
+                subtitle: '打开多端同步设置',
+                enabled: enabled,
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => const MultiDeviceSyncPage(),
+                  ),
+                ),
+              ),
       ),
       const SizedBox(height: 24),
       KeyedSubtree(
@@ -328,7 +351,7 @@ class _LibraryBackupPageState extends State<LibraryBackupPage> {
         key: const ValueKey('backup-fanqie'),
         icon: LucideIcons.book_open,
         title: '导入番茄书架',
-        subtitle: '网页登录、最近采集和旧版历史文件',
+        subtitle: isLinuxDesktop ? '仅支持已保存的番茄历史 JSON 文件' : '网页登录、最近采集和旧版历史文件',
         enabled: enabled,
         onTap: () => Navigator.push(
           context,
@@ -442,7 +465,7 @@ class _LibraryBackupPageState extends State<LibraryBackupPage> {
                   '包含在线小说、听书、漫画、短剧和漫剧的收藏、已保存进度、'
                   '已看剧集与书架分组。\n\n'
                   '本地 TXT / EPUB 原文件、下载缓存、阅读时长、划线和应用设置需另行保留。\n\n'
-                  '导出前请退出阅读或暂停播放，让当前进度保存；换手机时传输备份文件，再在这里恢复。',
+                  '导出前请退出阅读或暂停播放，让当前进度保存；更换设备时传输备份文件，再在这里恢复。',
                   style: muted.copyWith(fontSize: 13),
                 ),
               ],

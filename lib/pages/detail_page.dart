@@ -2,8 +2,8 @@ import '../widgets/desktop_chapter_sidebar.dart';
 import '../services/desktop_platform.dart';
 import 'dart:async';
 
-import 'package:flutter/cupertino.dart';
-import 'package:flutter/material.dart';
+import 'package:cupertino_ui/cupertino_ui.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 
@@ -24,6 +24,7 @@ import '../services/connectivity_status.dart';
 import '../services/library_store.dart';
 import '../services/media_history_store.dart';
 import '../services/player_history.dart';
+import '../services/platform_capabilities.dart';
 import '../services/reader_history.dart';
 import '../services/shelf_store.dart';
 import '../services/user_facing_error.dart';
@@ -409,7 +410,7 @@ class _DetailPageState extends State<DetailPage> {
         _isVideo &&
         widget.detailLoader == null &&
         widget.directoryLoader == null &&
-        !(await (widget.connectivity ?? currentConnectivity)()).online;
+        await videoNetworkIsOffline(probe: widget.connectivity);
     if (!mounted || generation != _loadGeneration) return;
 
     // Detail and directory are independent. Short-drama IDs sometimes do
@@ -1888,6 +1889,12 @@ class _DetailPageState extends State<DetailPage> {
     ++_openGeneration;
     ++_historyGeneration;
     if (_opening) setState(() => _opening = false);
+    if (_isVideo && !supportsVideoPlayback) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前平台暂不支持视频播放')));
+      return;
+    }
     final index = _allChapters.indexWhere((c) => c.itemId == chapter.itemId);
     final startIndex = index < 0 ? 0 : index;
     final page = switch (widget.item.kind) {
@@ -1924,6 +1931,7 @@ class _DetailPageState extends State<DetailPage> {
         shelfItem: widget.item,
       ),
       _ => ReaderPage(
+        bookDetail: _bookDetail,
         bookId: _contentId,
         title: widget.item.title,
         cover: widget.item.cover,

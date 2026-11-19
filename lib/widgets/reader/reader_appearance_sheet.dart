@@ -2,10 +2,11 @@
 // fqapp remains authoritative for preferences, reading engines and device I/O.
 import 'dart:async';
 
-import 'package:flutter/cupertino.dart';
-import 'package:flutter/material.dart';
+import 'package:cupertino_ui/cupertino_ui.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 
+import '../../services/linux_platform.dart';
 import '../../services/reader_device.dart';
 import '../../services/reader_preferences.dart';
 import '../app_ui/app_ui_scope.dart';
@@ -252,9 +253,16 @@ class _ReaderAppearanceSheetState
       currentPath: value.fontPath,
       currentName: value.fontName,
       onPickFont: widget.onPickFont,
+      currentBuiltinSerif: value.builtinSerifFont,
     );
     if (!_alive || selection == null) return;
-    _apply(value.copyWith(fontPath: selection.path, fontName: selection.name));
+    _apply(
+      value.copyWith(
+        fontPath: selection.path,
+        fontName: selection.name,
+        builtinSerifFont: selection.builtinSerif,
+      ),
+    );
   }
 
   @override
@@ -462,7 +470,9 @@ class _ReaderAppearanceSheetState
     ReaderThemePreset choice,
     double diameter,
   ) {
-    final selected = choice == _displayPreset;
+    final selected =
+        choice == _displayPreset &&
+        (_backgroundLocked || value.customBackgroundColor == null);
     return Semantics(
       selected: selected,
       button: true,
@@ -471,7 +481,12 @@ class _ReaderAppearanceSheetState
         key: ValueKey('reader-theme-${choice.name}'),
         onTap: _backgroundLocked
             ? null
-            : () => _apply(value.copyWith(themePreset: choice)),
+            : () => _apply(
+                value.copyWith(
+                  themePreset: choice,
+                  clearCustomBackground: true,
+                ),
+              ),
         borderRadius: BorderRadius.circular(diameter / 2),
         child: Container(
           width: diameter,
@@ -677,11 +692,11 @@ class _ReaderAppearanceSheetState
         CupertinoIcons.headphones,
         '跟随翻页 · 朗读高亮',
       ),
-      const ReaderSettingsCategory(
+      ReaderSettingsCategory(
         'operations',
         '操作',
         CupertinoIcons.hand_draw,
-        '点击区域 · 音量键 · 正文替换',
+        isLinuxDesktop ? '点击区域 · 正文替换' : '点击区域 · 音量键 · 正文替换',
       ),
       if (widget.onMarks != null)
         const ReaderSettingsCategory(
@@ -740,7 +755,11 @@ class _ReaderAppearanceSheetState
       _adjustment(
         ReaderSettingsNavRow(
           key: const ValueKey('reader-font-picker'),
-          label: value.fontName.isEmpty ? '字体' : '字体 · ${value.fontName}',
+          label: value.builtinSerifFont
+              ? '字体 · 宋体'
+              : value.fontName.isEmpty
+              ? '字体'
+              : '字体 · ${value.fontName}',
           onTap: _openFontPicker,
         ),
       ),
@@ -1075,15 +1094,24 @@ class _ReaderAppearanceSheetState
       children: [
         for (final choice in ReaderThemePreset.values)
           Semantics(
-            selected: choice == _displayPreset,
+            selected:
+                choice == _displayPreset &&
+                (_backgroundLocked || value.customBackgroundColor == null),
             button: true,
             label: '${choice.label}阅读背景',
             child: GlassTextButton(
               key: ValueKey('reader-theme-${choice.name}'),
-              selected: choice == _displayPreset,
+              selected:
+                  choice == _displayPreset &&
+                  (_backgroundLocked || value.customBackgroundColor == null),
               onPressed: _backgroundLocked
                   ? null
-                  : () => _apply(value.copyWith(themePreset: choice)),
+                  : () => _apply(
+                      value.copyWith(
+                        themePreset: choice,
+                        clearCustomBackground: true,
+                      ),
+                    ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
