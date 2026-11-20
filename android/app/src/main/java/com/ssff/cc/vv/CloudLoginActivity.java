@@ -1,4 +1,4 @@
-package com.fqapp.fqapp;
+package com.ssff.cc.vv;
 
 import android.app.Activity;
 import android.content.*;
