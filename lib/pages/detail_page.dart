@@ -1132,23 +1132,31 @@ class _DetailPageState extends State<DetailPage> {
   int _desktopSection = 0;
 
   Widget _desktopPanel(HomePalette palette, Widget child) {
-    final wide = MediaQuery.sizeOf(context).width >= 1000;
     return Material(
+      key: const Key('desktop-detail-panel'),
       color: palette.surface,
       clipBehavior: Clip.antiAlias,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
         side: BorderSide(color: palette.line),
       ),
-      child: Padding(padding: EdgeInsets.all(wide ? 20 : 16), child: child),
+      child: child,
     );
   }
 
+  /// Windows 工作区:左边一张资料卡,右边一张内容面板,两栏整组居中。
+  ///
+  /// 旧版把内容列钉在 760 并居中,宽屏下右侧空出一条;>=1400 的第三栏又只剩两枚
+  /// 与资料卡重复的标签,一并去掉。现在内容列随窗口放大(>=1400 给 900,其余
+  /// 840),两栏从同一条顶边起算,整组居中而不是内容列居中。
   Widget _desktopBody(HomePalette palette) {
-    final width = MediaQuery.sizeOf(context).width;
-    final threeColumns = width >= 1400;
-    final sideWidth = width >= 1200 ? 340.0 : 320.0;
-    Widget content() => !_supported
+    final size = MediaQuery.sizeOf(context);
+    final wide = size.width >= 1400;
+    final sideWidth = wide ? 360.0 : 320.0;
+    final contentMax = wide ? 900.0 : 840.0;
+    // 面板可用高度:窗口高减去上下留白;目录节用它把面板撑到窗口底边。
+    final panelMinHeight = (size.height - 56).clamp(320.0, 1200.0);
+    Widget body({double panelMinHeight = 0}) => !_supported
         ? _stateCard(
             icon: LucideIcons.file_question_mark,
             title: '暂不支持此内容类型',
@@ -1156,7 +1164,7 @@ class _DetailPageState extends State<DetailPage> {
           )
         : _loading
         ? _loadingView(palette)
-        : _content(palette);
+        : _content(palette, panelMinHeight: panelMinHeight);
     Widget mainScroll() => RefreshIndicator(
       onRefresh: _load,
       color: palette.eink ? palette.ink : HomePalette.accent,
@@ -1165,10 +1173,10 @@ class _DetailPageState extends State<DetailPage> {
         controller: _scroll,
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.only(bottom: 32),
-        child: content(),
+        child: body(panelMinHeight: panelMinHeight),
       ),
     );
-    if (width < 1000) {
+    if (size.width < 1000) {
       return RefreshIndicator(
         onRefresh: _load,
         color: palette.eink ? palette.ink : HomePalette.accent,
@@ -1183,7 +1191,7 @@ class _DetailPageState extends State<DetailPage> {
             children: [
               _desktopSideCard(palette, compact: true),
               const SizedBox(height: 24),
-              content(),
+              body(),
             ],
           ),
         ),
@@ -1192,13 +1200,11 @@ class _DetailPageState extends State<DetailPage> {
     return Align(
       alignment: Alignment.topCenter,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 1520),
+        constraints: BoxConstraints(maxWidth: sideWidth + 24 + contentMax + 48),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
+          padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
           child: Row(
-            key: Key(
-              threeColumns ? 'desktop-detail-three' : 'desktop-detail-two',
-            ),
+            key: Key(wide ? 'desktop-detail-wide' : 'desktop-detail-two'),
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               SizedBox(
@@ -1211,27 +1217,13 @@ class _DetailPageState extends State<DetailPage> {
               const SizedBox(width: 24),
               Expanded(
                 child: Align(
-                  alignment: Alignment.topCenter,
+                  alignment: Alignment.topLeft,
                   child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 760),
+                    constraints: BoxConstraints(maxWidth: contentMax),
                     child: mainScroll(),
                   ),
                 ),
               ),
-              if (threeColumns) ...[
-                const SizedBox(width: 24),
-                SizedBox(
-                  width: 260,
-                  child: SingleChildScrollView(
-                    key: const Key('desktop-detail-information'),
-                    padding: const EdgeInsets.only(bottom: 32),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: _desktopInfoRail(palette),
-                    ),
-                  ),
-                ),
-              ],
             ],
           ),
         ),
@@ -1239,32 +1231,56 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  Widget _content(HomePalette palette) {
+  /// 内容面板:分节栏(标签 + 当前分节摘要 + 细线)与其下的正文合成一张卡。
+  Widget _content(HomePalette palette, {double panelMinHeight = 0}) {
     final hasReviews =
         _comments.comments.isNotEmpty || _comments.totalCount > 0;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _desktopSectionTabs(palette),
-        const SizedBox(height: 20),
-        _desktopPanel(
-          palette,
-          Column(
+    // 分节栏右侧只放正文没有的读数;章节总数由目录列自己给出。
+    final summary = _desktopSection == 2 && _comments.totalCount > 0
+        ? '共 ${_comments.totalCount} 条书评'
+        : '';
+    // 只有长列表的目录节把面板撑到窗口底边;简介是一段话,面板随内容收边,
+    // 免得留一张半空的卡。
+    final stretch = _desktopSection == 1 ? panelMinHeight : 0.0;
+    final edge = MediaQuery.sizeOf(context).width >= 1000 ? 20.0 : 16.0;
+    return _desktopPanel(
+      palette,
+      ConstrainedBox(
+        constraints: BoxConstraints(minHeight: stretch),
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(edge, edge - 6, edge, edge),
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: switch (_desktopSection) {
-              1 => _desktopDirectoryTab(palette),
-              2 => <Widget>[
-                _reviewsSection(
-                  palette,
-                  hasReviews: hasReviews,
-                  showEmpty: true,
-                ),
-              ],
-              _ => <Widget>[_introSection(palette, desktop: true)],
-            },
+            children: [
+              Row(
+                children: [
+                  Expanded(child: _desktopSectionTabs(palette)),
+                  if (summary.isNotEmpty)
+                    Text(
+                      summary,
+                      key: const Key('detail_section_summary'),
+                      style: TextStyle(color: palette.muted, fontSize: 12),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Divider(height: 1, thickness: 1, color: palette.line),
+              const SizedBox(height: 16),
+              ...switch (_desktopSection) {
+                1 => _desktopDirectoryTab(palette, stretch),
+                2 => <Widget>[
+                  _reviewsSection(
+                    palette,
+                    hasReviews: hasReviews,
+                    showEmpty: true,
+                  ),
+                ],
+                _ => <Widget>[_introSection(palette, desktop: true)],
+              },
+            ],
           ),
         ),
-      ],
+      ),
     );
   }
 
@@ -1282,7 +1298,7 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   Widget _introSection(HomePalette palette, {bool desktop = false}) {
-    return Column(
+    final section = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (_detailError != null) ...[
@@ -1306,13 +1322,15 @@ class _DetailPageState extends State<DetailPage> {
           ),
       ],
     );
-  }
-
-  /// `完结 共820章 · 全部 ›` — the one place the chapter count appears.
-  String get _directoryTrailing {
-    final status = _bookDetail?.statusLabel ?? '';
-    final count = '共${_allChapters.length}$_chapterUnit';
-    return '${status.isEmpty ? '' : '$status '}$count · 全部';
+    if (!desktop) return section;
+    // 桌面面板比手机宽:绑住简介的行宽,一行别排到五六十个汉字。
+    return Align(
+      alignment: Alignment.topLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 760),
+        child: section,
+      ),
+    );
   }
 
   /// The newest chapter for the hero's `更新至 …` line: the payload's own
@@ -1363,12 +1381,11 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  List<Widget> _desktopDirectoryTab(HomePalette palette) => [
-    Text(
-      _directoryTrailing,
-      style: TextStyle(color: palette.muted, fontSize: 13),
-    ),
-    const SizedBox(height: 16),
+  /// 内嵌目录:面板撑满窗口时目录跟着铺到底,不再在面板下留一截空白。
+  List<Widget> _desktopDirectoryTab(
+    HomePalette palette,
+    double panelMinHeight,
+  ) => [
     DecoratedBox(
       decoration: BoxDecoration(
         color: palette.canvas,
@@ -1378,7 +1395,9 @@ class _DetailPageState extends State<DetailPage> {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(10),
         child: SizedBox(
-          height: (MediaQuery.sizeOf(context).height - 280).clamp(260.0, 640.0),
+          height: panelMinHeight > 0
+              ? (panelMinHeight - 100).clamp(260.0, 900.0)
+              : (MediaQuery.sizeOf(context).height - 280).clamp(260.0, 640.0),
           child: DesktopChapterSidebar(
             width: double.infinity,
             showBorder: false,
@@ -1392,13 +1411,6 @@ class _DetailPageState extends State<DetailPage> {
       ),
     ),
   ];
-
-  /// Three-column desktop rail: the tags the main column omits.
-  List<Widget> _desktopInfoRail(HomePalette palette) {
-    final detail = _bookDetail;
-    if (detail == null || detail.tags.isEmpty) return const [];
-    return [DetailTagChips(tags: detail.tags, desktop: true)];
-  }
 
   Widget _desktopSectionTabs(HomePalette palette) {
     const labels = ['简介', '目录', '评论'];

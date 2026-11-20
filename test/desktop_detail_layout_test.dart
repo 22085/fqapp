@@ -69,9 +69,9 @@ void main() {
         (width: 999, height: 768, scale: 1, layout: 'compact'),
         (width: 1000, height: 768, scale: 1, layout: 'two'),
         (width: 1399, height: 768, scale: 1, layout: 'two'),
-        (width: 1400, height: 768, scale: 1, layout: 'three'),
+        (width: 1400, height: 768, scale: 1, layout: 'wide'),
         (width: 1366, height: 768, scale: 1, layout: 'two'),
-        (width: 1920, height: 1080, scale: 1, layout: 'three'),
+        (width: 1920, height: 1080, scale: 1, layout: 'wide'),
         // 1366x768 and 1920x1080 physical screens at 150% Windows DPI.
         (width: 910, height: 512, scale: 1, layout: 'compact'),
         (width: 1280, height: 720, scale: 1, layout: 'two'),
@@ -133,6 +133,22 @@ void main() {
             await file.writeAsBytes(bytes!.buffer.asUint8List());
             image.dispose();
           });
+        }
+        if (sample.layout == 'two' || sample.layout == 'wide') {
+          // 工作区面板:旧的三栏标签栏只剩重复标签,已并入内容面板。
+          expect(
+            find.byKey(const Key('desktop-detail-information')),
+            findsNothing,
+          );
+          // 目录是长列表,切到该节后面板撑到窗口底边,不留半空的卡。
+          await tester.tap(find.byKey(const Key('detail_section_1')));
+          await tester.pumpAndSettle();
+          expect(
+            tester
+                .getSize(find.byKey(const Key('desktop-detail-panel')))
+                .height,
+            greaterThan(sample.height - 208),
+          );
         }
         await tester.pumpWidget(const SizedBox.shrink());
       },
