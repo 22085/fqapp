@@ -28,6 +28,10 @@ class DetailHero extends StatelessWidget {
   final bool desktop;
   final bool compactDesktop;
 
+  /// Keeps the desktop cover beside its metadata when the masthead has a
+  /// separate statistics rail.
+  final bool horizontalDesktop;
+
   const DetailHero({
     super.key,
     required this.item,
@@ -36,6 +40,7 @@ class DetailHero extends StatelessWidget {
     this.lastChapterTitle,
     this.desktop = false,
     this.compactDesktop = false,
+    this.horizontalDesktop = false,
   });
 
   @override
@@ -45,7 +50,7 @@ class DetailHero extends StatelessWidget {
     // A 3x accessibility scale cannot fit a cover beside the text on a narrow
     // phone, so the masthead stacks instead of squeezing both into one row.
     final stacked = MediaQuery.textScalerOf(context).scale(16) > 26;
-    final centered = desktop && !compactDesktop;
+    final centered = desktop && !compactDesktop && !horizontalDesktop;
     final rows = _rows(palette, centered: centered);
     final info = Column(
       crossAxisAlignment: centered
@@ -59,7 +64,11 @@ class DetailHero extends StatelessWidget {
             key: const Key('detail_book_title'),
             style: TextStyle(
               color: palette.ink,
-              fontSize: desktop ? 22 : 19,
+              fontSize: horizontalDesktop
+                  ? 24
+                  : desktop
+                  ? 22
+                  : 19,
               fontWeight: FontWeight.w700,
               height: 1.3,
             ),
@@ -75,11 +84,14 @@ class DetailHero extends StatelessWidget {
       item: item,
       desktop: desktop,
       compact: compactDesktop,
+      horizontalDesktop: horizontalDesktop,
     );
 
     return Padding(
       padding: desktop
-          ? const EdgeInsets.fromLTRB(0, 16, 0, 0)
+          ? horizontalDesktop
+                ? EdgeInsets.zero
+                : const EdgeInsets.fromLTRB(0, 16, 0, 0)
           : const EdgeInsets.fromLTRB(16, 6, 16, 0),
       child: (stacked || centered)
           ? Column(
@@ -91,7 +103,9 @@ class DetailHero extends StatelessWidget {
               ],
             )
           : Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: horizontalDesktop
+                  ? CrossAxisAlignment.center
+                  : CrossAxisAlignment.start,
               children: [
                 cover,
                 const SizedBox(width: 14),

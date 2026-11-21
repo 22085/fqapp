@@ -18,6 +18,7 @@ class DetailDescription extends StatefulWidget {
   final String text;
   final bool desktop;
   final String title;
+  final bool showHeader;
 
   /// Controlled expansion when non-null: the detail page owns the value so a
   /// layout swap (经典 ⇄ 档案) cannot fold the synopsis back to three lines.
@@ -29,6 +30,7 @@ class DetailDescription extends StatefulWidget {
     required this.text,
     this.desktop = false,
     this.title = '简介',
+    this.showHeader = true,
     this.expanded,
     this.onExpandedChanged,
   });
@@ -77,13 +79,14 @@ class _DetailDescriptionState extends State<DetailDescription> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (classic)
-          DetailSectionHeader(title: widget.title)
-        else
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: homeGutter),
-            child: sectionHeader(context, widget.title, ''),
-          ),
+        if (widget.showHeader)
+          if (classic)
+            DetailSectionHeader(title: widget.title)
+          else
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: homeGutter),
+              child: sectionHeader(context, widget.title, ''),
+            ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: homeGutter),
           child: widget.text.isEmpty
