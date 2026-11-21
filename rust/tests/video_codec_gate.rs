@@ -1,20 +1,33 @@
 //! Exercise codec rejection through the real dispatcher, including the raw
 //! response and download fallbacks that extractor-only tests cannot cover.
 
+#![allow(clippy::await_holding_lock)]
+
 mod common;
 
 use common::{build_server, pool_json, query_map, MockReply, MockUpstream, TempDir};
 use fqapi_core::dispatch::{dispatch, Request};
 use fqapi_core::endpoints::Server;
+use fqapi_core::upstream::reset_playback_route_state_for_tests;
 use md5::{Digest, Md5};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 const ALLOWED_URL: &str = "https://example.invalid/h264.mp4";
 const REJECTED_URL: &str = "https://example.invalid/bytevc2.mp4";
 const SPADE_A: &str = "kbwf80+1N+V9nwHQSp431GWvLeBlqizTYJ0o5FOrHuZhqimysg==";
 const KEY_HEX: &str = "4990a92de837e29e18031a370ab744e6";
+
+// The empty-alternate case parks process-wide routes. Each scenario owns and
+// resets that state so parallel tests cannot alter another request's plan.
+static ROUTES: Mutex<()> = Mutex::new(());
+
+fn exclusive() -> MutexGuard<'static, ()> {
+    let guard = ROUTES.lock().unwrap_or_else(|error| error.into_inner());
+    reset_playback_route_state_for_tests();
+    guard
+}
 
 fn response_shapes(variants: Vec<Value>) -> Vec<(&'static str, Value)> {
     let video_map: serde_json::Map<String, Value> = variants
@@ -88,6 +101,7 @@ fn assert_rejected(status: u16, body: &Value, context: &str) {
 
 #[tokio::test]
 async fn bytevc2_only_is_terminal_across_response_shapes_and_modes() {
+    let _guard = exclusive();
     for codec in [
         json!({"codec_type": "ByTeVc2"}),
         json!({"video_meta": {"codec_type": "BYTEVC2"}}),
@@ -114,6 +128,7 @@ async fn bytevc2_only_is_terminal_across_response_shapes_and_modes() {
 
 #[tokio::test]
 async fn missing_or_invalid_seed_cannot_hide_codec_rejection() {
+    let _guard = exclusive();
     for seed in [Value::Null, json!(""), json!("invalid!")] {
         let payload = json!({"data": {"video_model": {
             "key_seed": seed,
@@ -132,6 +147,7 @@ async fn missing_or_invalid_seed_cannot_hide_codec_rejection() {
 
 #[tokio::test]
 async fn mixed_variants_keep_h264_preference_across_response_shapes() {
+    let _guard = exclusive();
     // Put H.264 first: blindly taking the last array entry would pick bytevc2,
     // and filtering without ranking would pick H.265 at the same quality.
     let variants = vec![
@@ -153,6 +169,7 @@ async fn mixed_variants_keep_h264_preference_across_response_shapes() {
 
 #[tokio::test]
 async fn unrecognized_payload_keeps_legacy_raw_response_compatibility() {
+    let _guard = exclusive();
     let payload = json!({"code": 0, "data": {"legacy": {"main_url": ALLOWED_URL}}});
     let expected = payload.clone();
     let upstream = MockUpstream::start(move |_| MockReply::json(payload.clone())).await;
@@ -180,6 +197,7 @@ async fn unrecognized_payload_keeps_legacy_raw_response_compatibility() {
 
 #[tokio::test]
 async fn fallback_rejection_requires_a_conclusive_codec_decision() {
+    let _guard = exclusive();
     let model = json!({
         "fallback_api": "https://example.invalid/fallback",
         "video_list": [{
@@ -239,6 +257,7 @@ async fn fallback_rejection_requires_a_conclusive_codec_decision() {
 
 #[tokio::test]
 async fn download_failure_returns_only_the_selected_url_and_its_key() {
+    let _guard = exclusive();
     let upstream = MockUpstream::start(|req| {
         if req.path.ends_with(".mp4") {
             return MockReply::status(500);
@@ -265,6 +284,7 @@ async fn download_failure_returns_only_the_selected_url_and_its_key() {
 
 #[tokio::test]
 async fn successful_download_keeps_the_local_source_contract() {
+    let _guard = exclusive();
     let upstream = MockUpstream::start(|req| {
         if req.path == "/h264.mp4" {
             return MockReply {
@@ -298,6 +318,7 @@ async fn successful_download_keeps_the_local_source_contract() {
 /// silently loses a row (measured 2026-10-12 on the live upstream).
 #[tokio::test]
 async fn stream_variants_merge_the_fallback_list_so_the_top_tier_survives() {
+    let _guard = exclusive();
     let v5_calls = Arc::new(AtomicUsize::new(0));
     let v5_calls_for_mock = Arc::clone(&v5_calls);
     let upstream = MockUpstream::start(move |req| {
@@ -388,6 +409,7 @@ async fn stream_variants_merge_the_fallback_list_so_the_top_tier_survives() {
 /// them past the codec gate.
 #[tokio::test]
 async fn stream_variants_do_not_merge_bytevc2_tiers() {
+    let _guard = exclusive();
     let upstream = MockUpstream::start(|req| {
         if req.path == "/fallback" {
             return MockReply::json(json!({"video_info": {"data": {
@@ -430,6 +452,7 @@ async fn stream_variants_do_not_merge_bytevc2_tiers() {
 /// end the request — rotate once and ask again.
 #[tokio::test]
 async fn bytevc2_only_answer_retries_on_another_device_and_recovers() {
+    let _guard = exclusive();
     let rejected = json!({"data": {"video_model": {
         "key_seed": "AAAA",
         "video_list": {"video_0": {
@@ -446,6 +469,7 @@ async fn bytevc2_only_answer_retries_on_another_device_and_recovers() {
         ]
     }}});
     for count in [2, 5] {
+        reset_playback_route_state_for_tests();
         let rejected = rejected.clone();
         let allowed = allowed.clone();
         let upstream = MockUpstream::start(move |request| {
@@ -497,6 +521,7 @@ async fn bytevc2_only_answer_retries_on_another_device_and_recovers() {
 /// not spend the device pool chasing it.
 #[tokio::test]
 async fn bytevc2_only_answer_still_fails_after_one_retry() {
+    let _guard = exclusive();
     let rejected = json!({"data": {"video_model": {
         "key_seed": "AAAA",
         "video_list": {"video_0": {
@@ -511,6 +536,7 @@ async fn bytevc2_only_answer_still_fails_after_one_retry() {
         ("foreground", true),
         ("prefetch", false),
     ] {
+        reset_playback_route_state_for_tests();
         let rejected = rejected.clone();
         let upstream = MockUpstream::start(move |request| {
             let device = query_map(&request.query)["device_id"].clone();
