@@ -60,8 +60,7 @@ struct FqappLinuxBridge {
       put(v, "owner", fl_value_ref(id));
     if (position >= 0) {
       put(v, "positionMs", fl_value_new_int(position / 1000));
-      put(v, "episode",
-          fl_value_new_string(str(field(media, "episode")).c_str()));
+      put(v, "chapterId", fl_value_ref(field(media, "chapterId")));
     }
     fl_method_channel_invoke_method(player_channel, "onNotificationAction", v,
                                     nullptr, nullptr, nullptr);
@@ -239,6 +238,10 @@ struct FqappLinuxBridge {
       fail(c, "INVALID_ARGUMENT", "media owner required");
       return;
     }
+    if (str(field(args, "chapterId")).empty()) {
+      fail(c, "INVALID_ARGUMENT", "media chapter ID required");
+      return;
+    }
     for (const char *k : {"positionMs", "durationMs", "speed"}) {
       double value = number(field(args, k), k == std::string("speed") ? 1 : 0);
       if (!std::isfinite(value) || value < 0 || value > 1e12 ||
@@ -252,8 +255,7 @@ struct FqappLinuxBridge {
       return;
     }
     if (str(field(media, "owner")) != str(field(args, "owner")) ||
-        str(field(media, "title")) != str(field(args, "title")) ||
-        str(field(media, "episode")) != str(field(args, "episode")))
+        str(field(media, "chapterId")) != str(field(args, "chapterId")))
       ++track;
     if (media)
       fl_value_unref(media);
