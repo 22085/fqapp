@@ -1,5 +1,6 @@
 import 'services/audio_downloader.dart';
 import 'widgets/desktop_app_frame.dart';
+import 'widgets/desktop_shell_scope.dart';
 import 'services/native_player.dart';
 import 'services/desktop_platform.dart';
 import 'services/platform_capabilities.dart';
@@ -242,8 +243,9 @@ Future<void> _loadLocalData() async {
     // AI 设置/缓存/反馈箱：失败只让 AI 功能退化，不能拖住阅读。
     optional(AiReadingController.instance.init),
     // 主题样式与 SharedPreferences 一并并行：两者都是启动链上的必要项，
-    // 但都不该排在并行段之后串行等。
-    spFuture.then<void>((_) {}),
+    // 不该排在并行段之后串行等。prefs 读失败即启动失败(失败页 + 重试);
+    // 样式 store 是可选外观偏好,内部吞错,读失败只回落默认外观(#421)。
+    spFuture,
     themeStyleFuture,
   ]);
   // 多端同步的网络或安全存储故障不阻塞本机阅读。旧 WebDAV 配置由统一服务只读接管，绝不在这里启动云端覆盖流程。
@@ -344,6 +346,7 @@ class _FqAppState extends State<FqApp> {
   final _audioRoutes = AudioFloatingRoutes(
     defaultBottomInset: isWindowsDesktop ? 0 : 72,
   );
+  final _desktopRoutes = DesktopRouteObserver();
   // Desktop fullscreen reparents the content; keep the playback owner alive.
   final _audioScopeKey = GlobalKey();
   final _navigatorKey = isMediaDesktop
@@ -389,7 +392,10 @@ class _FqAppState extends State<FqApp> {
                   valueListenable: _styleStore,
                   builder: (context, style, _) => MaterialApp(
                     navigatorKey: _navigatorKey,
-                    navigatorObservers: [_audioRoutes],
+                    navigatorObservers: [
+                      _audioRoutes,
+                      if (isWindowsDesktop) _desktopRoutes,
+                    ],
                     builder: (context, child) {
                       final palette = HomePalette.of(context);
                       final playback = AudioPlaybackScope(
@@ -606,7 +612,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
                   //
                   // 代价是「本地数据未就绪」态没有静止的一帧——测试里不能靠
                   // `pumpAndSettle()` 等它停下来（会卡到超时），要用有界推进
-                  // 推到目标出现为止（见 test/startup_gate_test.dart 的
+                  // 推到目标出现为止（见 test/support/pump_until.dart 的
                   // pumpUntilFound）。
                   child: AppStyleTokens.of(context).isClassic
                       ? const ClassicHomeSkeleton()
