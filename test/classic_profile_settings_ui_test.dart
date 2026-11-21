@@ -273,6 +273,24 @@ void main() {
         expect(find.byType(ClassicMineHeatmap), findsOneWidget);
         expect(find.byType(ClassicMineTopBooks), findsOneWidget);
         expect(find.byType(ClassicMineEntries), findsOneWidget);
+        expect(find.byType(ClassicMinePrimaryTools), findsOneWidget);
+        expect(find.text('离线缓存'), findsOneWidget);
+        expect(find.text('备份与导入'), findsOneWidget);
+        expect(find.text('关于'), findsOneWidget);
+        expect(
+          tester
+              .widget<ClassicMineTopBooks>(find.byType(ClassicMineTopBooks))
+              .previewCount,
+          3,
+        );
+        expect(
+          tester.getTopLeft(find.byType(ClassicMinePrimaryTools)).dy,
+          lessThan(tester.getTopLeft(find.byType(ClassicMineHeatmap)).dy),
+        );
+        expect(
+          tester.getTopLeft(find.byType(ClassicMineEntries)).dy,
+          greaterThan(tester.getTopLeft(find.byType(ClassicMineTopBooks)).dy),
+        );
         expect(find.text('今日阅读'), findsOneWidget);
         expect(find.text('阅读热力图'), findsOneWidget);
         expect(find.text('读得最多'), findsOneWidget);

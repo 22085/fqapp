@@ -291,15 +291,28 @@ class _MinePageState extends State<MinePage> {
             const SizedBox(width: 4),
           ],
         ),
-        body: ListView(
-          key: const PageStorageKey('my-page-classic'),
-          padding: EdgeInsets.only(bottom: homeBottomClearance(context)),
-          children: [
-            ClassicMineSummary(stats: _stats, today: today),
-            ClassicMineHeatmap(stats: _stats, today: today),
-            ClassicMineTopBooks(rank: _stats.rank, onOpen: _openEntry),
-            const ClassicMineEntries(),
-          ],
+        body: LayoutBuilder(
+          builder: (context, constraints) {
+            // 600dp 起按平板处理,更窄才启用手机顺序。
+            final phone = constraints.maxWidth < 600;
+            return ListView(
+              key: const PageStorageKey('my-page-classic'),
+              padding: EdgeInsets.only(bottom: homeBottomClearance(context)),
+              children: [
+                ClassicMineSummary(stats: _stats, today: today),
+                if (phone) const ClassicMinePrimaryTools(),
+                ClassicMineHeatmap(stats: _stats, today: today),
+                ClassicMineTopBooks(
+                  rank: _stats.rank,
+                  onOpen: _openEntry,
+                  previewCount: phone
+                      ? 3
+                      : ClassicMineTopBooks.defaultPreviewCount,
+                ),
+                ClassicMineEntries(showTools: !phone),
+              ],
+            );
+          },
         ),
       );
     }
