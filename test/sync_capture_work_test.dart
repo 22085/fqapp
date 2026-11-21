@@ -49,6 +49,26 @@ void main() {
   });
 
   test(
+    'merged remote snapshots skip equal stores but preserve deletions',
+    () async {
+      final baseline = SyncSnapshot({
+        'h|book|removed': {'id': 'removed', 'kind': 'book', 'time': 1},
+        'h|book|kept': {'id': 'kept', 'kind': 'book', 'time': 2},
+      });
+      final reordered = SyncSnapshot({
+        'h|book|kept': {'time': 2, 'id': 'kept', 'kind': 'book'},
+        'h|book|removed': {'time': 1, 'id': 'removed', 'kind': 'book'},
+      });
+      expect(await prepareMergedSyncApply(reordered, baseline), isNull);
+
+      reordered.values.remove('h|book|removed');
+      final backup = await prepareMergedSyncApply(reordered, baseline);
+      expect(backup!.history.map((row) => row['id']), ['kept']);
+      expect(baseline.values, hasLength(2));
+    },
+  );
+
+  test(
     'notification bursts queue one scan and one follow-up behind other work',
     () async {
       final queue = <Future<void> Function()>[];

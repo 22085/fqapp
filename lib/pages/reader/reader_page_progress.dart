@@ -216,7 +216,6 @@ extension _ReaderPageProgress on _ReaderPageState {
     }
     if (_progressPreviewActive || _settingsPreviewActive) return;
     _keepChapterEndAnchor = false;
-    _settleReadTime();
     // PageView reports the new page around the animation midpoint. Do not
     // start Hive writes, sync capture and AI prefetch in the remaining frames.
     // Consecutive turns coalesce; chapter changes and dispose still save directly.
@@ -227,6 +226,7 @@ extension _ReaderPageProgress on _ReaderPageState {
         _saveTimer = Timer(const Duration(milliseconds: 250), save);
         return;
       }
+      _settleReadTime();
       unawaited(_persistProgress());
       unawaited(_maybeAiPrefetch());
     }

@@ -776,11 +776,12 @@ class MultiDeviceSyncService extends ChangeNotifier
   }
 
   Future<void> _applyMerged(SyncSnapshot desired) async {
+    final backup = await prepareMergedSyncApply(desired, _baseline);
+    if (backup == null) return;
     // Write the intent first so a process death cannot turn a downloaded
     // deletion into a fresh local add on next startup.
     await _persist(pending: desired.values);
     _pendingRecovery = desired.values;
-    final backup = desired.toBackup();
     final shelfApplied = await ShelfStore.instance.applySyncedRecords(
       incoming: backup.shelf,
       acceptsCurrent: (shelf) => SyncSnapshot.fromBackup(
@@ -827,16 +828,19 @@ class MultiDeviceSyncService extends ChangeNotifier
           published,
           requireJournal: _upstreamEstablished,
         );
-        final serverVersion = syncJson(merged.toJson());
+        final serverVersion = await _documentVersion(merged);
         await _serial(() async {
           await _capture();
-          merged.merge(_document);
-          _document = merged;
+          final (document, snapshot) = await _reconcileWebDav(
+            merged,
+            _document,
+          );
+          _document = document;
           _upstreamEstablished = true;
-          await _applyMerged(SyncSnapshot.fromDocument(merged));
+          await _applyMerged(snapshot);
           lastSuccess = DateTime.now();
           await _persist();
-          if (syncJson(_document.toJson()) != serverVersion) {
+          if (await _documentVersion(_document) != serverVersion) {
             _schedule();
           }
         });
@@ -908,6 +912,17 @@ class MultiDeviceSyncService extends ChangeNotifier
       notifyListeners();
     }
   }
+
+  static Future<String> _documentVersion(SyncDocument document) =>
+      Isolate.run(() => syncJson(document.toJson()));
+
+  static Future<(SyncDocument, SyncSnapshot)> _reconcileWebDav(
+    SyncDocument merged,
+    SyncDocument local,
+  ) => Isolate.run(() {
+    merged.merge(local);
+    return (merged, SyncSnapshot.fromDocument(merged));
+  });
 
   /// Called before closing Hive on desktop, and by integration tests. Cancels
   /// network IO but flushes the local journal; no reading records are removed.

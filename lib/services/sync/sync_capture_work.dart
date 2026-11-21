@@ -10,6 +10,15 @@ typedef LocalSyncCapture = ({
   Map<String, Map<String, dynamic>?> changes,
 });
 
+/// Null means the merged records are already present in local storage.
+Future<LibraryBackup?> prepareMergedSyncApply(
+  SyncSnapshot desired,
+  SyncSnapshot baseline,
+) => Isolate.run(() {
+  if (syncJson(desired.values) == syncJson(baseline.values)) return null;
+  return desired.toBackup();
+});
+
 /// Keep full-library JSON conversion and comparison off the UI isolate.
 Future<LocalSyncCapture> prepareLocalSyncCapture(
   LibraryBackup backup,
