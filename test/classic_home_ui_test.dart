@@ -248,8 +248,12 @@ void main() {
   );
 
   testWidgets(
-    'continue reading is one text row without a card, cover or progress bar',
+    'phone continue row adapts and displays progress once without a card',
     (tester) async {
+      tester.view.physicalSize = const Size(400, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       var opened = 0;
       var dismissed = 0;
       final style = ValueNotifier(AppThemeStyle.archive);
@@ -296,10 +300,11 @@ void main() {
           findsNothing,
         );
         expect(find.text('继续阅读'), findsOneWidget);
-        expect(find.text('榜书1 · 读到 第3章'), findsOneWidget);
+        expect(find.text('榜书1'), findsOneWidget);
+        expect(find.text('读到 第3章'), findsOneWidget);
         expect(find.text('40%'), findsOneWidget);
-        expect(tester.getSize(find.byType(ClassicHomeContinueRow)).height, 44);
-        await tester.tap(find.text('榜书1 · 读到 第3章'));
+        expect(tester.getSize(find.byType(ClassicHomeContinueRow)).height, 48);
+        await tester.tap(find.text('榜书1'));
         await tester.tap(find.bySemanticsLabel('隐藏继续阅读'));
         expect(opened, 1);
         expect(dismissed, 1);
@@ -307,6 +312,34 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.byType(LinearProgressIndicator), findsOneWidget);
         expect(find.text('CONTINUE / 读到 第3章'), findsOneWidget);
+        style.value = AppThemeStyle.classic;
+        await tester.pumpWidget(
+          _switchable(
+            style,
+            Scaffold(
+              body: MediaQuery(
+                data: const MediaQueryData(
+                  size: Size(400, 900),
+                  textScaler: TextScaler.linear(1.5),
+                ),
+                child: HomeContinueRow(
+                  now: ReadingNow.fromHistory({
+                    'id': 'continue-audio',
+                    'title': '用于检查长书名与大字体的继续收听作品',
+                    'kind': 'audio',
+                    'progress': .2,
+                  }),
+                  onOpen: () => opened++,
+                  onDismiss: () => dismissed++,
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('已听 20%'), findsOneWidget);
+        expect(find.text('20%'), findsNothing);
+        expect(tester.takeException(), isNull);
       } finally {
         semantics.dispose();
       }
