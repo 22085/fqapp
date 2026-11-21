@@ -478,6 +478,7 @@ class _AudioPlaybackController extends ChangeNotifier
         linuxPlayerId: player?.playerId,
         title: _title,
         episode: _chapters[_index].title,
+        chapterId: _chapters[_index].itemId,
         // 通知大图 / 媒体卡封面用的是当前书籍封面，不是应用图标。
         coverUrl: _cover,
         playing: isPlaying,
