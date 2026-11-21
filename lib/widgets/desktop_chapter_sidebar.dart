@@ -17,6 +17,10 @@ class DesktopChapterSidebar extends StatefulWidget {
     this.textColor,
     this.mutedColor,
     this.accentColor,
+    this.inputFillColor,
+    this.hoverColor,
+    this.eink,
+    this.collapseTooltip = '收起目录',
     this.onCollapse,
     this.showBorder = true,
   });
@@ -31,6 +35,10 @@ class DesktopChapterSidebar extends StatefulWidget {
   final Color? textColor;
   final Color? mutedColor;
   final Color? accentColor;
+  final Color? inputFillColor;
+  final Color? hoverColor;
+  final bool? eink;
+  final String collapseTooltip;
   final VoidCallback? onCollapse;
   final bool showBorder;
 
@@ -83,12 +91,26 @@ class _DesktopChapterSidebarState extends State<DesktopChapterSidebar> {
   @override
   Widget build(BuildContext context) {
     final palette = HomePalette.of(context);
+    final effectiveEink = widget.eink ?? palette.eink;
     final bg = widget.backgroundColor ?? palette.surface;
     final border = widget.borderColor ?? palette.line;
     final ink = widget.textColor ?? palette.ink;
     final muted = widget.mutedColor ?? palette.muted;
     final accent =
-        widget.accentColor ?? (palette.eink ? palette.ink : HomePalette.accent);
+        widget.accentColor ?? (effectiveEink ? ink : HomePalette.accent);
+    final isDarkBg = !effectiveEink && bg.computeLuminance() <= 0.179;
+    final effectiveHover =
+        widget.hoverColor ?? ink.withValues(alpha: isDarkBg ? 0.08 : 0.05);
+    final effectiveInputFill =
+        widget.inputFillColor ??
+        (effectiveEink
+            ? Colors.white
+            : (widget.backgroundColor != null
+                  ? Color.alphaBlend(
+                      ink.withValues(alpha: isDarkBg ? 0.07 : 0.045),
+                      bg,
+                    )
+                  : palette.canvas.withValues(alpha: 0.55)));
     final indices = [
       for (var i = 0; i < widget.chapters.length; i++)
         if (_query.isEmpty || widget.chapters[i].title.contains(_query)) i,
@@ -129,13 +151,14 @@ class _DesktopChapterSidebarState extends State<DesktopChapterSidebar> {
                     ),
                     if (widget.onCollapse != null)
                       IconButton(
-                        tooltip: '收起目录',
+                        tooltip: widget.collapseTooltip,
                         visualDensity: VisualDensity.compact,
                         constraints: const BoxConstraints.tightFor(
                           width: 30,
                           height: 30,
                         ),
                         padding: EdgeInsets.zero,
+                        hoverColor: effectiveHover,
                         onPressed: widget.onCollapse,
                         icon: Icon(
                           LucideIcons.panel_left_close,
@@ -152,13 +175,14 @@ class _DesktopChapterSidebarState extends State<DesktopChapterSidebar> {
                   height: 34,
                   child: TextField(
                     controller: _searchCtrl,
+                    cursorColor: accent,
                     style: TextStyle(fontSize: 12.5, color: ink),
                     decoration: InputDecoration(
                       hintText: '搜索目录',
                       hintStyle: TextStyle(fontSize: 12.5, color: muted),
                       isDense: true,
                       filled: true,
-                      fillColor: palette.canvas.withValues(alpha: 0.55),
+                      fillColor: effectiveInputFill,
                       contentPadding: const EdgeInsets.symmetric(
                         horizontal: 8,
                         vertical: 0,
@@ -227,10 +251,10 @@ class _DesktopChapterSidebarState extends State<DesktopChapterSidebar> {
                           return _ChapterRowTile(
                             title: widget.chapters[i].title,
                             selected: selected,
-                            eink: palette.eink,
+                            eink: effectiveEink,
                             ink: ink,
                             accent: accent,
-                            hoverColor: ink.withValues(alpha: 0.05),
+                            hoverColor: effectiveHover,
                             onTap: () => widget.onSelected(i),
                           );
                         },

@@ -74,6 +74,38 @@ class _DetailDescriptionState extends State<DetailDescription> {
               .merge(style)
               .merge(const TextStyle(fontWeight: FontWeight.bold))
         : defaultTextStyle.style.merge(style);
+    // 经典窄屏手机才加 48dp 触摸目标;桌面/档案/经典平板保持原样。
+    final classicPhone =
+        classic && !widget.desktop && MediaQuery.sizeOf(context).width < 600;
+    final toggle = JellyTapSurface(
+      key: const Key('detail_description_toggle'),
+      onTap: _toggle,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AppText(
+              _isExpanded ? '收起' : '展开全部',
+              style: TextStyle(
+                color: classic ? palette.muted : scheme.onSurfaceVariant,
+                fontSize: 13,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(width: 7),
+            AnimatedRotation(
+              turns: _isExpanded ? .5 : 0,
+              duration: MediaQuery.disableAnimationsOf(context)
+                  ? Duration.zero
+                  : WenkuMotion.enter,
+              curve: WenkuMotion.ease,
+              child: const ArchiveIcon(CupertinoIcons.chevron_down, size: 12),
+            ),
+          ],
+        ),
+      ),
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -123,41 +155,14 @@ class _DetailDescriptionState extends State<DetailDescription> {
                           ),
                         ),
                         if (canExpand)
-                          JellyTapSurface(
-                            key: const Key('detail_description_toggle'),
-                            onTap: _toggle,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 8),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  AppText(
-                                    _isExpanded ? '收起' : '展开全部',
-                                    style: TextStyle(
-                                      color: classic
-                                          ? palette.muted
-                                          : scheme.onSurfaceVariant,
-                                      fontSize: 13,
-                                      height: 1.5,
-                                    ),
+                          classicPhone
+                              ? ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    minHeight: 48,
                                   ),
-                                  const SizedBox(width: 7),
-                                  AnimatedRotation(
-                                    turns: _isExpanded ? .5 : 0,
-                                    duration:
-                                        MediaQuery.disableAnimationsOf(context)
-                                        ? Duration.zero
-                                        : WenkuMotion.enter,
-                                    curve: WenkuMotion.ease,
-                                    child: const ArchiveIcon(
-                                      CupertinoIcons.chevron_down,
-                                      size: 12,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
+                                  child: toggle,
+                                )
+                              : toggle,
                       ],
                     );
                   },

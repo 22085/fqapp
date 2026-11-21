@@ -16,12 +16,14 @@ class DesktopWindowBar extends StatefulWidget {
     super.key,
     required this.canToggleSidebar,
     required this.sidebarExpanded,
+    this.readerChrome,
   });
 
   static const double height = 44.0;
 
   final bool canToggleSidebar;
   final bool sidebarExpanded;
+  final DesktopReaderChrome? readerChrome;
 
   @override
   State<DesktopWindowBar> createState() => _DesktopWindowBarState();
@@ -50,13 +52,19 @@ class _DesktopWindowBarState extends State<DesktopWindowBar> {
   @override
   Widget build(BuildContext context) {
     final palette = HomePalette.of(context);
+    final reader = widget.readerChrome;
+    final barBg = reader?.barBackground ?? palette.canvas;
+    final hoverColor = reader?.hoverBackground ?? palette.soft;
+    final inkColor = reader?.ink ?? palette.ink;
+    final mutedColor = reader?.muted ?? palette.muted;
+    final eink = reader?.isEink ?? palette.eink;
     final accent = palette.eink ? palette.ink : HomePalette.accent;
     return MediaQuery.withClampedTextScaling(
       maxScaleFactor: 1.25,
       child: Container(
         key: const Key('desktop-window-bar'),
         height: DesktopWindowBar.height,
-        color: palette.canvas,
+        color: barBg,
         child: Row(
           children: [
             const SizedBox(width: 8),
@@ -66,129 +74,214 @@ class _DesktopWindowBarState extends State<DesktopWindowBar> {
                 key: const Key('desktop-back'),
                 tooltip: '返回',
                 icon: LucideIcons.arrow_left,
-                color: canPop
-                    ? palette.ink
-                    : palette.muted.withValues(alpha: 0.45),
-                palette: palette,
+                color: canPop ? inkColor : mutedColor.withValues(alpha: 0.45),
+                hoverColor: hoverColor,
+                eink: eink,
                 onTap: () =>
                     DesktopPlatform.navigatorKey.currentState?.maybePop(),
               ),
             ),
-            if (widget.canToggleSidebar) ...[
-              const SizedBox(width: 2),
-              _TitleBarIconButton(
-                key: const Key('desktop-sidebar-toggle'),
-                tooltip: widget.sidebarExpanded ? '收起导航栏' : '展开导航栏',
-                icon: LucideIcons.panel_left,
-                color: palette.ink,
-                palette: palette,
-                onTap: DesktopShellState.toggleSidebar,
-              ),
-            ],
-            const SizedBox(width: 8),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(5),
-              child: Image.asset(
-                'assets/images/app_logo.webp',
-                width: 20,
-                height: 20,
-                fit: BoxFit.cover,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              '什锦铺',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontWeight: FontWeight.w700,
-                fontSize: 13.5,
-                color: palette.ink,
-              ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onPanStart: (_) =>
-                    unawaited(DesktopPlatform.instance.startWindowDragging()),
-                onDoubleTap: () =>
-                    unawaited(DesktopPlatform.instance.toggleMaximizeWindow()),
-                child: SizedBox(
-                  height: DesktopWindowBar.height,
-                  child: ValueListenableBuilder<int>(
-                    valueListenable: desktopTab,
-                    builder: (context, tab, _) => ValueListenableBuilder<bool>(
-                      valueListenable: DesktopShellState.onSearchPage,
-                      builder: (context, inSearch, _) {
-                        if (tab == 1 || inSearch) {
-                          return const SizedBox.expand();
-                        }
-                        return Align(
-                          alignment: Alignment.center,
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 400),
-                            child: SizedBox(
-                              height: 30,
-                              child: TextField(
-                                key: const Key('desktop-search'),
-                                controller: _searchCtrl,
-                                onSubmitted: (v) => _submitSearch(context, v),
-                                textInputAction: TextInputAction.search,
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  color: palette.ink,
-                                ),
-                                decoration: InputDecoration(
-                                  hintText: '搜索书名、作者或作品 ID',
-                                  hintStyle: TextStyle(
-                                    fontSize: 12.5,
-                                    color: palette.muted,
-                                  ),
-                                  isDense: true,
-                                  filled: true,
-                                  fillColor: palette.surface,
-                                  contentPadding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                  ),
-                                  prefixIcon: Icon(
-                                    LucideIcons.search,
-                                    size: 14,
-                                    color: palette.muted,
-                                  ),
-                                  prefixIconConstraints:
-                                      const BoxConstraints.tightFor(
-                                        width: 32,
-                                        height: 30,
-                                      ),
-                                  enabledBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(8),
-                                    borderSide: BorderSide(color: palette.line),
-                                  ),
-                                  focusedBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(8),
-                                    borderSide: BorderSide(
-                                      color: accent,
-                                      width: 1.2,
-                                    ),
-                                  ),
-                                  border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(8),
-                                    borderSide: BorderSide(color: palette.line),
-                                  ),
-                                ),
-                              ),
-                            ),
+            if (reader != null) ...[
+              if (reader.canToggleSidebar &&
+                  reader.onToggleSidebar != null) ...[
+                const SizedBox(width: 2),
+                _TitleBarIconButton(
+                  key: const Key('desktop-reader-toc-toggle'),
+                  tooltip: reader.sidebarOpen
+                      ? '收起目录 (Ctrl+B)'
+                      : '展开目录 (Ctrl+B)',
+                  icon: reader.sidebarOpen
+                      ? LucideIcons.panel_left_close
+                      : LucideIcons.panel_left_open,
+                  color: inkColor,
+                  hoverColor: hoverColor,
+                  eink: eink,
+                  onTap: reader.onToggleSidebar!,
+                ),
+              ],
+              const SizedBox(width: 10),
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onPanStart: (_) =>
+                      unawaited(DesktopPlatform.instance.startWindowDragging()),
+                  onDoubleTap: () => unawaited(
+                    DesktopPlatform.instance.toggleMaximizeWindow(),
+                  ),
+                  child: SizedBox(
+                    height: DesktopWindowBar.height,
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 12),
+                        child: Text(
+                          reader.title.trim().isNotEmpty ? reader.title : '什锦铺',
+                          key: const Key('desktop-reader-title'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13.5,
+                            color: inkColor,
                           ),
-                        );
-                      },
+                        ),
+                      ),
                     ),
                   ),
                 ),
               ),
+              if (reader.canToggleFullscreen) ...[
+                const SizedBox(width: 4),
+                _TitleBarIconButton(
+                  key: const Key('desktop-reader-fullscreen-toggle'),
+                  tooltip: '全屏阅读 (F11)',
+                  icon: LucideIcons.maximize_2,
+                  color: mutedColor,
+                  hoverColor: hoverColor,
+                  eink: eink,
+                  onTap: () =>
+                      unawaited(DesktopPlatform.instance.setFullscreen(true)),
+                ),
+              ],
+              const SizedBox(width: 8),
+            ] else ...[
+              if (widget.canToggleSidebar) ...[
+                const SizedBox(width: 2),
+                _TitleBarIconButton(
+                  key: const Key('desktop-sidebar-toggle'),
+                  tooltip: widget.sidebarExpanded ? '收起导航栏' : '展开导航栏',
+                  icon: LucideIcons.panel_left,
+                  color: palette.ink,
+                  hoverColor: hoverColor,
+                  eink: eink,
+                  onTap: DesktopShellState.toggleSidebar,
+                ),
+              ],
+              const SizedBox(width: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(5),
+                child: Image.asset(
+                  'assets/images/app_logo.webp',
+                  width: 20,
+                  height: 20,
+                  fit: BoxFit.cover,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '什锦铺',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13.5,
+                  color: palette.ink,
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onPanStart: (_) =>
+                      unawaited(DesktopPlatform.instance.startWindowDragging()),
+                  onDoubleTap: () => unawaited(
+                    DesktopPlatform.instance.toggleMaximizeWindow(),
+                  ),
+                  child: SizedBox(
+                    height: DesktopWindowBar.height,
+                    child: ValueListenableBuilder<int>(
+                      valueListenable: desktopTab,
+                      builder: (context, tab, _) =>
+                          ValueListenableBuilder<bool>(
+                            valueListenable: DesktopShellState.onSearchPage,
+                            builder: (context, inSearch, _) {
+                              if (tab == 1 || inSearch) {
+                                return const SizedBox.expand();
+                              }
+                              return Align(
+                                alignment: Alignment.center,
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxWidth: 400,
+                                  ),
+                                  child: SizedBox(
+                                    height: 30,
+                                    child: TextField(
+                                      key: const Key('desktop-search'),
+                                      controller: _searchCtrl,
+                                      onSubmitted: (v) =>
+                                          _submitSearch(context, v),
+                                      textInputAction: TextInputAction.search,
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color: palette.ink,
+                                      ),
+                                      decoration: InputDecoration(
+                                        hintText: '搜索书名、作者或作品 ID',
+                                        hintStyle: TextStyle(
+                                          fontSize: 12.5,
+                                          color: palette.muted,
+                                        ),
+                                        isDense: true,
+                                        filled: true,
+                                        fillColor: palette.surface,
+                                        contentPadding:
+                                            const EdgeInsets.symmetric(
+                                              horizontal: 10,
+                                            ),
+                                        prefixIcon: Icon(
+                                          LucideIcons.search,
+                                          size: 14,
+                                          color: palette.muted,
+                                        ),
+                                        prefixIconConstraints:
+                                            const BoxConstraints.tightFor(
+                                              width: 32,
+                                              height: 30,
+                                            ),
+                                        enabledBorder: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
+                                          borderSide: BorderSide(
+                                            color: palette.line,
+                                          ),
+                                        ),
+                                        focusedBorder: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
+                                          borderSide: BorderSide(
+                                            color: accent,
+                                            width: 1.2,
+                                          ),
+                                        ),
+                                        border: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
+                                          borderSide: BorderSide(
+                                            color: palette.line,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+            ],
+            _WindowCaptionButtons(
+              ink: inkColor,
+              hoverColor: hoverColor,
+              eink: eink,
             ),
-            const SizedBox(width: 12),
-            _WindowCaptionButtons(palette: palette),
           ],
         ),
       ),
@@ -202,14 +295,16 @@ class _TitleBarIconButton extends StatefulWidget {
     required this.tooltip,
     required this.icon,
     required this.color,
-    required this.palette,
+    required this.hoverColor,
+    required this.eink,
     required this.onTap,
   });
 
   final String tooltip;
   final IconData icon;
   final Color color;
-  final HomePalette palette;
+  final Color hoverColor;
+  final bool eink;
   final VoidCallback onTap;
 
   @override
@@ -234,13 +329,13 @@ class _TitleBarIconButtonState extends State<_TitleBarIconButton> {
             behavior: HitTestBehavior.opaque,
             onTap: widget.onTap,
             child: AnimatedContainer(
-              duration: widget.palette.eink
+              duration: widget.eink
                   ? Duration.zero
                   : const Duration(milliseconds: 100),
               width: 34,
               height: 30,
               decoration: BoxDecoration(
-                color: _hovered ? widget.palette.soft : Colors.transparent,
+                color: _hovered ? widget.hoverColor : Colors.transparent,
                 borderRadius: BorderRadius.circular(6),
               ),
               alignment: Alignment.center,
@@ -254,9 +349,15 @@ class _TitleBarIconButtonState extends State<_TitleBarIconButton> {
 }
 
 class _WindowCaptionButtons extends StatelessWidget {
-  const _WindowCaptionButtons({required this.palette});
+  const _WindowCaptionButtons({
+    required this.ink,
+    required this.hoverColor,
+    required this.eink,
+  });
 
-  final HomePalette palette;
+  final Color ink;
+  final Color hoverColor;
+  final bool eink;
 
   @override
   Widget build(BuildContext context) {
@@ -266,7 +367,9 @@ class _WindowCaptionButtons extends StatelessWidget {
         _CaptionButton(
           key: const Key('desktop-window-minimize'),
           tooltip: '最小化',
-          palette: palette,
+          ink: ink,
+          hoverColor: hoverColor,
+          eink: eink,
           kind: _CaptionKind.minimize,
           onTap: () => unawaited(DesktopPlatform.instance.minimizeWindow()),
         ),
@@ -275,7 +378,9 @@ class _WindowCaptionButtons extends StatelessWidget {
           builder: (context, maximized, _) => _CaptionButton(
             key: const Key('desktop-window-maximize'),
             tooltip: maximized ? '还原' : '最大化',
-            palette: palette,
+            ink: ink,
+            hoverColor: hoverColor,
+            eink: eink,
             kind: maximized ? _CaptionKind.restore : _CaptionKind.maximize,
             onTap: () =>
                 unawaited(DesktopPlatform.instance.toggleMaximizeWindow()),
@@ -284,7 +389,9 @@ class _WindowCaptionButtons extends StatelessWidget {
         _CaptionButton(
           key: const Key('desktop-window-close'),
           tooltip: '关闭',
-          palette: palette,
+          ink: ink,
+          hoverColor: hoverColor,
+          eink: eink,
           kind: _CaptionKind.close,
           onTap: () => unawaited(DesktopPlatform.instance.closeWindow()),
         ),
@@ -299,13 +406,17 @@ class _CaptionButton extends StatefulWidget {
   const _CaptionButton({
     super.key,
     required this.tooltip,
-    required this.palette,
+    required this.ink,
+    required this.hoverColor,
+    required this.eink,
     required this.kind,
     required this.onTap,
   });
 
   final String tooltip;
-  final HomePalette palette;
+  final Color ink;
+  final Color hoverColor;
+  final bool eink;
   final _CaptionKind kind;
   final VoidCallback onTap;
 
@@ -320,9 +431,9 @@ class _CaptionButtonState extends State<_CaptionButton> {
   Widget build(BuildContext context) {
     final isClose = widget.kind == _CaptionKind.close;
     final hoverBg = isClose
-        ? (widget.palette.eink ? Colors.black : const Color(0xFFC42B1C))
-        : widget.palette.soft;
-    final fg = (isClose && _hovered) ? Colors.white : widget.palette.ink;
+        ? (widget.eink ? Colors.black : const Color(0xFFC42B1C))
+        : widget.hoverColor;
+    final fg = (isClose && _hovered) ? Colors.white : widget.ink;
     return Tooltip(
       message: widget.tooltip,
       child: Semantics(
