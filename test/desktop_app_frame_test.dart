@@ -179,4 +179,80 @@ void main() {
       debugDefaultTargetPlatformOverride = null;
     }
   });
+
+  testWidgets(
+    'reader chrome hides nav pane, syncs dark colors, and restores on clear',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      await tester.binding.setSurfaceSize(const Size(1280, 800));
+      final owner = Object();
+      var toggled = false;
+      const darkBarBg = Color(0xFF1E1E1E);
+      try {
+        await tester.pumpWidget(
+          const MaterialApp(home: DesktopAppFrame(child: SizedBox.expand())),
+        );
+        await tester.pump();
+
+        expect(find.byKey(const Key('desktop-nav-pane')), findsOneWidget);
+        expect(find.byKey(const Key('desktop-search')), findsOneWidget);
+
+        DesktopShellState.setReaderChrome(
+          DesktopReaderChrome(
+            owner: owner,
+            title: '测试书名',
+            isDark: true,
+            isEink: false,
+            barBackground: darkBarBg,
+            surface: const Color(0xFF282828),
+            hoverBackground: const Color(0x18FFFFFF),
+            border: const Color(0x1FD2D2D2),
+            ink: const Color(0xFFD2D2D2),
+            muted: const Color(0xA6D2D2D2),
+            accent: const Color(0xFFE9AD82),
+            canToggleSidebar: true,
+            sidebarOpen: true,
+            canToggleFullscreen: true,
+            onToggleSidebar: () => toggled = true,
+          ),
+        );
+        await tester.pump();
+
+        expect(find.byKey(const Key('desktop-nav-pane')), findsNothing);
+        expect(find.byKey(const Key('desktop-sidebar-toggle')), findsNothing);
+        expect(find.byKey(const Key('desktop-search')), findsNothing);
+        expect(find.byKey(const Key('desktop-back')), findsOneWidget);
+        expect(find.byKey(const Key('desktop-reader-title')), findsOneWidget);
+        expect(find.text('测试书名'), findsOneWidget);
+        expect(
+          find.byKey(const Key('desktop-reader-toc-toggle')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('desktop-reader-fullscreen-toggle')),
+          findsOneWidget,
+        );
+
+        final bar = tester.widget<Container>(
+          find.byKey(const Key('desktop-window-bar')),
+        );
+        expect(bar.color, darkBarBg);
+
+        await tester.tap(find.byKey(const Key('desktop-reader-toc-toggle')));
+        await tester.pump();
+        expect(toggled, isTrue);
+
+        DesktopShellState.clearReaderChrome(owner);
+        await tester.pump();
+        expect(find.byKey(const Key('desktop-nav-pane')), findsOneWidget);
+        expect(find.byKey(const Key('desktop-search')), findsOneWidget);
+        expect(find.byKey(const Key('desktop-reader-title')), findsNothing);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+      } finally {
+        await tester.binding.setSurfaceSize(null);
+        debugDefaultTargetPlatformOverride = null;
+      }
+    },
+  );
 }

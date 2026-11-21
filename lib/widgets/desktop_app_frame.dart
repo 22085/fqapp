@@ -45,60 +45,92 @@ class DesktopAppFrame extends StatelessWidget {
         final palette = HomePalette.of(context);
         return DesktopShellScope(
           hasFrame: true,
-          child: Material(
-            color: palette.canvas,
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final canExpand = constraints.maxWidth >= 1100;
-                return ValueListenableBuilder<bool>(
-                  valueListenable: DesktopShellState.sidebarExpanded,
-                  builder: (context, userExpanded, _) {
-                    final expanded = canExpand && userExpanded;
-                    return Column(
-                      children: [
-                        DesktopWindowBar(
-                          canToggleSidebar: canExpand,
-                          sidebarExpanded: expanded,
-                        ),
-                        Expanded(
-                          child: Row(
-                            children: [
-                              _DesktopNavPane(
-                                key: const Key('desktop-nav-pane'),
-                                expanded: expanded,
-                                palette: palette,
-                                onSelectTab: _select,
-                                onOpenSettings: _openSettings,
-                              ),
-                              Expanded(
-                                child: DecoratedBox(
-                                  decoration: BoxDecoration(
-                                    color: palette.canvas,
-                                    border: Border(
-                                      top: BorderSide(color: palette.line),
-                                      left: BorderSide(color: palette.line),
+          child: ValueListenableBuilder<DesktopReaderChrome?>(
+            valueListenable: DesktopShellState.readerChrome,
+            builder: (context, readerChrome, _) {
+              final hideNavPane = readerChrome != null;
+              final frameCanvas = readerChrome?.barBackground ?? palette.canvas;
+              final frameLine = readerChrome?.border ?? palette.line;
+              return Material(
+                color: frameCanvas,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final canExpand = constraints.maxWidth >= 1100;
+                    return ValueListenableBuilder<bool>(
+                      valueListenable: DesktopShellState.sidebarExpanded,
+                      builder: (context, userExpanded, _) {
+                        final expanded = canExpand && userExpanded;
+                        return Column(
+                          children: [
+                            DesktopWindowBar(
+                              canToggleSidebar: !hideNavPane && canExpand,
+                              sidebarExpanded: expanded,
+                              readerChrome: readerChrome,
+                            ),
+                            Expanded(
+                              child: Row(
+                                children: [
+                                  if (!hideNavPane)
+                                    _DesktopNavPane(
+                                      key: const Key('desktop-nav-pane'),
+                                      expanded: expanded,
+                                      palette: palette,
+                                      onSelectTab: _select,
+                                      onOpenSettings: _openSettings,
                                     ),
-                                    borderRadius: const BorderRadius.only(
-                                      topLeft: Radius.circular(10),
-                                    ),
+                                  Expanded(
+                                    child: hideNavPane
+                                        ? DecoratedBox(
+                                            decoration: BoxDecoration(
+                                              color: frameCanvas,
+                                              border: Border(
+                                                top: BorderSide(
+                                                  color: frameLine,
+                                                ),
+                                              ),
+                                            ),
+                                            child: child,
+                                          )
+                                        : DecoratedBox(
+                                            decoration: BoxDecoration(
+                                              color: palette.canvas,
+                                              border: Border(
+                                                top: BorderSide(
+                                                  color: palette.line,
+                                                ),
+                                                left: BorderSide(
+                                                  color: palette.line,
+                                                ),
+                                              ),
+                                              borderRadius:
+                                                  const BorderRadius.only(
+                                                    topLeft: Radius.circular(
+                                                      10,
+                                                    ),
+                                                  ),
+                                            ),
+                                            child: ClipRRect(
+                                              borderRadius:
+                                                  const BorderRadius.only(
+                                                    topLeft: Radius.circular(
+                                                      10,
+                                                    ),
+                                                  ),
+                                              child: child,
+                                            ),
+                                          ),
                                   ),
-                                  child: ClipRRect(
-                                    borderRadius: const BorderRadius.only(
-                                      topLeft: Radius.circular(10),
-                                    ),
-                                    child: child,
-                                  ),
-                                ),
+                                ],
                               ),
-                            ],
-                          ),
-                        ),
-                      ],
+                            ),
+                          ],
+                        );
+                      },
                     );
                   },
-                );
-              },
-            ),
+                ),
+              );
+            },
           ),
         );
       },

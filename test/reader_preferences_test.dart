@@ -223,4 +223,26 @@ void main() {
       expect(restored.titleAlignment, ReaderTitleAlignment.center);
     },
   );
+
+  test(
+    'desktop sidebar open defaults on and persists explicit choice',
+    () async {
+      final defaults = await ReaderPreferences.load();
+      expect(defaults.desktopSidebarOpen, isTrue);
+      expect(const ReaderPreferences().desktopSidebarOpen, isTrue);
+
+      await defaults.copyWith(desktopSidebarOpen: false).save();
+      final collapsed = await ReaderPreferences.load();
+      expect(collapsed.desktopSidebarOpen, isFalse);
+      expect(collapsed.copyWith(fontSize: 20).desktopSidebarOpen, isFalse);
+
+      await collapsed.copyWith(desktopSidebarOpen: true).save();
+      expect((await ReaderPreferences.load()).desktopSidebarOpen, isTrue);
+
+      SharedPreferences.setMockInitialValues({
+        'reader_desktop_sidebar_open': 'invalid',
+      });
+      expect((await ReaderPreferences.load()).desktopSidebarOpen, isTrue);
+    },
+  );
 }

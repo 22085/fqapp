@@ -151,6 +151,34 @@ void main() {
     await tester.tap(find.byTooltip('收起目录'));
     await tester.pump();
     expect(collapsed, isTrue);
+
+    const darkSidebarBg = Color(0xFF1F1F1F);
+    const darkInputFill = Color(0xFF2B2B2B);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.light(),
+        home: Scaffold(
+          body: DesktopChapterSidebar(
+            backgroundColor: darkSidebarBg,
+            inputFillColor: darkInputFill,
+            borderColor: const Color(0x22FFFFFF),
+            textColor: const Color(0xFFD2D2D2),
+            mutedColor: const Color(0x99D2D2D2),
+            accentColor: const Color(0xFFE9AD82),
+            eink: false,
+            chapters: [
+              Chapter(itemId: '0', title: '第 0 章', volumeName: ''),
+            ],
+            currentIndex: 0,
+            onSelected: (_) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    final searchField = tester.widget<TextField>(find.byType(TextField));
+    expect(searchField.decoration?.fillColor, darkInputFill);
+
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
