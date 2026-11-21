@@ -1512,9 +1512,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       },
     );
     _sources.invalidate(widget.eps[_index].itemId);
-    if (_retrySilently(
-      backoff: error is ApiException && (error.statusCode ?? 0) >= 500,
-    )) {
+    final issue = PlaybackIssue.fromError(error);
+    // 编码不受支持是确定结论：静默重试只会再拿到同一种编码，直接给出原因。
+    if (issue.retryable &&
+        _retrySilently(
+          backoff: error is ApiException && (error.statusCode ?? 0) >= 500,
+        )) {
       return;
     }
     _prefetchTimer?.cancel();
@@ -1529,7 +1532,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       unawaited(NativePlayer.updateFloating(owner: owner, playing: false));
     }
     setState(() {
-      _error = PlaybackIssue.fromError(error);
+      _error = issue;
       _initVideo = false;
       _playing = false;
     });
@@ -2033,7 +2036,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           PlayerErrorFeedback(
             key: const ValueKey('player-error'),
             issue: _error!,
-            onRetry: widget.eps.isEmpty ? null : retry,
+            onRetry: widget.eps.isEmpty || !_error!.retryable ? null : retry,
           ),
         if (_error == null && (waiting || _player!.buffering))
           PlayerLoadingFeedback(
