@@ -330,30 +330,14 @@ class _ReaderDirectorySheetState extends State<ReaderDirectorySheet> {
     });
   }
 
-  /// Height of one [_rows] entry; only volume headers differ from the chapter
-  /// stride (see [_volumeExtent]).
-  double _rowExtent(int index) =>
-      _rows[index].chapter == null ? _volumeExtent : _itemExtent;
+  // Fixed strides let Flutter seek to deep chapters without scanning all
+  // preceding rows for each visible child on every scroll frame.
+  double get _rowStride => math.max(_itemExtent, _volumeExtent);
 
-  /// Pixel offset of [index], mirroring the list's prefix sums.
-  double _rowOffset(int index) {
-    var offset = 0.0;
-    for (var row = 0; row < index && row < _rows.length; row++) {
-      offset += _rowExtent(row);
-    }
-    return offset;
-  }
+  double _rowOffset(int index) => index.clamp(0, _rows.length) * _rowStride;
 
-  /// Row index under a scroll [offset]; the inverse of [_rowOffset].
-  int _rowIndexAt(double offset) {
-    var start = 0.0;
-    for (var row = 0; row < _rows.length; row++) {
-      final end = start + _rowExtent(row);
-      if (offset < end) return row;
-      start = end;
-    }
-    return math.max(0, _rows.length - 1);
-  }
+  int _rowIndexAt(double offset) =>
+      (offset / _rowStride).floor().clamp(0, math.max(0, _rows.length - 1));
 
   List<int> get _visibleIndexes {
     Iterable<int> indexes = Iterable<int>.generate(widget.chapters.length);
@@ -449,7 +433,7 @@ class _ReaderDirectorySheetState extends State<ReaderDirectorySheet> {
                       padding: classic
                           ? const EdgeInsets.symmetric(vertical: 8)
                           : const EdgeInsets.fromLTRB(10, 4, 10, 12),
-                      itemExtentBuilder: (position, _) => _rowExtent(position),
+                      itemExtent: _rowStride,
                       itemCount: _rows.length,
                       itemBuilder: (context, position) =>
                           switch (_rows[position].chapter) {

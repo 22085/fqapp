@@ -301,6 +301,7 @@ class ReaderPagedViewState extends State<ReaderPagedView>
       _turning ||
       _boundaryPending ||
       _pageDrag != null ||
+      (_attachedPosition?.isScrollingNotifier.value ?? false) ||
       _chapterTurnAnimation.isAnimating ||
       _curlAnimation.isAnimating;
 

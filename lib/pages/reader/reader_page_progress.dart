@@ -223,6 +223,10 @@ extension _ReaderPageProgress on _ReaderPageState {
     _saveTimer?.cancel();
     void save() {
       if (!mounted) return;
+      if (_pagedKey.currentState?.isTurning ?? false) {
+        _saveTimer = Timer(const Duration(milliseconds: 250), save);
+        return;
+      }
       unawaited(_persistProgress());
       unawaited(_maybeAiPrefetch());
     }
