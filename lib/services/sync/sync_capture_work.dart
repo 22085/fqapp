@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:isolate';
 
 import '../../models/library_backup.dart';
@@ -46,10 +47,28 @@ class CoalescedSyncWork {
   CoalescedSyncWork({required this.enqueue, required this.run});
   final Future<void> Function(Future<void> Function()) enqueue;
   final Future<void> Function() run;
+  Timer? _historyIdle;
+  Timer? _historyDeadline;
   bool _queued = false;
   bool _dirty = false;
 
+  // History is already saved in Hive. Batch the more expensive sync journal
+  // scan after a pause, with a cap so continuous reading still syncs.
+  void requestAfterHistoryIdle() {
+    _historyDeadline ??= Timer(const Duration(seconds: 30), request);
+    _historyIdle?.cancel();
+    _historyIdle = Timer(const Duration(seconds: 3), request);
+  }
+
+  void cancelHistoryDelay() {
+    _historyIdle?.cancel();
+    _historyIdle = null;
+    _historyDeadline?.cancel();
+    _historyDeadline = null;
+  }
+
   void request() {
+    cancelHistoryDelay();
     _dirty = true;
     if (_queued) return;
     _queued = true;

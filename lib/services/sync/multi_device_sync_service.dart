@@ -138,6 +138,7 @@ class MultiDeviceSyncService extends ChangeNotifier
   Future<void>? _running;
   Timer? _timer;
   Timer? _webDavPoll;
+  StreamSubscription<BoxEvent>? _historySubscription;
   DateTime? _lastAttempt;
   SyncTransport? _activeTransport;
   UpstreamWebDavExchange? _activeUpstream;
@@ -217,16 +218,15 @@ class MultiDeviceSyncService extends ChangeNotifier
       if (needsWebDavReview) {
         status = '请确认 HTTPS WebDAV 配置和目录后切换到多端同步';
       }
-      LibraryStore.instance.historyListenable.addListener(_changed);
+      _historySubscription = LibraryStore.instance.historyChanges.listen(
+        _historyChanged,
+      );
       LibraryStore.instance.watchedListenable.addListener(_changed);
       ShelfStore.instance.listenable.addListener(_changed);
       WidgetsBinding.instance.addObserver(this);
       notifyListeners();
       _updateWebDavPolling(WidgetsBinding.instance.lifecycleState);
-      if (enabled) {
-        _changed();
-        unawaited(sync());
-      }
+      if (enabled) unawaited(sync());
     } catch (error) {
       _ready = false;
       status = '同步初始化失败，本机阅读不受影响';
@@ -460,6 +460,7 @@ class MultiDeviceSyncService extends ChangeNotifier
         value: jsonEncode(next),
       );
       _timer?.cancel();
+      _captureWork.cancelHistoryDelay();
       _config = next;
       _profile = next['profile']!;
       _providerConfigs[key] = providerConfig;
@@ -588,6 +589,15 @@ class MultiDeviceSyncService extends ChangeNotifier
     _captureWork.request();
   }
 
+  void _historyChanged(BoxEvent event) {
+    if (!enabled || !ready || _stopping) return;
+    if (event.deleted) {
+      _changed();
+    } else {
+      _captureWork.requestAfterHistoryIdle();
+    }
+  }
+
   void _schedule() {
     if (_timer?.isActive ?? false) return;
     // Local scans coalesce independently; throttle network writes while a
@@ -713,6 +723,8 @@ class MultiDeviceSyncService extends ChangeNotifier
   }
 
   Future<bool> _capture() async {
+    // Explicit sync and in-flight reconciliation already read current history.
+    _captureWork.cancelHistoryDelay();
     final backup = await LibraryBackupService().capture(includeAi: false);
     final pending = _pendingRecovery;
     final captured = await prepareLocalSyncCapture(backup, _baseline, pending);
@@ -901,13 +913,15 @@ class MultiDeviceSyncService extends ChangeNotifier
   /// network IO but flushes the local journal; no reading records are removed.
   Future<void> shutdown() async {
     _stopping = true;
+    _captureWork.cancelHistoryDelay();
     _timer?.cancel();
     _webDavPoll?.cancel();
     _activeTransport?.close();
     _activeUpstream?.close();
     await _running;
     if (_box == null) return;
-    LibraryStore.instance.historyListenable.removeListener(_changed);
+    await _historySubscription?.cancel();
+    _historySubscription = null;
     LibraryStore.instance.watchedListenable.removeListener(_changed);
     ShelfStore.instance.listenable.removeListener(_changed);
     WidgetsBinding.instance.removeObserver(this);

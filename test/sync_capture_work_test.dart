@@ -6,6 +6,48 @@ import 'package:fqapp/services/sync/sync_capture_work.dart';
 import 'package:fqapp/services/sync/sync_snapshot.dart';
 
 void main() {
+  testWidgets('reading updates batch until idle or the 30-second deadline', (
+    tester,
+  ) async {
+    var scans = 0;
+    final work = CoalescedSyncWork(
+      enqueue: (action) => action(),
+      run: () async => scans++,
+    );
+
+    for (var i = 0; i < 5; i++) {
+      work.requestAfterHistoryIdle();
+      await tester.pump(const Duration(seconds: 1));
+    }
+    expect(scans, 0);
+    await tester.pump(const Duration(seconds: 2));
+    expect(scans, 1);
+
+    for (var i = 0; i < 29; i++) {
+      work.requestAfterHistoryIdle();
+      await tester.pump(const Duration(seconds: 1));
+    }
+    expect(scans, 1);
+    work.requestAfterHistoryIdle();
+    await tester.pump(const Duration(seconds: 1));
+    expect(scans, 2);
+  });
+
+  testWidgets('a deletion takes priority over deferred history work', (
+    tester,
+  ) async {
+    var scans = 0;
+    final work = CoalescedSyncWork(
+      enqueue: (action) => action(),
+      run: () async => scans++,
+    );
+    work.requestAfterHistoryIdle();
+    work.request();
+    expect(scans, 1);
+    await tester.pump(const Duration(seconds: 31));
+    expect(scans, 1);
+  });
+
   test(
     'notification bursts queue one scan and one follow-up behind other work',
     () async {
