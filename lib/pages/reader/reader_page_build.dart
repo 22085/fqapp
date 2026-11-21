@@ -76,10 +76,7 @@ extension _ReaderPageBuild on _ReaderPageState {
     );
   }
 
-  void _syncDesktopShell({
-    bool? canToggleSidebar,
-    bool? canToggleFullscreen,
-  }) {
+  void _syncDesktopShell({bool? canToggleSidebar, bool? canToggleFullscreen}) {
     if (!isWindowsDesktop) return;
     if (canToggleSidebar != null) {
       _desktopCanToggleSidebar = canToggleSidebar;
@@ -141,8 +138,7 @@ extension _ReaderPageBuild on _ReaderPageState {
               bounds.maxWidth >= 1000 &&
               !sidebarWouldDisableAutomaticSpread;
           final canToggleFullscreen = !fullscreen && bounds.maxWidth >= 700;
-          final showSidebar =
-              canDockSidebar && _preferences.desktopSidebarOpen;
+          final showSidebar = canDockSidebar && _preferences.desktopSidebarOpen;
           _syncDesktopShell(
             canToggleSidebar: canDockSidebar,
             canToggleFullscreen: canToggleFullscreen,

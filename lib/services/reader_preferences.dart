@@ -525,8 +525,7 @@ class ReaderPreferences {
           _boolean(preferences, _showParagraphBubblesKey) ?? true,
       showVideoButton: _boolean(preferences, _showVideoButtonKey) ?? true,
       videoChapterSync: _boolean(preferences, _videoChapterSyncKey) ?? true,
-      desktopSidebarOpen:
-          _boolean(preferences, _desktopSidebarOpenKey) ?? true,
+      desktopSidebarOpen: _boolean(preferences, _desktopSidebarOpenKey) ?? true,
     ).normalized();
   }
 

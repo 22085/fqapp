@@ -74,9 +74,7 @@ class _DesktopWindowBarState extends State<DesktopWindowBar> {
                 key: const Key('desktop-back'),
                 tooltip: '返回',
                 icon: LucideIcons.arrow_left,
-                color: canPop
-                    ? inkColor
-                    : mutedColor.withValues(alpha: 0.45),
+                color: canPop ? inkColor : mutedColor.withValues(alpha: 0.45),
                 hoverColor: hoverColor,
                 eink: eink,
                 onTap: () =>
@@ -84,7 +82,8 @@ class _DesktopWindowBarState extends State<DesktopWindowBar> {
               ),
             ),
             if (reader != null) ...[
-              if (reader.canToggleSidebar && reader.onToggleSidebar != null) ...[
+              if (reader.canToggleSidebar &&
+                  reader.onToggleSidebar != null) ...[
                 const SizedBox(width: 2),
                 _TitleBarIconButton(
                   key: const Key('desktop-reader-toc-toggle'),
@@ -116,9 +115,7 @@ class _DesktopWindowBarState extends State<DesktopWindowBar> {
                       child: Padding(
                         padding: const EdgeInsets.only(right: 12),
                         child: Text(
-                          reader.title.trim().isNotEmpty
-                              ? reader.title
-                              : '什锦铺',
+                          reader.title.trim().isNotEmpty ? reader.title : '什锦铺',
                           key: const Key('desktop-reader-title'),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -194,75 +191,86 @@ class _DesktopWindowBarState extends State<DesktopWindowBar> {
                     height: DesktopWindowBar.height,
                     child: ValueListenableBuilder<int>(
                       valueListenable: desktopTab,
-                      builder: (context, tab, _) => ValueListenableBuilder<bool>(
-                        valueListenable: DesktopShellState.onSearchPage,
-                        builder: (context, inSearch, _) {
-                          if (tab == 1 || inSearch) {
-                            return const SizedBox.expand();
-                          }
-                          return Align(
-                            alignment: Alignment.center,
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 400),
-                              child: SizedBox(
-                                height: 30,
-                                child: TextField(
-                                  key: const Key('desktop-search'),
-                                  controller: _searchCtrl,
-                                  onSubmitted: (v) => _submitSearch(context, v),
-                                  textInputAction: TextInputAction.search,
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    color: palette.ink,
+                      builder: (context, tab, _) =>
+                          ValueListenableBuilder<bool>(
+                            valueListenable: DesktopShellState.onSearchPage,
+                            builder: (context, inSearch, _) {
+                              if (tab == 1 || inSearch) {
+                                return const SizedBox.expand();
+                              }
+                              return Align(
+                                alignment: Alignment.center,
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxWidth: 400,
                                   ),
-                                  decoration: InputDecoration(
-                                    hintText: '搜索书名、作者或作品 ID',
-                                    hintStyle: TextStyle(
-                                      fontSize: 12.5,
-                                      color: palette.muted,
-                                    ),
-                                    isDense: true,
-                                    filled: true,
-                                    fillColor: palette.surface,
-                                    contentPadding: const EdgeInsets.symmetric(
-                                      horizontal: 10,
-                                    ),
-                                    prefixIcon: Icon(
-                                      LucideIcons.search,
-                                      size: 14,
-                                      color: palette.muted,
-                                    ),
-                                    prefixIconConstraints:
-                                        const BoxConstraints.tightFor(
-                                          width: 32,
-                                          height: 30,
+                                  child: SizedBox(
+                                    height: 30,
+                                    child: TextField(
+                                      key: const Key('desktop-search'),
+                                      controller: _searchCtrl,
+                                      onSubmitted: (v) =>
+                                          _submitSearch(context, v),
+                                      textInputAction: TextInputAction.search,
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color: palette.ink,
+                                      ),
+                                      decoration: InputDecoration(
+                                        hintText: '搜索书名、作者或作品 ID',
+                                        hintStyle: TextStyle(
+                                          fontSize: 12.5,
+                                          color: palette.muted,
                                         ),
-                                    enabledBorder: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                      borderSide: BorderSide(
-                                        color: palette.line,
-                                      ),
-                                    ),
-                                    focusedBorder: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                      borderSide: BorderSide(
-                                        color: accent,
-                                        width: 1.2,
-                                      ),
-                                    ),
-                                    border: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                      borderSide: BorderSide(
-                                        color: palette.line,
+                                        isDense: true,
+                                        filled: true,
+                                        fillColor: palette.surface,
+                                        contentPadding:
+                                            const EdgeInsets.symmetric(
+                                              horizontal: 10,
+                                            ),
+                                        prefixIcon: Icon(
+                                          LucideIcons.search,
+                                          size: 14,
+                                          color: palette.muted,
+                                        ),
+                                        prefixIconConstraints:
+                                            const BoxConstraints.tightFor(
+                                              width: 32,
+                                              height: 30,
+                                            ),
+                                        enabledBorder: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
+                                          borderSide: BorderSide(
+                                            color: palette.line,
+                                          ),
+                                        ),
+                                        focusedBorder: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
+                                          borderSide: BorderSide(
+                                            color: accent,
+                                            width: 1.2,
+                                          ),
+                                        ),
+                                        border: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
+                                          borderSide: BorderSide(
+                                            color: palette.line,
+                                          ),
+                                        ),
                                       ),
                                     ),
                                   ),
                                 ),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
+                              );
+                            },
+                          ),
                     ),
                   ),
                 ),

@@ -166,9 +166,7 @@ void main() {
             mutedColor: const Color(0x99D2D2D2),
             accentColor: const Color(0xFFE9AD82),
             eink: false,
-            chapters: [
-              Chapter(itemId: '0', title: '第 0 章', volumeName: ''),
-            ],
+            chapters: [Chapter(itemId: '0', title: '第 0 章', volumeName: '')],
             currentIndex: 0,
             onSelected: (_) {},
           ),
