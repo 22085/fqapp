@@ -309,7 +309,11 @@ class DesktopPlatform with WindowListener {
           );
           _players[id] = host;
           unawaited(
-            host.open(args['cdnUrl'] as String, args['keyHex'] as String),
+            host.open(
+              args['cdnUrl'] as String,
+              args['keyHex'] as String,
+              startPositionMs: args['startPositionMs'],
+            ),
           );
           return {'playerId': id};
         }
@@ -875,6 +879,22 @@ String decodeDesktopText(Uint8List bytes) {
   }
 }
 
+/// `create` 下发的续播起点（`startPositionMs`，> 0 才有）落到 media_kit 的
+/// [Media.start] 上。
+///
+/// media_kit 在 mpv 的 on_load 钩子里把它设成 `start` 属性，即 prepare 前生效，
+/// 与 Android 端约定一致；Dart 侧 `NativePlayer` 也已按起点显示进度和弹幕锚点。
+/// 加密流走本地 CENC 代理，起点处的读取是普通的 `Range: bytes=N-` 请求，
+/// 与拖动进度条走同一条路。
+@visibleForTesting
+Media desktopPlaybackMedia(String uri, Object? startPositionMs) {
+  final startMs = startPositionMs is num ? startPositionMs.toInt() : 0;
+  return Media(
+    uri,
+    start: startMs > 0 ? Duration(milliseconds: startMs) : null,
+  );
+}
+
 /// 为刚建好的 media_kit [VideoController] 请求一帧。
 ///
 /// `VideoController` 构造时用 `addPostFrameCallback` 推迟纹理创建，
@@ -921,7 +941,7 @@ class _DesktopPlayer {
   final ready = Completer<void>();
   DesktopMedia? media;
   bool disposed = false;
-  Future<void> open(String url, String key) async {
+  Future<void> open(String url, String key, {Object? startPositionMs}) async {
     ready.future.ignore();
     try {
       var playbackUrl = url;
@@ -937,7 +957,10 @@ class _DesktopPlayer {
       // Plain audio/video follows the original URI player contract. Some
       // public audio origins return 200 only and must not require CENC Range I/O.
       if (disposed) return;
-      await player.open(Media(playbackUrl), play: false);
+      await player.open(
+        desktopPlaybackMedia(playbackUrl, startPositionMs),
+        play: false,
+      );
       AppLog.d('desktop-player', 'id=$id opened paused');
       if (disposed) return;
       ready.complete();
