@@ -6,8 +6,8 @@ iOS 端支持搜书、书架和阅读，并通过进程内 `media_kit` 接入视
 
 | 组件 | 版本 | 备注 |
 |---|---|---|
-| macOS | 27.2+ | |
-| Xcode | 27.2 | `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer` |
+| macOS | 26 | 云端构建使用 GitHub `macos-26` Apple Silicon runner |
+| Xcode | 26.6 | CI 显式选择 `/Applications/Xcode_26.6.app/Contents/Developer` |
 | Flutter | **3.50.0** | 与 `pubspec.lock`、Android / Windows / Linux CI 保持一致 |
 | CocoaPods | 1.17.0 | `brew install cocoapods`（系统 Ruby 太旧，别用 gem 装） |
 | Rust | 1.99.1 | `rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios` |
@@ -17,12 +17,31 @@ iOS 端支持搜书、书架和阅读，并通过进程内 `media_kit` 接入视
 
 ```bash
 flutter pub get --enforce-lockfile
-./scripts/build_rust_ios.sh          # Rust → ios/Frameworks/libfqapi_core.a
+bash scripts/build_rust_ios.sh      # Rust → ios/Frameworks/iphoneos/libfqapi_core.a
 (cd ios && pod install)              # 安装 media_kit 的 iOS 播放框架
 flutter build ios --release --no-codesign
 ```
 
 产物在 `build/ios/iphoneos/Runner.app`（未签名）。
+
+模拟器构建不需要签名或 Apple 开发者账号：
+
+```bash
+bash scripts/build_rust_ios.sh --simulator
+flutter build ios --simulator --debug --no-pub
+```
+
+Rust 模拟器库按当前 Mac 架构编译，Xcode 根据 SDK 自动选择，不能将真机 arm64 库用于模拟器。
+
+## 没有 Mac 或 iPhone 时
+
+`.github/workflows/ios.yml` 在相关 PR 上运行云端 Mac 构建，也支持手动触发。流程安装
+CocoaPods 依赖、编译真机/模拟器 Rust 库，构建未签名真机应用和完整模拟器应用，再使用
+`simctl` 安装、启动应用，检查应用进程存活、Rust 后端健康以及未处理的启动异常。
+
+在工作流的 `fqapp-ios-validation-*` 产物中查看 `startup.png`、`startup.json`、应用日志
+及构建日志。未签名真机应用仅证明能编译链接，不能直接安装到 iPhone。模拟器启动证据
+也不代表搜索、播放、登录、分享或 TTS 交互已经验收；锁屏后台音频、来电和蓝牙中断仍需真机。
 
 打包成未签名 IPA：
 
@@ -55,8 +74,8 @@ BUNDLE_ID=com.fqapp.fqapp IPA=/tmp/pack/fqapp_ios_unsigned.ipa ./your-sign-scrip
 ## iOS 专用改动（为什么需要）
 
 1. **Rust 核心以静态库链接**。iOS 不允许从 App 包内 dlopen 共享库，所以：
-   - `scripts/build_rust_ios.sh` 用 `--crate-type staticlib` 编出 `ios/Frameworks/libfqapi_core.a`（`CARGO_PROFILE_RELEASE_STRIP=debuginfo`，因为 release profile 的 `strip = true` 会裁掉符号）；
-   - `ios/Flutter/{Debug,Release}.xcconfig` 追加三个必需设置：
+   - `scripts/build_rust_ios.sh` 用 `--crate-type staticlib` 编出按 SDK 分目录的 `libfqapi_core.a`（`CARGO_PROFILE_RELEASE_STRIP=debuginfo`，因为 release profile 的 `strip = true` 会裁掉符号）；
+   - `ios/Flutter/{Debug,Release}.xcconfig` 共用 `Rust.xcconfig` 的三个必需设置：
      - `-force_load` 把静态库目标文件全部装进来；
      - `DEAD_CODE_STRIPPING = NO`，否则「只在运行时 dlsym」的符号会被 dead_strip 删掉；
      - `-Wl,-export_dynamic`，主可执行文件默认不导出全局符号，dlsym 会找不到 Rust 入口；
@@ -64,7 +83,7 @@ BUNDLE_ID=com.fqapp.fqapp IPA=/tmp/pack/fqapp_ios_unsigned.ipa ./your-sign-scrip
 2. **桌面专用依赖**（`webview_windows` / `smtc_windows` / `window_manager` / `screen_retriever`）不需要条件导入：它们都能在 iOS 上编译，运行时只在 `isWindowsDesktop` 分支调用。
 3. **进程内播放适配**：`IosPlatform` 将播放器通道接到 `DesktopPlatform` 的 `media_kit` 播放器，视频页面使用 `VideoController` 表面。加密音视频经 Rust 的本机会话解密；原生入口通过进程导出符号读取。亮屏锁使用 `wakelock_plus`，不会调用 Windows 系统 API。
 4. **图标与应用名**：`scripts/generate_ios_app_icon.py` 从 `assets/branding/app_icon_source.png` 生成 1024 无 alpha 图标（复用 Android 生成器的「去纸张外框」逻辑），`CFBundleDisplayName` 设为「什锦铺」。
-5. **关掉 Swift Package Manager**：`flutter config --no-enable-swift-package-manager`（Xcode 27 + SPM 有已知构建失败）。
+5. **使用 CocoaPods**：构建前执行 `flutter config --no-enable-swift-package-manager`，与当前 Podfile 和锁文件保持一致。
 6. **文件与网页登录**：TXT/EPUB 和 JSON 导入传入 iOS UTI；文件导出通过系统分享面板，取消不算成功。番茄登录使用 `WKWebView`，成功或取消都结束原登录请求。
 7. **系统朗读与后台音频**：朗读使用 `flutter_tts`，完成事件复用播放器适配层。音频会话启动时设为 `playback`，听书开始时激活、结束时释放；`Info.plist` 声明后台音频。系统语音设置入口显示手动前往设置的说明。
 
@@ -78,5 +97,5 @@ BUNDLE_ID=com.fqapp.fqapp IPA=/tmp/pack/fqapp_ios_unsigned.ipa ./your-sign-scrip
 
 ## 与 Android 构建的关系
 
-iOS 需要 Flutter 3.47+（Xcode 27 适配）；当前仓库统一使用 Flutter 3.50.0 /
-Dart 3.14.0，Android、Windows 和 Linux CI 使用同一工具链。
+当前仓库统一使用 Flutter 3.50.0 / Dart 3.14.0，iOS 云端构建与
+Android、Windows 和 Linux CI 使用同一工具链。
