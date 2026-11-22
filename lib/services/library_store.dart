@@ -321,6 +321,7 @@ class LibraryStore implements ReaderStore {
   }
 
   List<Map<String, dynamic>> historySnapshot() {
+    if (!isInitialized) return const [];
     historySnapshotBuilds++;
     final byIdentity = <(String, String, String), Map<String, dynamic>>{};
     for (final key in _histBox.keys) {
