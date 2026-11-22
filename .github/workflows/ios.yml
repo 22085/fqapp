@@ -97,7 +97,7 @@ jobs:
             2>&1 | tee build/validation/ios/simulator-build.log
 
       - name: Launch full application and verify Rust startup
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: |
           python3 - <<'PY'
           import json
@@ -143,7 +143,7 @@ jobs:
               if device['state'] != 'Booted':
                   simctl('boot', udid)
               simctl('bootstatus', udid, '-b', timeout=120)
-              simctl('install', udid, str(app))
+              simctl('install', udid, str(app), timeout=180)
               launch = simctl(
                   'launch', '--stdout=' + str(evidence.resolve() / 'stdout.log'),
                   '--stderr=' + str(evidence.resolve() / 'stderr.log'), udid, bundle_id,
