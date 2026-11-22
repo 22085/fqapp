@@ -32,6 +32,8 @@ void main() {
     await Hive.close();
 
     expect(store.historySnapshot(), isEmpty);
+    expect(store.readTimeSnapshot(), isEmpty);
+    expect(store.readTimeKindSnapshot(), isEmpty);
   });
 
   test(

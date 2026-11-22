@@ -410,6 +410,30 @@ void main() {
     );
   });
 
+  test('Linux close retries when window destruction fails', () async {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    const windowChannel = MethodChannel('window_manager');
+    var destroyCalls = 0;
+    messenger.setMockMethodCallHandler(windowChannel, (call) async {
+      if (call.method == 'destroy') {
+        destroyCalls++;
+        if (destroyCalls == 1) throw PlatformException(code: 'destroy_failed');
+      }
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(windowChannel, null));
+
+    final platform = LinuxPlatform();
+    platform.onWindowClose();
+    await Future<void>.delayed(Duration.zero);
+    expect(destroyCalls, 1);
+
+    platform.onWindowClose();
+    await Future<void>.delayed(Duration.zero);
+    expect(destroyCalls, 2);
+  });
+
   // These saves exercise Linux libc and /proc, not just the platform override.
   test('Linux backup selection saves bytes, reads and cancels', () async {
     debugDefaultTargetPlatformOverride = TargetPlatform.linux;

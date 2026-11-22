@@ -121,6 +121,7 @@ class LinuxPlatform with WindowListener {
       try {
         await windowManager.destroy();
       } catch (error, stack) {
+        _closing = false;
         AppLog.w('exit', 'Linux 窗口销毁失败', error: error, stack: stack);
       }
     }
