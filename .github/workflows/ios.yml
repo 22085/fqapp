@@ -29,7 +29,7 @@ concurrency:
 jobs:
   ios:
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
@@ -151,6 +151,7 @@ jobs:
               launch = simctl(
                   'launch', '--stdout=' + str(evidence.resolve() / 'stdout.log'),
                   '--stderr=' + str(evidence.resolve() / 'stderr.log'), udid, bundle_id,
+                  timeout=180,
               )
               (evidence / 'launch.txt').write_text(launch + '\n')
               pid = int(launch.rsplit(':', 1)[1].strip())
@@ -184,6 +185,16 @@ jobs:
                   raise RuntimeError('Keychain-backed encrypted sync store was not created')
               report['process_and_backend_verified'] = True
           finally:
+              if not report.get('process_and_backend_verified'):
+                  with (evidence / 'startup-system.log').open('w') as log:
+                      try:
+                          subprocess.run([
+                              'xcrun', 'simctl', 'spawn', udid, 'log', 'show',
+                              '--style', 'compact', '--last', '3m',
+                              '--predicate', 'process == "Runner"',
+                          ], stdout=log, stderr=subprocess.STDOUT, timeout=60, check=False)
+                      except subprocess.TimeoutExpired:
+                          log.write('\nSystem log collection timed out\n')
               if container is not None:
                   for name in ('backend.log', 'app.log'):
                       for index, log in enumerate(container.rglob(name)):
@@ -197,7 +208,7 @@ jobs:
         run: git diff --exit-code -- pubspec.lock rust/Cargo.lock ios/Podfile.lock
 
       - name: Exercise production pages and native media on simulator
-        timeout-minutes: 25
+        timeout-minutes: 35
         run: |
           if ! command -v ffmpeg >/dev/null 2>&1; then
             brew install ffmpeg
@@ -279,7 +290,7 @@ jobs:
                           'integration_test/ios_interaction_test.dart',
                           '--dart-define=FQAPP_VALIDATION_REVISION=' + revision,
                           '--dart-define=FQAPP_TEST_MEDIA_ORIGIN=http://127.0.0.1:' + str(server.server_port),
-                      ], stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
+                      ], stdout=log, stderr=subprocess.STDOUT, check=True, timeout=900)
                   subprocess.run(['xcrun', 'simctl', 'terminate', udid, bundle], check=False, timeout=60)
               for name in ('first.json', 'restart.json'):
                   reports = list(container.rglob(name))

@@ -23,13 +23,9 @@ class IosPlatform {
     // media_kit 的 mpv 接口必须在构造 Player 之前初始化。桌面在
     // `DesktopPlatform.initialize()` 里顺带做,而 iOS 不跑那套窗口初始化。
     MediaKit.ensureInitialized();
-    // 系统朗读的完成/错误回调与窗口无关,复用同一份装配(见
-    // DesktopPlatform.initializeSpeech),iOS 与桌面共用一套 TTS 状态。
-    DesktopPlatform.instance.initializeSpeech();
     PlatformChannels.events = (name) {
       if (name == 'fqapp/native_player/events' ||
-          name == 'fqapp/reader/events' ||
-          name == 'fqapp/system_tts_events') {
+          name == 'fqapp/reader/events') {
         return DesktopPlatform.instance.events(name);
       }
       return EventChannel(name).receiveBroadcastStream();
@@ -67,20 +63,17 @@ class IosPlatform {
         // 文件通路(备份、本地书籍、TXT/日志导出、番茄分卷)与阅读器设备
         // 状态复用桌面实现:`_save` 在 iOS 上换成系统分享面板,pickBook 与
         // openBackup 换成语义等价的 UTI(见 desktop_platform.dart)。
-        // 系统朗读同样落到 DesktopPlatform 的 flutter_tts,与桌面单一 owner。
         case 'fqapp/library_backup':
         case 'fqapp/local_books':
         case 'fqapp/downloads':
         case 'fqapp/reader':
+          return DesktopPlatform.instance.invoke(channel, method, arguments);
         case 'fqapp/system_tts':
           final iosSession = IosAudioSession.generation;
-          final result = await DesktopPlatform.instance.invoke(
+          final result = await MethodChannel(
             channel,
-            method,
-            arguments,
-          );
-          if (channel == 'fqapp/system_tts' &&
-              const {'pause', 'stop', 'shutdown'}.contains(method)) {
+          ).invokeMethod<dynamic>(method, arguments);
+          if (const {'pause', 'stop', 'shutdown'}.contains(method)) {
             await IosAudioSession.releaseIfIdle(session: iosSession);
           }
           return result;

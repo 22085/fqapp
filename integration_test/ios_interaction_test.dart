@@ -19,6 +19,8 @@ import 'package:fqapp/pages/reader_page.dart';
 import 'package:fqapp/pages/search_page.dart';
 import 'package:fqapp/services/api_client.dart';
 import 'package:fqapp/services/app_log.dart';
+import 'package:fqapp/services/app_style_tokens.dart';
+import 'package:fqapp/services/app_theme_style.dart';
 import 'package:fqapp/services/audio_preferences.dart';
 import 'package:fqapp/services/backend_service.dart';
 import 'package:fqapp/services/chapter_text_formatter.dart';
@@ -35,6 +37,7 @@ import 'package:fqapp/services/shelf_view_store.dart';
 import 'package:fqapp/services/system_tts.dart';
 import 'package:fqapp/widgets/search/classic_search_result_row.dart';
 import 'package:fqapp/widgets/search/search_media_tile.dart';
+import 'package:fqapp/widgets/app_ui/app_ui_scope.dart';
 
 final _chapters = [
   Chapter(itemId: 'ios-check-1', title: '第一章', volumeName: ''),
@@ -110,8 +113,15 @@ void main() {
         ProviderScope(
           child: MaterialApp(
             navigatorKey: navigator,
-            builder: (_, child) =>
-                AudioPlaybackScope(navigatorKey: navigator, child: child!),
+            theme: ThemeData(
+              extensions: [
+                AppStyleTokens.forStyle(AppThemeStyleStore.instance.value),
+              ],
+            ),
+            builder: (_, child) => AppUiScope(
+              store: AppThemeStyleStore.instance,
+              child: AudioPlaybackScope(navigatorKey: navigator, child: child!),
+            ),
             home: page,
           ),
         ),
@@ -144,6 +154,8 @@ void main() {
       }
       await ShelfViewStore.instance.load();
       await AudioPreferences.instance.load();
+      await AppThemeStyleStore.instance.load();
+      AppUiScope.debugFallbackReads = 0;
       await BackendService.instance.start();
       expect(await SecureKeyProvider.instance.getOrCreateKey(), isNotNull);
       expect(Hive.isBoxOpen('shelf_enc'), isTrue);
@@ -180,6 +192,10 @@ void main() {
         expect((await snapshot())['owner'], isNull);
         checks.add('Runtime initialization does not claim a media owner');
 
+        expect(
+          await AppThemeStyleStore.instance.select(AppThemeStyle.classic),
+          isTrue,
+        );
         await mount(const SearchPage(initialQuery: '小说'));
         await waitFor(
           () =>
@@ -188,11 +204,70 @@ void main() {
               find.byType(SearchBookGridTile).evaluate().isNotEmpty,
           'live upstream search results',
         );
-        await screenshot('live-search');
+        await screenshot('classic-live-search');
         checks.add(
           'Live search through the default Rust-backed production SearchPage',
         );
 
+        Future<void> addFromReader(
+          MediaItem book, {
+          required bool classic,
+        }) async {
+          await mount(
+            ReaderPage(
+              bookId: book.id,
+              title: book.title,
+              shelfItem: book,
+              localOnly: true,
+              chapters: _chapters,
+              startIndex: 0,
+              chapterLoader: (_) async => _text,
+            ),
+          );
+          await waitFor(
+            () => find
+                .byKey(const ValueKey('reader-page-surface'))
+                .evaluate()
+                .isNotEmpty,
+            'reader',
+          );
+          final shelf = find.byKey(const ValueKey('reader-shelf-button'));
+          final entry = classic
+              ? shelf
+              : find.byKey(const ValueKey('reader-header-more'));
+          if (entry.hitTestable().evaluate().isEmpty) {
+            await tester.tapAt(
+              tester.getCenter(
+                find.byKey(const ValueKey('reader-page-surface')),
+              ),
+            );
+            await tester.pumpAndSettle();
+          }
+          if (!classic) {
+            await tester.tap(entry);
+            await tester.pumpAndSettle();
+          }
+          await tester.tap(shelf);
+          await waitFor(
+            () => ShelfStore.instance.containsItem(book),
+            'add shelf from reader',
+          );
+          await mount(const LibraryPage());
+          await waitFor(
+            () => find.text(book.title).evaluate().isNotEmpty,
+            'shelf renders saved book',
+          );
+          await screenshot('${classic ? 'classic' : 'archive'}-saved-shelf');
+        }
+
+        await addFromReader(persistedBook, classic: true);
+        checks.add(
+          'Classic production reader adds book and library renders it',
+        );
+        expect(
+          await AppThemeStyleStore.instance.select(AppThemeStyle.archive),
+          isTrue,
+        );
         final results = [
           _book('ios-complete', '云端完结作品'),
           _book('ios-serial', '云端连载作品', status: 1, words: 200000),
@@ -236,44 +311,10 @@ void main() {
           'Fixed results: status/word-count empty state, reset, saved list layout',
         );
 
-        await mount(
-          ReaderPage(
-            bookId: persistedBook.id,
-            title: persistedBook.title,
-            shelfItem: persistedBook,
-            localOnly: true,
-            chapters: _chapters,
-            startIndex: 0,
-            chapterLoader: (_) async => _text,
-          ),
+        await addFromReader(
+          _book('ios-archive-book', '云端档案书籍'),
+          classic: false,
         );
-        await waitFor(
-          () => find
-              .byKey(const ValueKey('reader-page-surface'))
-              .evaluate()
-              .isNotEmpty,
-          'reader',
-        );
-        final more = find.byKey(const ValueKey('reader-header-more'));
-        if (more.hitTestable().evaluate().isEmpty) {
-          await tester.tapAt(
-            tester.getCenter(find.byKey(const ValueKey('reader-page-surface'))),
-          );
-          await tester.pumpAndSettle();
-        }
-        await tester.tap(more);
-        await tester.pumpAndSettle();
-        await tester.tap(find.byKey(const ValueKey('reader-shelf-button')));
-        await waitFor(
-          () => ShelfStore.instance.containsItem(persistedBook),
-          'add shelf from reader',
-        );
-        await mount(const LibraryPage());
-        await waitFor(
-          () => find.text(persistedBook.title).evaluate().isNotEmpty,
-          'shelf renders saved book',
-        );
-        await screenshot('saved-shelf');
         checks.add(
           'Production reader menu adds book; production library renders encrypted record',
         );
@@ -392,15 +433,30 @@ void main() {
           'Real CENC video frame, position, seek/resume; video takes audio ownership',
         );
 
-        var nativeTtsEvents = 0;
+        final nativeTtsEvents = <Map>[];
+        final engines = await SystemTts.engines();
+        report['tts_engines'] = engines.engines.map((e) => e.package).toList();
+        expect(
+          engines.engines.any((e) {
+            if (!e.package.startsWith('{')) return false;
+            final voice = jsonDecode(e.package) as Map;
+            return (voice['locale'] as String?)?.startsWith('zh') == true;
+          }),
+          isTrue,
+          reason: 'Simulator must provide a Chinese system speech voice',
+        );
         final originalEvents = PlatformChannels.events!;
         PlatformChannels.events = (name) {
           final stream = originalEvents(name);
           return name == 'fqapp/system_tts_events'
               ? stream.map((event) {
                   if (event is Map &&
-                      const {'range', 'done'}.contains(event['type'])) {
-                    ++nativeTtsEvents;
+                      const {
+                        'start',
+                        'range',
+                        'done',
+                      }.contains(event['type'])) {
+                    nativeTtsEvents.add(Map.from(event));
                   }
                   return event;
                 })
@@ -422,7 +478,9 @@ void main() {
             ),
           );
           await waitFor(
-            () => nativeTtsEvents > 0 && ListeningSession.instance.playing,
+            () =>
+                nativeTtsEvents.any((e) => e['type'] == 'range') &&
+                ListeningSession.instance.playing,
             'native TTS callback',
           );
           expect(video.playWhenReady, isFalse);
@@ -466,9 +524,45 @@ void main() {
             'TTS stop clears owner',
           );
           expect((await snapshot())['title'], isNull);
-          report['native_tts_callbacks'] = nativeTtsEvents;
+          report['tts_controls_events'] = List.of(nativeTtsEvents);
+          nativeTtsEvents.clear();
+          await AudioPlaybackScope.startSystemTts(
+            tester.element(find.byType(ReaderPage)),
+            SystemTtsBook(
+              bookId: 'ios-check-short-tts',
+              title: '云端朗读换章验证',
+              chapters: _chapters,
+              startIndex: 0,
+              localOnly: true,
+              initialContent: ChapterContent.fromPlainText('第一句。第二句。'),
+              textLoader: (_) async => '末章第一句。末章第二句。',
+            ),
+          );
+          await waitFor(
+            () => ListeningSession.instance.chapterId == _chapters.last.itemId,
+            'native TTS advances chapter after both utterances',
+          );
+          await waitFor(
+            () => ListeningSession.instance.completed,
+            'native TTS final chapter completes',
+          );
+          final completedIds = nativeTtsEvents
+              .where((e) => e['type'] == 'done')
+              .map((e) => e['id'])
+              .toList();
+          expect(completedIds.toSet().length, completedIds.length);
+          expect(completedIds.length, 4);
+          report['native_tts_events'] = nativeTtsEvents;
+          await AudioPlaybackScope.stopSystemTtsForBook(
+            tester.element(find.byType(ReaderPage)),
+            'ios-check-short-tts',
+          );
+          await waitFor(
+            () => !IosAudioSession.hasOwner,
+            'completed TTS owner cleanup',
+          );
           checks.add(
-            'Native TTS callbacks, pause/resume, stop and stale video close preserve new card',
+            'Native TTS identified range/completion callbacks, pause/resume, chapter advance, final completion and stale page cleanup',
           );
         } finally {
           PlatformChannels.events = originalEvents;
@@ -477,6 +571,7 @@ void main() {
       }
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
+      expect(AppUiScope.debugFallbackReads, 0);
       for (final player in players) {
         await player.dispose();
       }
@@ -491,7 +586,6 @@ void main() {
       } catch (_) {}
       rethrow;
     } finally {
-      await AppLog.instance.flush();
       final target = File(
         '${evidence.path}/${secondLaunch ? 'restart' : 'first'}.json',
       );
@@ -499,6 +593,7 @@ void main() {
         const JsonEncoder.withIndent('  ').convert(report),
         flush: true,
       );
+      await AppLog.instance.flush();
     }
   }, timeout: const Timeout(Duration(minutes: 12)));
 }

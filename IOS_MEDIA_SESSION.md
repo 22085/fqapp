@@ -6,7 +6,7 @@
 
 `AudioSessionBridge` 是应用侧 AVAudioSession 配置、激活和释放的唯一入口，使用 `fqapp/audio_session` 和 `fqapp/audio_session/events`。移除原来的 `IosAudioBridge`、`fqapp/ios_audio` 和启动时的音频配置。首次播放状态推送配置 `.playback`，听书/朗读使用 `.spokenAudio`，视频使用 `.moviePlayback`；播放/朗读前先通过 `prepare` 激活会话，每个播放器有自身的会话 owner，首次视频、内联视频与听视频在媒体控件挂载前也能接管并配置；仅元数据到达、暂停或冷启动不会主动激活音频。
 
-听书和阅读器系统朗读保留现有 `NativePlayer.startListenForeground` / `stopListenForeground` 契约，由 `IosPlatform` 转发到同一桥。flutter_tts 的逐句完成不再自行释放共享会话；先清卡片时释放被系统 busy 拒绝则保留状态，在解码器暂停/销毁后校验原 session 并重试释放；解码、朗读和屏幕常亮仍使用既有实现。
+听书和阅读器系统朗读保留现有 `NativePlayer.startListenForeground` / `stopListenForeground` 契约，由 `IosPlatform` 转发到同一桥。iOS 朗读通过 `SystemTtsBridge` 使用 `AVSpeechSynthesizer`，按原生 utterance 关联 ID 并转发字符范围及逐句完成，逐句完成不自行释放共享音频会话；先清卡片时释放被系统 busy 拒绝则保留状态，在解码器暂停/销毁后校验原 session 并重试释放。
 
 ## 所有权与事件
 

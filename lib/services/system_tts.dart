@@ -740,6 +740,7 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
         precise: _rangeCapable || _rangeSeen,
       ),
     );
+    if (completed) ListeningSession.instance.markCompleted();
     notifyListeners();
     if (notification) {
       _notificationQueue = _notificationQueue.then((_) async {

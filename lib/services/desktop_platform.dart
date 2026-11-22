@@ -206,8 +206,7 @@ class DesktopPlatform with WindowListener {
 
   /// 装配系统朗读的完成/错误回调。
   ///
-  /// 与窗口管理无关,所以 iOS 也复用这一份(见 `ios_platform.dart`):回调把
-  /// flutter_tts 的完成/失败翻成 `fqapp/system_tts_events` 的 `done` /
+  /// 回调把 flutter_tts 的完成/失败翻成 `fqapp/system_tts_events` 的 `done` /
   /// `error`,与 Android 原生实现是同一份契约。
   void initializeSpeech() {
     _tts.setCompletionHandler(() {
@@ -478,14 +477,10 @@ class DesktopPlatform with WindowListener {
         final voices = await _tts.getVoices;
         // 默认项不是真实音色:选中它时 initialize 退回 setLanguage('zh-CN'),
         // 由系统挑一个默认中文语音。
-        final systemEngine = isIOSPlatform ? 'ios' : 'windows';
         return {
-          'defaultEngine': systemEngine,
+          'defaultEngine': 'windows',
           'engines': [
-            {
-              'package': systemEngine,
-              'label': isIOSPlatform ? '系统默认语音' : 'Windows 默认语音',
-            },
+            {'package': 'windows', 'label': 'Windows 默认语音'},
             if (voices is List)
               for (final voice in voices)
                 if (voice is Map && voice['name'] is String)
@@ -499,7 +494,6 @@ class DesktopPlatform with WindowListener {
           ],
         };
       case 'initialize':
-        if (isIOSPlatform) await _tts.autoStopSharedSession(false);
         await _tts.stop();
         _utterance = null;
         final engine = args['engine'];
@@ -509,14 +503,9 @@ class DesktopPlatform with WindowListener {
         } else {
           await _tts.setLanguage('zh-CN');
         }
-        // 换算按平台分开:iOS 的 AVSpeechUtterance 以 0.5
-        // (AVSpeechUtteranceDefaultSpeechRate)为正常语速、有效区间 0 到 1,
-        // 所以乘 0.5 再夹住;Windows 的 flutter_tts 实现内部会再 +0.5
-        // (SAPI SpeakingRate 的 0.5 基线),所以减掉同一个偏移才是 app 的 rate。
+        // Windows flutter_tts adds the SAPI 0.5 baseline internally.
         final rate = (args['rate'] as num?)?.toDouble() ?? 1;
-        await _tts.setSpeechRate(
-          isIOSPlatform ? (rate * .5).clamp(0.0, 1.0).toDouble() : rate - .5,
-        );
+        await _tts.setSpeechRate(rate - .5);
         return 300;
       case 'speak':
         _utterance = args['id'] as String;
@@ -524,9 +513,7 @@ class DesktopPlatform with WindowListener {
         if (result == 0) {
           throw PlatformException(
             code: 'tts_failed',
-            message: isIOSPlatform
-                ? '系统语音不可用，请在「设置 › 辅助功能 › 朗读内容」检查语音'
-                : 'Windows 语音不可用，请安装中文语音',
+            message: 'Windows 语音不可用，请安装中文语音',
           );
         }
         return null;
@@ -552,14 +539,6 @@ class DesktopPlatform with WindowListener {
         await _tts.stop();
         return null;
       case 'settings':
-        // iOS 没有可深链的语音设置页(explorer.exe 必然失败),如实回报由
-        // 用户自行前往系统设置,而不是假装打开。
-        if (isIOSPlatform) {
-          throw PlatformException(
-            code: 'unsupported_platform',
-            message: '请在「设置 › 辅助功能 › 朗读内容」里调整系统语音',
-          );
-        }
         await Process.run('explorer.exe', ['ms-settings:speech']);
         return null;
     }
