@@ -1,20 +1,33 @@
 //! Exercise codec rejection through the real dispatcher, including the raw
 //! response and download fallbacks that extractor-only tests cannot cover.
 
+#![allow(clippy::await_holding_lock)]
+
 mod common;
 
 use common::{build_server, pool_json, query_map, MockReply, MockUpstream, TempDir};
 use fqapi_core::dispatch::{dispatch, Request};
 use fqapi_core::endpoints::Server;
+use fqapi_core::upstream::reset_playback_route_state_for_tests;
 use md5::{Digest, Md5};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 const ALLOWED_URL: &str = "https://example.invalid/h264.mp4";
 const REJECTED_URL: &str = "https://example.invalid/bytevc2.mp4";
 const SPADE_A: &str = "kbwf80+1N+V9nwHQSp431GWvLeBlqizTYJ0o5FOrHuZhqimysg==";
 const KEY_HEX: &str = "4990a92de837e29e18031a370ab744e6";
+
+// The empty-alternate case parks process-wide routes. Each scenario owns and
+// resets that state so parallel tests cannot alter another request's plan.
+static ROUTES: Mutex<()> = Mutex::new(());
+
+fn exclusive() -> MutexGuard<'static, ()> {
+    let guard = ROUTES.lock().unwrap_or_else(|error| error.into_inner());
+    reset_playback_route_state_for_tests();
+    guard
+}
 
 fn response_shapes(variants: Vec<Value>) -> Vec<(&'static str, Value)> {
     let video_map: serde_json::Map<String, Value> = variants
@@ -88,6 +101,7 @@ fn assert_rejected(status: u16, body: &Value, context: &str) {
 
 #[tokio::test]
 async fn bytevc2_only_is_terminal_across_response_shapes_and_modes() {
+    let _guard = exclusive();
     for codec in [
         json!({"codec_type": "ByTeVc2"}),
         json!({"video_meta": {"codec_type": "BYTEVC2"}}),
@@ -114,6 +128,7 @@ async fn bytevc2_only_is_terminal_across_response_shapes_and_modes() {
 
 #[tokio::test]
 async fn missing_or_invalid_seed_cannot_hide_codec_rejection() {
+    let _guard = exclusive();
     for seed in [Value::Null, json!(""), json!("invalid!")] {
         let payload = json!({"data": {"video_model": {
             "key_seed": seed,
@@ -132,6 +147,7 @@ async fn missing_or_invalid_seed_cannot_hide_codec_rejection() {
 
 #[tokio::test]
 async fn mixed_variants_keep_h264_preference_across_response_shapes() {
+    let _guard = exclusive();
     // Put H.264 first: blindly taking the last array entry would pick bytevc2,
     // and filtering without ranking would pick H.265 at the same quality.
     let variants = vec![
@@ -153,6 +169,7 @@ async fn mixed_variants_keep_h264_preference_across_response_shapes() {
 
 #[tokio::test]
 async fn unrecognized_payload_keeps_legacy_raw_response_compatibility() {
+    let _guard = exclusive();
     let payload = json!({"code": 0, "data": {"legacy": {"main_url": ALLOWED_URL}}});
     let expected = payload.clone();
     let upstream = MockUpstream::start(move |_| MockReply::json(payload.clone())).await;
@@ -180,6 +197,7 @@ async fn unrecognized_payload_keeps_legacy_raw_response_compatibility() {
 
 #[tokio::test]
 async fn fallback_rejection_requires_a_conclusive_codec_decision() {
+    let _guard = exclusive();
     let model = json!({
         "fallback_api": "https://example.invalid/fallback",
         "video_list": [{
@@ -239,6 +257,7 @@ async fn fallback_rejection_requires_a_conclusive_codec_decision() {
 
 #[tokio::test]
 async fn download_failure_returns_only_the_selected_url_and_its_key() {
+    let _guard = exclusive();
     let upstream = MockUpstream::start(|req| {
         if req.path.ends_with(".mp4") {
             return MockReply::status(500);
@@ -265,6 +284,7 @@ async fn download_failure_returns_only_the_selected_url_and_its_key() {
 
 #[tokio::test]
 async fn successful_download_keeps_the_local_source_contract() {
+    let _guard = exclusive();
     let upstream = MockUpstream::start(|req| {
         if req.path == "/h264.mp4" {
             return MockReply {
@@ -298,6 +318,7 @@ async fn successful_download_keeps_the_local_source_contract() {
 /// silently loses a row (measured 2026-10-12 on the live upstream).
 #[tokio::test]
 async fn stream_variants_merge_the_fallback_list_so_the_top_tier_survives() {
+    let _guard = exclusive();
     let v5_calls = Arc::new(AtomicUsize::new(0));
     let v5_calls_for_mock = Arc::clone(&v5_calls);
     let upstream = MockUpstream::start(move |req| {
@@ -388,6 +409,7 @@ async fn stream_variants_merge_the_fallback_list_so_the_top_tier_survives() {
 /// them past the codec gate.
 #[tokio::test]
 async fn stream_variants_do_not_merge_bytevc2_tiers() {
+    let _guard = exclusive();
     let upstream = MockUpstream::start(|req| {
         if req.path == "/fallback" {
             return MockReply::json(json!({"video_info": {"data": {
@@ -422,4 +444,137 @@ async fn stream_variants_do_not_merge_bytevc2_tiers() {
         .collect();
     assert_eq!(names, ["1080P", "360P"], "{body}");
     assert!(!body.to_string().contains(REJECTED_URL), "{body}");
+}
+
+/// Upstream splits tiers by device: the same episode can come back as
+/// `bytevc2` (no decoder on the playback path) on one identity and as `h265`
+/// on another. A first answer that is entirely undecodable must therefore not
+/// end the request — rotate once and ask again.
+#[tokio::test]
+async fn bytevc2_only_answer_retries_on_another_device_and_recovers() {
+    let _guard = exclusive();
+    let rejected = json!({"data": {"video_model": {
+        "key_seed": "AAAA",
+        "video_list": {"video_0": {
+            "codec_type": "bytevc2",
+            "main_url": REJECTED_URL,
+            "vwidth": 720,
+            "vheight": 1280
+        }}
+    }}});
+    let allowed = json!({"data": {"video_model": {
+        "key_seed": "AAAA",
+        "video_list": [
+            {"codec_type": "h265_hvc1", "main_url": ALLOWED_URL, "vwidth": 720, "vheight": 1280}
+        ]
+    }}});
+    for count in [2, 5] {
+        reset_playback_route_state_for_tests();
+        let rejected = rejected.clone();
+        let allowed = allowed.clone();
+        let upstream = MockUpstream::start(move |request| {
+            if !request.path.contains("multi_video_model") {
+                return MockReply::status(400);
+            }
+            let device = query_map(&request.query)["device_id"].clone();
+            MockReply::json(if device == "0000000000000000" {
+                rejected.clone()
+            } else {
+                allowed.clone()
+            })
+        })
+        .await;
+        let dir = TempDir::new("video-codec-retry");
+        let server = build_server(
+            &dir,
+            Some(upstream.origin.clone()),
+            &[],
+            &[],
+            &pool_json(count),
+        )
+        .await;
+
+        let (status, body) = request_video(&server, "mode=stream").await;
+
+        assert_eq!(
+            status, 200,
+            "pool={count}: 换设备后应当拿到可播档位: {body}"
+        );
+        assert!(
+            body.to_string().contains(ALLOWED_URL),
+            "应当返回 h265 档: {body}"
+        );
+        let devices: Vec<String> = upstream
+            .requests()
+            .iter()
+            .filter(|request| request.path.contains("multi_video_model"))
+            .map(|request| query_map(&request.query)["device_id"].clone())
+            .collect();
+        assert_eq!(devices.len(), 2, "只多取一次流: {devices:?}");
+        assert_eq!(devices[0], "0000000000000000");
+        assert_ne!(devices[0], devices[1], "必须避开实际返回 bytevc2 的设备");
+    }
+}
+
+/// The retry is a single rotation, not a ladder: a source that is undecodable
+/// on every device must still fail with the same user-facing message, and must
+/// not spend the device pool chasing it.
+#[tokio::test]
+async fn bytevc2_only_answer_still_fails_after_one_retry() {
+    let _guard = exclusive();
+    let rejected = json!({"data": {"video_model": {
+        "key_seed": "AAAA",
+        "video_list": {"video_0": {
+            "codec_type": "bytevc2",
+            "main_url": REJECTED_URL,
+            "vwidth": 720,
+            "vheight": 1280
+        }}
+    }}});
+    for (purpose, empty_alternate) in [
+        ("foreground", false),
+        ("foreground", true),
+        ("prefetch", false),
+    ] {
+        reset_playback_route_state_for_tests();
+        let rejected = rejected.clone();
+        let upstream = MockUpstream::start(move |request| {
+            let device = query_map(&request.query)["device_id"].clone();
+            if empty_alternate && device != "0000000000000000" {
+                MockReply::status(200)
+            } else {
+                MockReply::json(rejected.clone())
+            }
+        })
+        .await;
+        let dir = TempDir::new("video-codec-retry-fail");
+        let server =
+            build_server(&dir, Some(upstream.origin.clone()), &[], &[], &pool_json(5)).await;
+
+        let (status, body) =
+            request_video(&server, &format!("mode=stream&_playback_purpose={purpose}")).await;
+
+        assert_rejected(status, &body, "重试未恢复时仍报告不可解码");
+        let devices: Vec<String> = upstream
+            .requests()
+            .iter()
+            .map(|request| query_map(&request.query)["device_id"].clone())
+            .collect();
+        if purpose == "prefetch" {
+            assert_eq!(devices.len(), 1, "预取不能触发编码重试: {devices:?}");
+        } else {
+            assert!(
+                devices.len() >= 2 && devices.len() <= 6,
+                "重取请求必须有界: {devices:?}"
+            );
+            assert_ne!(devices[0], devices[1], "必须换设备");
+            assert!(
+                devices[1..].iter().all(|device| device == &devices[1]),
+                "重试不能再轮换设备: {devices:?}"
+            );
+            if !empty_alternate {
+                assert_eq!(devices.len(), 2, "bytevc2 响应只重取一次");
+            }
+        }
+    }
 }
