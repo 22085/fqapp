@@ -1,0 +1,87 @@
+name: iOS simulator probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-26
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      COCOAPODS_DISABLE_STATS: 'true'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.50.0'
+          channel: stable
+          cache: true
+
+      - name: Resolve locked dependencies
+        run: |
+          flutter config --no-enable-swift-package-manager
+          flutter pub get --enforce-lockfile
+          (cd ios && pod install)
+
+      - name: Environment
+        run: |
+          echo "== xcode-select =="
+          xcode-select -p
+          echo "== xcodebuild =="
+          xcodebuild -version
+          echo "== runtimes =="
+          xcrun simctl list runtimes
+          echo "== devices =="
+          xcrun simctl list devices available
+
+      - name: Destinations before booting
+        run: |
+          xcodebuild -project ios/Runner.xcodeproj -scheme Runner -showdestinations || echo "exit=$?"
+
+      - name: Boot one simulator and re-check
+        run: |
+          UDID=$(xcrun simctl list devices available --json | python3 -c "
+          import json, sys
+          devices = json.load(sys.stdin)['devices']
+          picks = [d['udid'] for runtime, items in sorted(devices.items()) if '.iOS-' in runtime for d in items if d['name'].startswith('iPhone')]
+          print(picks[-1])
+          ")
+          echo "UDID=$UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          echo "== destinations after boot =="
+          xcodebuild -project ios/Runner.xcodeproj -scheme Runner -showdestinations || echo "exit=$?"
+          echo "== showBuildSettings with -destination id =="
+          xcodebuild -project ios/Runner.xcodeproj -scheme Runner -configuration Debug -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings 2>&1 | head -30 || echo "exit=$?"
+          echo "== showBuildSettings with -destination generic =="
+          xcodebuild -project ios/Runner.xcodeproj -scheme Runner -configuration Debug -sdk iphonesimulator -destination "generic/platform=iOS Simulator" -showBuildSettings 2>&1 | head -10 || echo "exit=$?"
+
+      - name: Restart CoreSimulator service and re-check
+        run: |
+          sudo killall -9 com.apple.CoreSimulator.CoreSimulatorService || true
+          sleep 10
+          xcrun simctl bootstatus all -b || true
+          echo "== destinations after service restart =="
+          xcodebuild -project ios/Runner.xcodeproj -scheme Runner -showdestinations || echo "exit=$?"
+          UDID=$(xcrun simctl list devices available --json | python3 -c "
+          import json, sys
+          devices = json.load(sys.stdin)['devices']
+          picks = [d['udid'] for runtime, items in sorted(devices.items()) if '.iOS-' in runtime for d in items if d['name'].startswith('iPhone')]
+          print(picks[-1])
+          ")
+          echo "UDID=$UDID"
+          xcodebuild -project ios/Runner.xcodeproj -scheme Runner -configuration Debug -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings 2>&1 | head -30 || echo "exit=$?"
+
+      - name: Flutter device list
+        run: |
+          flutter devices || true
