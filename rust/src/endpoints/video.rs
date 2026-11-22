@@ -66,6 +66,15 @@ const REPROBE_MIN_BUDGET: Duration = Duration::from_millis(1_000);
 /// replacement registration is several round trips.
 const ROTATION_MIN_BUDGET: Duration = Duration::from_millis(1_500);
 
+/// How much caller budget the codec retry may spend on a replacement identity.
+///
+/// Upstream splits by device: the same episode can come back as `h265` on one
+/// identity and as `bytevc2` (no decoder on the playback path) on another. One
+/// more fetch on a different device is worth a couple of round trips; a longer
+/// ladder is not, because the device pool and its registration budget are both
+/// bounded.
+const CODEC_RETRY_BUDGET: Duration = Duration::from_millis(2_500);
+
 /// Reading directory endpoint used as the primary pseries directory source.
 const DIRECTORY_READING_URL: &str =
     "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/directory/all_items/v?";
@@ -185,20 +194,20 @@ fn handle_video<'a>(ctx: &'a Ctx, params: &'a Params) -> BoxFuture<'a, ApiResult
         let work_deadline = work_started + work_budget;
         let fetch_deadline = work_started + fetch_budget;
         let resolution_deadline = work_started + resolution_budget;
-        let parsed = crate::upstream::playback_trace::within(
+        let (mut parsed, answering_device) = crate::upstream::playback_trace::within(
             source_trace_id,
             purpose,
             fetch_parsed_video_response(
                 "v5",
                 &video_id,
                 fetch_deadline,
-                fetch_playback_model(ctx, &video_id, fetch_deadline, purpose),
+                fetch_playback_model(ctx, &video_id, fetch_deadline, purpose, None),
             ),
         )
         .await
         .ok_or_else(|| ApiError::Internal("视频取流失败,请稍后重试".to_string()))?;
         let fallback_bodies = new_fallback_body_cache();
-        let resolved = resolve_video_source_until(
+        let mut resolved = resolve_video_source_until(
             ctx,
             &video_id,
             "v5",
@@ -207,6 +216,61 @@ fn handle_video<'a>(ctx: &'a Ctx, params: &'a Params) -> BoxFuture<'a, ApiResult
             resolution_deadline,
         )
         .await;
+
+        // Codec availability varies by identity. Step away from the device
+        // that actually answered, once; prefetch must not spend rotation budget.
+        if purpose != "prefetch" && matches!(resolved, VideoSourceResolution::CodecRejected) {
+            let retry_deadline = (Instant::now() + CODEC_RETRY_BUDGET).min(work_deadline);
+            if Instant::now() < retry_deadline {
+                if let Some(device) = crate::upstream::playback_trace::within(
+                    source_trace_id,
+                    purpose,
+                    rotate_playback_identity(ctx, retry_deadline, Some(&answering_device)),
+                )
+                .await
+                {
+                    let retried = crate::upstream::playback_trace::within(
+                        source_trace_id,
+                        purpose,
+                        fetch_parsed_video_response(
+                            "v5",
+                            &video_id,
+                            retry_deadline,
+                            fetch_playback_model(
+                                ctx,
+                                &video_id,
+                                retry_deadline,
+                                purpose,
+                                Some(&device),
+                            ),
+                        ),
+                    )
+                    .await;
+                    if let Some((next, _)) = retried {
+                        let next_resolved = resolve_video_source_until(
+                            ctx,
+                            &video_id,
+                            "v5",
+                            &next,
+                            &fallback_bodies,
+                            retry_deadline,
+                        )
+                        .await;
+                        if matches!(next_resolved, VideoSourceResolution::Found(_, _)) {
+                            log::info!(
+                                "stream trace request={source_trace_id} purpose={purpose} event=codec_retry result=recovered"
+                            );
+                            parsed = next;
+                            resolved = next_resolved;
+                        } else {
+                            log::warn!(
+                                "stream trace request={source_trace_id} purpose={purpose} event=codec_retry result=still_rejected"
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // 官方 `wp3/o1.java:301-347` 的 `isSupportShowLandIcon` 按服务端
         // `vertical` 决定竖屏剧集是否给「全屏观看」（竖屏不给）。该字段随
@@ -535,18 +599,22 @@ async fn rotate_playback_identity(
 /// per-door cooldowns (30 s after an empty body, 5 s after any other failure)
 /// and at most one identity rotation per request. Prefetch callers never probe
 /// a cooling door and never rotate.
+/// A supplied identity is the codec retry's sole replacement: use its doors
+/// without starting another identity rotation. Return the actual answering
+/// identity, including replacements made by the upstream client.
 async fn fetch_playback_model(
     ctx: &Ctx,
     video_id: &str,
     deadline: Instant,
     purpose: &'static str,
-) -> ApiResult<Vec<u8>> {
+    initial_pin: Option<&str>,
+) -> ApiResult<(Vec<u8>, String)> {
     use crate::upstream::playback_routes;
 
     let speculative = purpose == "prefetch";
     let request_id = crate::upstream::playback_trace::current().map_or(0, |trace| trace.request_id);
     let body = v5_playback_body(video_id)?;
-    let mut pin: Option<String> = None;
+    let mut pin: Option<String> = initial_pin.map(str::to_string);
     let mut all_empty = true;
     let mut attempts = 0usize;
     // One same-door re-probe per request: an empty body is usually a transient
@@ -555,7 +623,10 @@ async fn fetch_playback_model(
 
     // A long empty streak rotates the identity before the next attempt, which is
     // what recovered live playback for the reference implementation.
-    if playback_routes::with_state(|state| state.rotate_due(playback_routes::now_ms(), speculative))
+    if initial_pin.is_none()
+        && playback_routes::with_state(|state| {
+            state.rotate_due(playback_routes::now_ms(), speculative)
+        })
         && crate::upstream::budget::remaining().is_none_or(|left| left > ROTATION_MIN_BUDGET)
     {
         pin = rotate_playback_identity(ctx, deadline, None).await;
@@ -616,7 +687,10 @@ async fn fetch_playback_model(
                         state.success(route, playback_routes::now_ms());
                         state.note_round(false);
                     });
-                    return Ok(raw);
+                    let device_id = attempt
+                        .device_id
+                        .ok_or_else(|| ApiError::Internal("视频取流失败,请稍后重试".to_string()))?;
+                    return Ok((raw, device_id));
                 }
                 DoorOutcome::Empty => {
                     log::info!(
@@ -658,7 +732,8 @@ async fn fetch_playback_model(
         let paced =
             playback_routes::with_state(|state| state.rotation_paced(now_after, speculative));
         let due = playback_routes::with_state(|state| state.rotate_due(now_after, speculative));
-        let can_rotate = round == 0
+        let can_rotate = initial_pin.is_none()
+            && round == 0
             && paced
             && (parked || due)
             && crate::upstream::budget::remaining().is_none_or(|left| left > ROTATION_MIN_BUDGET);
@@ -691,13 +766,13 @@ async fn fetch_parsed_video_response(
     source: &str,
     video_id: &str,
     deadline: Instant,
-    request: impl std::future::Future<Output = ApiResult<Vec<u8>>>,
-) -> Option<ParsedVideoResponse> {
+    request: impl std::future::Future<Output = ApiResult<(Vec<u8>, String)>>,
+) -> Option<(ParsedVideoResponse, String)> {
     let trace = crate::upstream::playback_trace::current();
     let request_id = trace.as_ref().map_or(0, |trace| trace.request_id);
     let purpose = trace.as_ref().map_or("other", |trace| trace.purpose);
-    let raw = match tokio::time::timeout_at(deadline, request).await {
-        Ok(Ok(raw)) => raw,
+    let (raw, answering_device) = match tokio::time::timeout_at(deadline, request).await {
+        Ok(Ok(response)) => response,
         Ok(Err(_)) => {
             log::warn!(
                 "v5 trace request={request_id} purpose={purpose} source={source} event=fetch error=request"
@@ -750,7 +825,7 @@ async fn fetch_parsed_video_response(
         raw.len(),
         parsed.models.len(),
     );
-    Some(parsed)
+    Some((parsed, answering_device))
 }
 
 fn upstream_response_is_failure(root: &Value) -> bool {
