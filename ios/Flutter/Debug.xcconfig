@@ -7,3 +7,5 @@
 #include? "Signing.xcconfig"
 
 #include "Rust.xcconfig"
+
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = $(inherited) DEBUG

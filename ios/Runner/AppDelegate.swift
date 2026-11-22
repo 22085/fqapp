@@ -452,6 +452,18 @@ final class AudioSessionBridge: NSObject {
     let channel = FlutterMethodChannel(name: methodName, binaryMessenger: messenger)
     channel.setMethodCallHandler { call, result in
       switch call.method {
+#if DEBUG
+      case "debugSnapshot":
+        let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        result([
+          "owner": owner as Any? ?? NSNull(),
+          "session": sessionID,
+          "playing": playing,
+          "title": info[MPMediaItemPropertyTitle] ?? NSNull(),
+          "category": AVAudioSession.sharedInstance().category.rawValue,
+          "mode": AVAudioSession.sharedInstance().mode.rawValue,
+        ])
+#endif
       case "claim":
         guard let args = call.arguments as? [String: Any],
               let newOwner = args["owner"] as? String,
