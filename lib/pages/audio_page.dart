@@ -14,6 +14,7 @@ import '../models/book_detail.dart';
 import '../models/chapter_media.dart';
 import '../models/media_item.dart';
 import '../services/api_client.dart';
+import '../services/app_log.dart';
 import '../services/app_theme.dart';
 import '../services/audio_download_store.dart';
 import '../services/audio_history.dart';
@@ -1194,7 +1195,12 @@ class _AudioPageState extends State<AudioPage> {
           const SizedBox(height: 6),
           FilledButton.icon(
             key: const ValueKey('audio-retry'),
-            onPressed: () => c._openChapter(c._index, restoreHistory: true),
+            onPressed: () => c._openChapter(
+              c._index,
+              restoreHistory: true,
+              toneId: c._toneId,
+              refreshSource: true,
+            ),
             style: FilledButton.styleFrom(backgroundColor: HomePalette.accent),
             icon: const Icon(LucideIcons.refresh_cw, size: 16),
             label: const Text('重试'),
