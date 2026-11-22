@@ -2022,7 +2022,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         if (texture != null)
           RotatedBox(
             quarterTurns: _player!.videoRotationCorrection ~/ 90,
-            child: isWindowsDesktop
+            // iOS 与桌面一样由进程内的 media_kit 出画,没有 Texture 可画。
+            child: isWindowsDesktop || isIOSPlatform
                 ? DesktopPlatform.instance.videoSurface(
                     texture,
                     key: const ValueKey('player-texture'),

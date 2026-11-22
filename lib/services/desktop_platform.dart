@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'dart:ffi' hide Size;
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:ffi/ffi.dart';
@@ -16,6 +17,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:smtc_windows/smtc_windows.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../widgets/desktop_login.dart';
@@ -31,6 +33,28 @@ bool get isMediaDesktop =>
 
 bool get isWindowsDesktop =>
     !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
+
+/// iOS 与桌面共用进程内的 media_kit 播放器、Dart 侧文件通路与
+/// [DesktopPlatform] 的通道契约。
+///
+/// 判定放在这里、而不是 `ios_platform.dart`:`ios_platform.dart` 需要 import
+/// 本文件里的 [DesktopPlatform],反向再 import 会绕成一对循环依赖。
+bool get isIOSPlatform =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+
+/// 打开文件时的类型筛选。
+///
+/// `file_selector` 的 iOS 实现只认 `uniformTypeIdentifiers`:只给 `extensions`
+/// 的组会直接抛 `ArgumentError`(见 file_selector_ios 的
+/// `_allowedUtiListFromTypeGroups`),UIDocumentPicker 不会退回去看扩展名。
+/// 于是同一处入口按平台给两种表达,而不是在 iOS 上留一个必崩的路径。
+XTypeGroup _openTypeGroup({
+  required String label,
+  required List<String> extensions,
+  required List<String> iosTypes,
+}) => isIOSPlatform
+    ? XTypeGroup(label: label, uniformTypeIdentifiers: iosTypes)
+    : XTypeGroup(label: label, extensions: extensions);
 
 /// On Windows an inactive window is still visible; it simply lacks input focus.
 /// Only hidden/paused/detached windows should defer foreground video playback.
@@ -142,18 +166,7 @@ class DesktopPlatform with WindowListener {
         } catch (_) {}
       },
     );
-    _tts.setCompletionHandler(() {
-      final id = _utterance;
-      if (id != null) {
-        _utterance = null;
-        _emit('fqapp/system_tts_events', {'type': 'done', 'id': id});
-      }
-    });
-    _tts.setErrorHandler((dynamic _) {
-      final id = _utterance;
-      _utterance = null;
-      _emit('fqapp/system_tts_events', {'type': 'error', 'id': id});
-    });
+    initializeSpeech();
     // Optional system media integration must not prevent reading or startup.
     try {
       await SMTCWindows.initialize();
@@ -189,6 +202,26 @@ class DesktopPlatform with WindowListener {
     for (final host in hosts) {
       await host.dispose();
     }
+  }
+
+  /// 装配系统朗读的完成/错误回调。
+  ///
+  /// 与窗口管理无关,所以 iOS 也复用这一份(见 `ios_platform.dart`):回调把
+  /// flutter_tts 的完成/失败翻成 `fqapp/system_tts_events` 的 `done` /
+  /// `error`,与 Android 原生实现是同一份契约。
+  void initializeSpeech() {
+    _tts.setCompletionHandler(() {
+      final id = _utterance;
+      if (id != null) {
+        _utterance = null;
+        _emit('fqapp/system_tts_events', {'type': 'done', 'id': id});
+      }
+    });
+    _tts.setErrorHandler((dynamic _) {
+      final id = _utterance;
+      _utterance = null;
+      _emit('fqapp/system_tts_events', {'type': 'error', 'id': id});
+    });
   }
 
   Widget videoSurface(int id, {Key? key}) {
@@ -406,7 +439,8 @@ class DesktopPlatform with WindowListener {
           if (path == null) {
             throw PlatformException(code: 'cancelled', message: '已取消保存');
           }
-          return {'path': path, 'public': true};
+          // iOS 的分享面板写的是应用私有临时目录,不能报成「下载目录」。
+          return {'path': path, 'public': !isIOSPlatform};
         }
       case 'fqapp/reader':
         return _reader(method, args);
@@ -442,10 +476,16 @@ class DesktopPlatform with WindowListener {
     switch (method) {
       case 'engines':
         final voices = await _tts.getVoices;
+        // 默认项不是真实音色:选中它时 initialize 退回 setLanguage('zh-CN'),
+        // 由系统挑一个默认中文语音。
+        final systemEngine = isIOSPlatform ? 'ios' : 'windows';
         return {
-          'defaultEngine': 'windows',
+          'defaultEngine': systemEngine,
           'engines': [
-            {'package': 'windows', 'label': 'Windows 默认语音'},
+            {
+              'package': systemEngine,
+              'label': isIOSPlatform ? '系统默认语音' : 'Windows 默认语音',
+            },
             if (voices is List)
               for (final voice in voices)
                 if (voice is Map && voice['name'] is String)
@@ -468,11 +508,13 @@ class DesktopPlatform with WindowListener {
         } else {
           await _tts.setLanguage('zh-CN');
         }
-        // flutter_tts 的 Windows 实现内部会再 +0.5（SAPI SpeakingRate 的
-        // 0.5 基线），所以这里减掉同一个偏移才是 app 侧的 rate。
-        // 早先是 *0.5，等效 0.5r+0.5：拉满 2.0× 实际只有 1.5×。
+        // 换算按平台分开:iOS 的 AVSpeechUtterance 以 0.5
+        // (AVSpeechUtteranceDefaultSpeechRate)为正常语速、有效区间 0 到 1,
+        // 所以乘 0.5 再夹住;Windows 的 flutter_tts 实现内部会再 +0.5
+        // (SAPI SpeakingRate 的 0.5 基线),所以减掉同一个偏移才是 app 的 rate。
+        final rate = (args['rate'] as num?)?.toDouble() ?? 1;
         await _tts.setSpeechRate(
-          ((args['rate'] as num?)?.toDouble() ?? 1) - .5,
+          isIOSPlatform ? (rate * .5).clamp(0.0, 1.0).toDouble() : rate - .5,
         );
         return 300;
       case 'speak':
@@ -481,9 +523,27 @@ class DesktopPlatform with WindowListener {
         if (result == 0) {
           throw PlatformException(
             code: 'tts_failed',
-            message: 'Windows 语音不可用，请安装中文语音',
+            message: isIOSPlatform
+                ? '系统语音不可用，请在「设置 › 辅助功能 › 朗读内容」检查语音'
+                : 'Windows 语音不可用，请安装中文语音',
           );
         }
+        return null;
+      case 'setVolume':
+        // flutter_tts expects 0.0-1.0; the media slider already sends 0..1.
+        await _tts.setVolume(
+          ((args['volume'] as num?)?.toDouble() ?? 1)
+              .clamp(0.0, 1.0)
+              .toDouble(),
+        );
+        return null;
+      case 'pause':
+        // Android's native pause stops the engine but keeps audio focus. The
+        // shared flutter_tts path has no separate pause, so stopping the
+        // current utterance and clearing it is equivalent; the session/focus
+        // stays put until stopListenForeground releases it (IosAudioBridge).
+        _utterance = null;
+        await _tts.stop();
         return null;
       case 'stop':
       case 'shutdown':
@@ -491,6 +551,14 @@ class DesktopPlatform with WindowListener {
         await _tts.stop();
         return null;
       case 'settings':
+        // iOS 没有可深链的语音设置页(explorer.exe 必然失败),如实回报由
+        // 用户自行前往系统设置,而不是假装打开。
+        if (isIOSPlatform) {
+          throw PlatformException(
+            code: 'unsupported_platform',
+            message: '请在「设置 › 辅助功能 › 朗读内容」里调整系统语音',
+          );
+        }
         await Process.run('explorer.exe', ['ms-settings:speech']);
         return null;
     }
@@ -532,7 +600,11 @@ class DesktopPlatform with WindowListener {
       case 'pickFont':
         final file = await openFile(
           acceptedTypeGroups: [
-            const XTypeGroup(label: '字体', extensions: ['ttf', 'otf', 'ttc']),
+            _openTypeGroup(
+              label: '字体',
+              extensions: ['ttf', 'otf', 'ttc'],
+              iosTypes: ['public.font'],
+            ),
           ],
         );
         if (file == null) return null;
@@ -590,6 +662,16 @@ class DesktopPlatform with WindowListener {
       );
       return;
     }
+    if (isIOSPlatform) {
+      // iOS 只有一个进程级亮屏开关,reader/player 两份投票已经在 _setAwake
+      // 里合成为一个值:某一方撤回自己的票,不能让另一方的常亮跟着一起没。
+      if (_readerAwake || _playerAwake) {
+        await WakelockPlus.enable();
+      } else {
+        await WakelockPlus.disable();
+      }
+      return;
+    }
     final call = DynamicLibrary.open('kernel32.dll')
         .lookupFunction<Uint32 Function(Uint32), int Function(int)>(
           'SetThreadExecutionState',
@@ -604,6 +686,16 @@ class DesktopPlatform with WindowListener {
     Uint8List bytes,
     List<String> extensions,
   ) async {
+    // iOS 没有「另存为」面板(file_selector_ios 没实现 getSaveLocation),
+    // 改成写临时文件再弹系统分享面板,由用户决定存到「文件」、发出去还是
+    // 取消。返回的是分享文件在**应用私有临时目录**里的路径,调用方不能把
+    // 它当成「下载目录」。
+    if (isIOSPlatform) {
+      return const MethodChannel('fqapp/ios_files').invokeMethod<String>(
+        'saveFile',
+        {'name': _safeName(name), 'bytes': bytes},
+      );
+    }
     final location = await getSaveLocation(
       suggestedName: _safeName(name),
       acceptedTypeGroups: [XTypeGroup(label: '文件', extensions: extensions)],
@@ -726,7 +818,11 @@ class DesktopPlatform with WindowListener {
       case 'openBackup':
         final selected = await openFile(
           acceptedTypeGroups: [
-            const XTypeGroup(label: '备份文件', extensions: ['json']),
+            _openTypeGroup(
+              label: '备份文件',
+              extensions: ['json'],
+              iosTypes: ['public.json'],
+            ),
           ],
         );
         if (selected == null) return null;
@@ -788,7 +884,11 @@ class DesktopPlatform with WindowListener {
   Future<Map<String, dynamic>?> pickBook() async {
     final file = await openFile(
       acceptedTypeGroups: [
-        const XTypeGroup(label: '本地书籍', extensions: ['txt', 'epub']),
+        _openTypeGroup(
+          label: '本地书籍',
+          extensions: ['txt', 'epub'],
+          iosTypes: ['public.plain-text', 'org.idpf.epub-container'],
+        ),
       ],
     );
     if (file == null) return null;
@@ -849,34 +949,164 @@ String decodeDesktopText(Uint8List bytes) {
   try {
     return utf8.decode(bytes).replaceFirst(RegExp('^\uFEFF'), '');
   } on FormatException {
-    final convert = DynamicLibrary.open('kernel32.dll')
-        .lookupFunction<
-          Int32 Function(
-            Uint32,
-            Uint32,
-            Pointer<Uint8>,
-            Int32,
-            Pointer<Uint16>,
-            Int32,
-          ),
-          int Function(int, int, Pointer<Uint8>, int, Pointer<Uint16>, int)
-        >('MultiByteToWideChar');
-    final input = calloc<Uint8>(bytes.length);
-    input.asTypedList(bytes.length).setAll(0, bytes);
-    Pointer<Uint16> output = nullptr;
+    // 中文 TXT 大量是 GBK/GB18030。Windows 上有系统转换 API,其余平台只能
+    // 走系统 libiconv —— 早先这里无条件 `DynamicLibrary.open('kernel32.dll')`,
+    // 在 iOS/macOS 上必然打不开,导入 GB18030 的 TXT 只剩一句失败的提示。
+    return Platform.isWindows
+        ? _decodeGb18030Windows(bytes)
+        : _decodeGb18030Iconv(bytes);
+  }
+}
+
+/// GB18030 → UTF-16,走 Windows 的 `MultiByteToWideChar`(代码页 54936)。
+///
+/// flags=0 表示宽松转换:遇到非法字节用 U+FFFD 顶替,而不是整段失败。
+String _decodeGb18030Windows(Uint8List bytes) {
+  final convert = DynamicLibrary.open('kernel32.dll')
+      .lookupFunction<
+        Int32 Function(
+          Uint32,
+          Uint32,
+          Pointer<Uint8>,
+          Int32,
+          Pointer<Uint16>,
+          Int32,
+        ),
+        int Function(int, int, Pointer<Uint8>, int, Pointer<Uint16>, int)
+      >('MultiByteToWideChar');
+  final input = calloc<Uint8>(bytes.length);
+  input.asTypedList(bytes.length).setAll(0, bytes);
+  Pointer<Uint16> output = nullptr;
+  try {
+    final length = convert(54936, 0, input, bytes.length, nullptr, 0);
+    if (length == 0) throw const FormatException('无法识别 TXT 编码');
+    output = calloc<Uint16>(length);
+    if (convert(54936, 0, input, bytes.length, output, length) == 0) {
+      throw const FormatException('无法读取 TXT');
+    }
+    return String.fromCharCodes(output.asTypedList(length));
+  } finally {
+    calloc.free(input);
+    if (output != nullptr) calloc.free(output);
+  }
+}
+
+typedef _IconvOpenNative = Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>);
+typedef _IconvOpenDart = Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>);
+typedef _IconvNative =
+    IntPtr Function(
+      Pointer<Void>,
+      Pointer<Pointer<Uint8>>,
+      Pointer<IntPtr>,
+      Pointer<Pointer<Uint8>>,
+      Pointer<IntPtr>,
+    );
+typedef _IconvDart =
+    int Function(
+      Pointer<Void>,
+      Pointer<Pointer<Uint8>>,
+      Pointer<IntPtr>,
+      Pointer<Pointer<Uint8>>,
+      Pointer<IntPtr>,
+    );
+typedef _IconvCloseNative = Int32 Function(Pointer<Void>);
+typedef _IconvCloseDart = int Function(Pointer<Void>);
+typedef _ErrnoNative = Pointer<Int32> Function();
+typedef _ErrnoDart = Pointer<Int32> Function();
+
+/// `iconv_open` 失败时返回 `(iconv_t)-1`,也就是整字全是 1 的指针。
+///
+/// Dart 把这个字读成有符号整数,所以哨兵只等于 -1:拿 `>= 0` 之类的判断会
+/// 把失败当成成功,然后把这个假描述符交给 `iconv`。
+const _iconvInvalid = -1;
+
+/// 输出缓冲单轮大小。写满时 `iconv` 报 E2BIG,续下一轮。
+const _iconvChunk = 1 << 16;
+
+/// libc 里 errno 的访问器各平台不同名:Apple 是 `__error`,glibc/musl 是
+/// `__errno_location`,bionic 是 `__errno`。
+Pointer<Int32> Function() _errnoAccessor(DynamicLibrary libc) {
+  for (final name in const ['__error', '__errno_location', '__errno']) {
     try {
-      final length = convert(54936, 0, input, bytes.length, nullptr, 0);
-      if (length == 0) throw const FormatException('无法识别 TXT 编码');
-      output = calloc<Uint16>(length);
-      if (convert(54936, 0, input, bytes.length, output, length) == 0) {
-        throw const FormatException('无法读取 TXT');
-      }
-      return String.fromCharCodes(output.asTypedList(length));
-    } finally {
-      calloc.free(input);
-      if (output != nullptr) calloc.free(output);
+      return libc.lookupFunction<_ErrnoNative, _ErrnoDart>(name);
+    } on ArgumentError {
+      continue;
     }
   }
+  throw const FormatException('无法识别 TXT 编码');
+}
+
+/// GB18030 → UTF-8,走系统 libiconv。
+///
+/// iOS/macOS 的 libiconv 在 libSystem 里、随进程一起加载,所以能从
+/// `DynamicLibrary.process()` 的全局符号里查到(iOS 不允许像桌面那样
+/// dlopen 系统库;`-liconv` 只负责让链接器认这个库)。
+String _decodeGb18030Iconv(Uint8List bytes) {
+  final libc = DynamicLibrary.process();
+  final open = libc.lookupFunction<_IconvOpenNative, _IconvOpenDart>(
+    'iconv_open',
+  );
+  final convert = libc.lookupFunction<_IconvNative, _IconvDart>('iconv');
+  final close = libc.lookupFunction<_IconvCloseNative, _IconvCloseDart>(
+    'iconv_close',
+  );
+  final errno = _errnoAccessor(libc);
+  // E2BIG:输出缓冲不够。POSIX 里各平台一致是 7。
+  const e2big = 7;
+  final target = 'UTF-8'.toNativeUtf8();
+  Pointer<Void> descriptor = nullptr;
+  try {
+    // 各平台库里的编码名不完全一致:GB18030 覆盖 GBK/CP936,缺了再退一级。
+    for (final name in const ['GB18030', 'GBK', 'CP936']) {
+      final source = name.toNativeUtf8();
+      try {
+        descriptor = open(target, source);
+      } finally {
+        // iconv_open 自己复制编码名,这里可以立刻释放。
+        calloc.free(source);
+      }
+      if (descriptor != nullptr && descriptor.address != _iconvInvalid) break;
+    }
+  } finally {
+    calloc.free(target);
+  }
+  if (descriptor == nullptr || descriptor.address == _iconvInvalid) {
+    throw const FormatException('无法识别 TXT 编码');
+  }
+  final input = calloc<Uint8>(bytes.length);
+  input.asTypedList(bytes.length).setAll(0, bytes);
+  final inPtr = calloc<Pointer<Uint8>>()..value = input;
+  final inLeft = calloc<IntPtr>()..value = bytes.length;
+  final outBuf = calloc<Uint8>(_iconvChunk);
+  final outPtr = calloc<Pointer<Uint8>>();
+  final outLeft = calloc<IntPtr>();
+  // 输出缓冲每轮复用,而 [BytesBuilder] 默认会复制 add 进来的那一段,所以
+  // 下一轮覆盖 outBuf 不会动到已经收下的字节。
+  final builder = BytesBuilder();
+  try {
+    while (inLeft.value > 0) {
+      outPtr.value = outBuf;
+      outLeft.value = _iconvChunk;
+      final result = convert(descriptor, inPtr, inLeft, outPtr, outLeft);
+      final produced = _iconvChunk - outLeft.value;
+      if (produced > 0) builder.add(outBuf.asTypedList(produced));
+      // 成功:iconv 只有在吃完所有输入时才不返回 -1。
+      if (result != -1) break;
+      // 失败必须看 errno:只有 E2BIG(输出写满)才续下一轮。EILSEQ/EINVAL
+      // 说明这段字节不是 GB18030,已经产出的半截文本不能当成导入成功。
+      if (errno().value == e2big && produced > 0) continue;
+      throw const FormatException('无法识别 TXT 编码');
+    }
+  } finally {
+    close(descriptor);
+    calloc.free(input);
+    calloc.free(inPtr);
+    calloc.free(inLeft);
+    calloc.free(outBuf);
+    calloc.free(outPtr);
+    calloc.free(outLeft);
+  }
+  return utf8.decode(builder.takeBytes());
 }
 
 /// `create` 下发的续播起点（`startPositionMs`，> 0 才有）落到 media_kit 的

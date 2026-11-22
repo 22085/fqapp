@@ -252,6 +252,16 @@ Rust 核心按 `arm64-v8a` 与 `armeabi-v7a` 两个 ABI 产出（`scripts/build_
 `.ps1` 的 `aarch64-linux-android` + `armv7-linux-androideabi`），CI 因此用
 `--target-platform android-arm,android-arm64 --split-per-abi` 出两个分包；x86/x86_64 设备不提供。
 
+本地修改版需要与正式版共存时，在构建前设置 `FQAPP_COEXIST=true`。包名变为
+`com.fqapp.fqapp.mod`，显示名为「什锦铺·改」，两份应用的数据各自独立。未设置时使用正式包名和名称；
+该开关不改变签名要求。PowerShell 示例：
+
+```powershell
+$env:FQAPP_COEXIST = 'true'
+flutter build apk --release --target-platform android-arm64 --split-per-abi
+Remove-Item Env:FQAPP_COEXIST
+```
+
 > **release 构建不要加 `--no-pub`**：`integration_test` 在 `dev_dependencies` 里，`flutter test` 会把
 > 它写进 Android 插件注册表；随后用 `--no-pub` 构建 release，Gradle 会报
 > `package dev.flutter.plugins.integration_test does not exist`。先跑测试再构建时保留 pub 步骤即可

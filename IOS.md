@@ -1,6 +1,6 @@
 # iOS 版：构建与已知限制
 
-仓库原本只有 Android / Windows 两个平台。iOS 端是后补的，当前目标是「能在 iPhone 上搜书、管书架、看小说」，不是全功能对齐 Android。
+iOS 端支持搜书、书架和阅读，并通过进程内 `media_kit` 接入视频与音频播放。平台适配仍需要在 Mac 上构建并在 iPhone 上验证；下列限制保留为交付边界。
 
 ## 构建环境
 
@@ -16,8 +16,9 @@
 ## 构建
 
 ```bash
-flutter pub get
+flutter pub get --enforce-lockfile
 ./scripts/build_rust_ios.sh          # Rust → ios/Frameworks/libfqapi_core.a
+(cd ios && pod install)              # 安装 media_kit 的 iOS 播放框架
 flutter build ios --release --no-codesign
 ```
 
@@ -61,15 +62,18 @@ BUNDLE_ID=com.fqapp.fqapp IPA=/tmp/pack/fqapp_ios_unsigned.ipa ./your-sign-scrip
      - `-Wl,-export_dynamic`，主可执行文件默认不导出全局符号，dlsym 会找不到 Rust 入口；
    - `lib/services/rust_bootstrap_io.dart` 在 iOS 上改用 `ExternalLibrary.process()`（接缝在 `lib/services/backend_transport.dart` 的 `runtimeInitializer`）。
 2. **桌面专用依赖**（`webview_windows` / `smtc_windows` / `window_manager` / `screen_retriever`）不需要条件导入：它们都能在 iOS 上编译，运行时只在 `isWindowsDesktop` 分支调用。
-3. **视频/听书入口降级**：iOS 没有 `fqapp/native_player`（ExoPlayer）通道实现，`lib/services/platform_capabilities.dart` 的 `supportsVideoPlayback` 在 iOS 为 false，`main.dart` 把短剧页换成「暂不支持」占位，避免触发缺失插件。阅读页的亮度/常亮/墨水屏通道缺失时已有 `MissingPluginException` 降级，不需要 Swift。
+3. **进程内播放适配**：`IosPlatform` 将播放器通道接到 `DesktopPlatform` 的 `media_kit` 播放器，视频页面使用 `VideoController` 表面。加密音视频经 Rust 的本机会话解密；原生入口通过进程导出符号读取。亮屏锁使用 `wakelock_plus`，不会调用 Windows 系统 API。
 4. **图标与应用名**：`scripts/generate_ios_app_icon.py` 从 `assets/branding/app_icon_source.png` 生成 1024 无 alpha 图标（复用 Android 生成器的「去纸张外框」逻辑），`CFBundleDisplayName` 设为「什锦铺」。
 5. **关掉 Swift Package Manager**：`flutter config --no-enable-swift-package-manager`（Xcode 27 + SPM 有已知构建失败）。
+6. **文件与网页登录**：TXT/EPUB 和 JSON 导入传入 iOS UTI；文件导出通过系统分享面板，取消不算成功。番茄登录使用 `WKWebView`，成功或取消都结束原登录请求。
+7. **系统朗读与后台音频**：朗读使用 `flutter_tts`，完成事件复用播放器适配层。音频会话启动时设为 `playback`，听书开始时激活、结束时释放；`Info.plist` 声明后台音频。系统语音设置入口显示手动前往设置的说明。
 
 ## 已知限制
 
-- **视频不可用**：短剧/漫剧页显示「暂不支持」。要补需要接 `media_kit` + `media_kit_libs_ios_video`（播放走 Rust 的 `/src/*` 回环解密），或写 AVPlayer 插件。
-- **听书不可用**：`fqapp/system_tts`（Android TextToSpeech + WSOLA）没有 iOS 实现，界面上会提示「当前平台不支持系统朗读」；可以接 `flutter_tts`（AVSpeechSynthesizer）补上。
-- 分享、导入导出、后台播放、LAN 分享、番茄书架导入等只在 Android 上验证过。
+- 视频、音频、系统朗读、文件选择和网页登录的 iOS 适配已接入源码；仍需完成 Mac 签名构建与真机验证，不能以 Windows 宿主检查代替。
+- 画中画、悬浮窗和锁屏媒体控制尚未接入。后台音频、锁屏与来电中断的实际行为需在 iPhone 上验证。
+- 分享成功返回的是应用临时文件路径；文件是否已存入「文件」或发送到其他应用由用户选择的分享操作决定。
+- 阅读亮度、墨水屏和其他 Android 专有能力继续按平台支持情况降级；LAN 分享与番茄接口兼容性需要单独验证。
 - 免费 Apple ID 签名 7 天过期，过期后 App 闪退，重跑一次自签脚本即可。
 
 ## 与 Android 构建的关系
