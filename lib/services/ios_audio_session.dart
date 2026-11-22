@@ -111,11 +111,11 @@ class IosAudioSession {
 
   /// 解码器/语音引擎出声前配置并激活同一桥，不在冷启动激活。
   static Future<bool> prepare({
-    required String? owner,
+    required String owner,
     required String mode,
   }) async {
     if (!isIOSPlatform) return true;
-    if (owner == null ? hasOwner : !owns(owner)) return false;
+    if (!owns(owner)) return false;
     final identity = _identity;
     await _invoke('prepare', {...identity, 'mode': mode});
     return identity['session'] == _generation && owner == _owner;

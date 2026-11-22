@@ -470,9 +470,7 @@ final class AudioSessionBridge: NSObject {
         }
         result(nil)
       case "prepare":
-        if let args = call.arguments as? [String: Any],
-           matches(args) || (owner == nil && args["owner"] is NSNull &&
-                            args["session"] as? Int == sessionID) {
+        if let args = call.arguments as? [String: Any], matches(args) {
           configureSession(args["mode"] as? String ?? "audio")
           activateSession()
         }

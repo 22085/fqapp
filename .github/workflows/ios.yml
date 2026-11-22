@@ -144,6 +144,9 @@ jobs:
                   simctl('boot', udid)
               simctl('bootstatus', udid, '-b', timeout=120)
               simctl('install', udid, str(app), timeout=180)
+              container = pathlib.Path(simctl(
+                  'get_app_container', udid, bundle_id, 'data', timeout=180,
+              ))
               launch = simctl(
                   'launch', '--stdout=' + str(evidence.resolve() / 'stdout.log'),
                   '--stderr=' + str(evidence.resolve() / 'stderr.log'), udid, bundle_id,
@@ -151,7 +154,6 @@ jobs:
               (evidence / 'launch.txt').write_text(launch + '\n')
               pid = int(launch.rsplit(':', 1)[1].strip())
               report['pid'] = pid
-              container = pathlib.Path(simctl('get_app_container', udid, bundle_id, 'data'))
               deadline = time.monotonic() + 90
               while time.monotonic() < deadline:
                   os.kill(pid, 0)
