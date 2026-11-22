@@ -1,0 +1,348 @@
+name: iOS build and simulator startup
+
+on:
+  pull_request:
+    paths: &ios_paths
+      - 'lib/**'
+      - 'ios/**'
+      - 'rust/**'
+      - 'native/**'
+      - 'third_party/**'
+      - 'assets/**'
+      - 'pubspec.*'
+      - 'scripts/build_rust_ios.sh'
+      - 'IOS.md'
+      - 'integration_test/ios_interaction_test.dart'
+      - '.github/workflows/ios.yml'
+  push:
+    branches: [master]
+    paths: *ios_paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    runs-on: macos-26
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      CARGO_BUILD_JOBS: '2'
+      CARGO_TERM_COLOR: always
+      COCOAPODS_DISABLE_STATS: 'true'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Record Apple toolchain
+        run: |
+          mkdir -p build/validation/ios
+          sw_vers | tee build/validation/ios/macos.txt
+          xcodebuild -version | tee build/validation/ios/xcode.txt
+          xcodebuild -version | grep -Fx 'Xcode 26.6'
+          pod --version | tee build/validation/ios/cocoapods.txt
+          pod --version | grep -Fx '1.17.0'
+          xcrun simctl list --json > build/validation/ios/simulators.json
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: '1.99.1'
+          targets: aarch64-apple-ios, aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: rust
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.50.0'
+          channel: stable
+          cache: true
+
+      - name: Resolve locked dependencies
+        run: |
+          flutter config --no-enable-swift-package-manager
+          flutter pub get --enforce-lockfile
+          (cd ios && pod install) 2>&1 | tee build/validation/ios/pods.log
+          cp ios/Podfile.lock build/validation/ios/Podfile.lock
+          git diff --exit-code -- pubspec.lock rust/Cargo.lock ios/Podfile.lock
+
+      - name: Build Rust libraries for device and simulator
+        run: bash scripts/build_rust_ios.sh --simulator 2>&1 | tee build/validation/ios/rust-build.log
+
+      - name: Build unsigned device application
+        run: |
+          flutter build ios --release --no-codesign --no-pub --target lib/main.dart \
+            2>&1 | tee build/validation/ios/device-build.log
+          xcrun nm -gU build/ios/iphoneos/Runner.app/Runner \
+            > build/validation/ios/device-symbols.txt
+          for symbol in frb_get_rust_content_hash frb_init_frb_dart_api_dl \
+            fq_desktop_media_open fq_desktop_media_close fq_desktop_media_free; do
+            grep -Eq "[[:space:]]_${symbol}$" build/validation/ios/device-symbols.txt
+          done
+          ditto -c -k --sequesterRsrc --keepParent \
+            build/ios/iphoneos/Runner.app build/validation/ios/Runner-device-unsigned.zip
+
+      - name: Build simulator application
+        run: |
+          flutter build ios --simulator --debug --no-pub --target lib/main.dart \
+            2>&1 | tee build/validation/ios/simulator-build.log
+
+      - name: Launch full application and verify Rust startup
+        timeout-minutes: 8
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import plistlib
+          import re
+          import shutil
+          import subprocess
+          import time
+
+          evidence = pathlib.Path('build/validation/ios')
+          app = pathlib.Path('build/ios/iphonesimulator/Runner.app').resolve()
+          with (app / 'Info.plist').open('rb') as source:
+              bundle_id = plistlib.load(source)['CFBundleIdentifier']
+
+          def simctl(*args, timeout=60):
+              return subprocess.check_output(
+                  ['xcrun', 'simctl', *args], text=True, timeout=timeout,
+              ).strip()
+
+          devices = json.loads(simctl('list', 'devices', 'available', '--json'))
+          iphones = [
+              device
+              for runtime, items in sorted(devices['devices'].items())
+              if '.iOS-' in runtime
+              for device in items
+              if device['name'].startswith('iPhone')
+          ]
+          if not iphones:
+              raise RuntimeError('No available iPhone simulator runtime')
+          device = iphones[-1]
+          udid = device['udid']
+          report = {
+              'revision': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'device': device,
+              'bundle_id': bundle_id,
+              'backend_healthy': False,
+              'scope': 'Full application cold start and Rust health; feature/device acceptance pending',
+          }
+          container = None
+          try:
+              if device['state'] != 'Booted':
+                  simctl('boot', udid)
+              simctl('bootstatus', udid, '-b', timeout=120)
+              simctl('install', udid, str(app), timeout=180)
+              container = pathlib.Path(simctl(
+                  'get_app_container', udid, bundle_id, 'data', timeout=180,
+              ))
+              launch = simctl(
+                  'launch', '--stdout=' + str(evidence.resolve() / 'stdout.log'),
+                  '--stderr=' + str(evidence.resolve() / 'stderr.log'), udid, bundle_id,
+                  timeout=180,
+              )
+              (evidence / 'launch.txt').write_text(launch + '\n')
+              pid = int(launch.rsplit(':', 1)[1].strip())
+              report['pid'] = pid
+              deadline = time.monotonic() + 90
+              while time.monotonic() < deadline:
+                  os.kill(pid, 0)
+                  logs = list(container.rglob('backend.log'))
+                  if any('backend healthy' in log.read_text(errors='replace') for log in logs):
+                      report['backend_healthy'] = True
+                      break
+                  time.sleep(1)
+              if not report['backend_healthy']:
+                  raise RuntimeError('Rust backend did not become healthy within 90 seconds')
+              time.sleep(5)
+              os.kill(pid, 0)
+              simctl('io', udid, 'screenshot', str(evidence.resolve() / 'startup.png'))
+              app_logs = list(container.rglob('app.log'))
+              if not app_logs:
+                  raise RuntimeError('Application log missing; runtime errors cannot be inspected')
+              fatal = re.compile(r'^\[E\] \S+ (?:framework|zone|main):', re.MULTILINE)
+              if any(fatal.search(log.read_text(errors='replace')) for log in app_logs):
+                  raise RuntimeError('Unhandled startup error recorded in application log')
+              encrypted_boxes = list(container.rglob('multi_device_sync_v1_enc.hive'))
+              report['encrypted_sync_store_created'] = any(
+                  box.with_suffix('.lock').is_file()
+                  and box.with_suffix('.lock').stat().st_size > 0
+                  for box in encrypted_boxes
+              )
+              if not report['encrypted_sync_store_created']:
+                  raise RuntimeError('Keychain-backed encrypted sync store was not created')
+              report['process_and_backend_verified'] = True
+          finally:
+              if not report.get('process_and_backend_verified'):
+                  with (evidence / 'startup-system.log').open('w') as log:
+                      try:
+                          subprocess.run([
+                              'xcrun', 'simctl', 'spawn', udid, 'log', 'show',
+                              '--style', 'compact', '--last', '3m',
+                              '--predicate', 'process == "Runner"',
+                          ], stdout=log, stderr=subprocess.STDOUT, timeout=60, check=False)
+                      except subprocess.TimeoutExpired:
+                          log.write('\nSystem log collection timed out\n')
+              if container is not None:
+                  for name in ('backend.log', 'app.log'):
+                      for index, log in enumerate(container.rglob(name)):
+                          shutil.copy2(log, evidence / f'{index}-{name}')
+              (evidence / 'startup.json').write_text(json.dumps(report, indent=2) + '\n')
+              subprocess.run(['xcrun', 'simctl', 'terminate', udid, bundle_id], check=False)
+              subprocess.run(['xcrun', 'simctl', 'shutdown', udid], check=False)
+          PY
+
+      - name: Verify locked build inputs stayed unchanged
+        run: git diff --exit-code -- pubspec.lock rust/Cargo.lock ios/Podfile.lock
+
+      - name: Exercise production pages and native media on simulator
+        timeout-minutes: 35
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            brew install ffmpeg
+          fi
+          mkdir -p build/validation/ios/interaction-media
+          ffmpeg -hide_banner -loglevel error \
+            -f lavfi -i 'testsrc2=size=640x360:rate=25' \
+            -f lavfi -i 'sine=frequency=440:sample_rate=44100' \
+            -t 90 -c:v libx264 -pix_fmt yuv420p -g 25 -threads 1 \
+            -c:a aac -b:a 64k -movflags +faststart \
+            -encryption_scheme cenc-aes-ctr \
+            -encryption_key 00112233445566778899aabbccddeeff \
+            -encryption_kid 00000000000000000000000000000001 \
+            build/validation/ios/interaction-media/encrypted.mp4
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import re
+          import shutil
+          import subprocess
+          import threading
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+          evidence = pathlib.Path('build/validation/ios').resolve()
+          media = (evidence / 'interaction-media/encrypted.mp4').read_bytes()
+
+          class MediaHandler(BaseHTTPRequestHandler):
+              def do_HEAD(self):
+                  self.serve(False)
+
+              def do_GET(self):
+                  self.serve(True)
+
+              def serve(self, body):
+                  if self.path != '/encrypted.mp4':
+                      self.send_error(404)
+                      return
+                  start, end = 0, len(media) - 1
+                  requested = self.headers.get('Range')
+                  if requested:
+                      first, last = requested.removeprefix('bytes=').split('-', 1)
+                      start = int(first) if first else max(0, len(media) - int(last))
+                      end = min(int(last), end) if first and last else end
+                  if start >= len(media) or end < start:
+                      self.send_response(416)
+                      self.send_header('Content-Range', f'bytes */{len(media)}')
+                      self.end_headers()
+                      return
+                  self.send_response(206 if requested else 200)
+                  self.send_header('Content-Type', 'video/mp4')
+                  self.send_header('Accept-Ranges', 'bytes')
+                  self.send_header('Content-Length', str(end - start + 1))
+                  if requested:
+                      self.send_header('Content-Range', f'bytes {start}-{end}/{len(media)}')
+                  self.end_headers()
+                  if body:
+                      try:
+                          self.wfile.write(media[start:end + 1])
+                      except (BrokenPipeError, ConnectionResetError):
+                          pass
+
+          server = ThreadingHTTPServer(('127.0.0.1', 0), MediaHandler)
+          threading.Thread(target=server.serve_forever, daemon=True).start()
+          startup = json.loads((evidence / 'startup.json').read_text())
+          udid, bundle = startup['device']['udid'], startup['bundle_id']
+          revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          container = None
+          try:
+              subprocess.run(['xcrun', 'simctl', 'boot', udid], check=True, timeout=60)
+              subprocess.run(['xcrun', 'simctl', 'bootstatus', udid, '-b'], check=True, timeout=120)
+              container = pathlib.Path(subprocess.check_output(
+                  ['xcrun', 'simctl', 'get_app_container', udid, bundle, 'data'],
+                  text=True, timeout=180,
+              ).strip())
+              with (evidence / 'interaction-build-settings.log').open('w') as log:
+                  subprocess.run([
+                      'xcodebuild', '-project', 'ios/Runner.xcodeproj',
+                      '-scheme', 'Runner', '-configuration', 'Debug',
+                      '-sdk', 'iphonesimulator', '-destination', 'id=' + udid,
+                      '-showBuildSettings',
+                  ], stdout=log, stderr=subprocess.STDOUT, check=True, timeout=180)
+              for phase in ('interaction', 'restart'):
+                  with (evidence / f'{phase}-run.log').open('w') as log:
+                      subprocess.run([
+                          'flutter', 'test', '--verbose', '--no-pub', '-d', udid,
+                          'integration_test/ios_interaction_test.dart',
+                          '--dart-define=FQAPP_VALIDATION_REVISION=' + revision,
+                          '--dart-define=FQAPP_TEST_MEDIA_ORIGIN=http://127.0.0.1:' + str(server.server_port),
+                      ], stdout=log, stderr=subprocess.STDOUT, check=True, timeout=900)
+                  subprocess.run(['xcrun', 'simctl', 'terminate', udid, bundle], check=False, timeout=60)
+              for name in ('first.json', 'restart.json'):
+                  reports = list(container.rglob(name))
+                  if len(reports) != 1:
+                      raise RuntimeError(f'Missing or ambiguous interaction report: {name}')
+                  report = json.loads(reports[0].read_text())
+                  if report.get('passed') is not True or report.get('revision') != revision:
+                      raise RuntimeError(f'Interaction report failed or mismatched: {name}')
+                  expected_phase = 'interaction' if name == 'first.json' else 'restart'
+                  if report.get('phase') != expected_phase or not report.get('checks'):
+                      raise RuntimeError(f'Interaction phase was not executed: {name}')
+              fatal = re.compile(r'^\[E\] \S+ (?:framework|zone|main):', re.MULTILINE)
+              if any(fatal.search(log.read_text(errors='replace')) for log in container.rglob('app.log')):
+                  raise RuntimeError('Unhandled application error during simulator interactions')
+          finally:
+              server.shutdown()
+              if container is not None:
+                  for directory in container.rglob('ios-interaction'):
+                      if directory.is_dir():
+                          shutil.copytree(directory, evidence / 'interaction', dirs_exist_ok=True)
+                  for index, log in enumerate(container.rglob('app.log')):
+                      shutil.copy2(log, evidence / f'interaction-{index}-app.log')
+              subprocess.run(['xcrun', 'simctl', 'terminate', udid, bundle], check=False)
+              subprocess.run(['xcrun', 'simctl', 'shutdown', udid], check=False)
+          PY
+
+      - name: Verify interaction builds kept locked inputs unchanged
+        run: git diff --exit-code -- pubspec.lock rust/Cargo.lock ios/Podfile.lock
+
+      - name: Upload build and simulator evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fqapp-ios-validation-${{ github.sha }}
+          path: build/validation/ios/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Record acceptance boundary
+        if: success()
+        run: |
+          {
+            printf 'Unsigned iOS device build and simulator application startup completed.\n\n'
+            printf 'Inspect startup.png, startup.json and application logs in the artifact.\n\n'
+            printf 'Inspect interaction reports/screenshots for search, shelf, native CENC media, TTS and restart evidence.\n'
+            printf 'Fixed fixtures do not verify production media sources; login/sharing acceptance remains pending.\n'
+            printf 'Background/lock-screen audio, interruptions and Bluetooth require an iPhone.\n'
+          } >> "$GITHUB_STEP_SUMMARY"

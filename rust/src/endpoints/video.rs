@@ -140,6 +140,17 @@ enum FallbackResolution {
     Inconclusive,
 }
 
+/// How one entry of a model's own `video_list` scores against the codec gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrimaryVariantClass {
+    /// No playable url in any of the url fields.
+    None,
+    /// Playable url and a decodable codec: the primary resolution can use it.
+    Compatible,
+    /// Playable url but the codec gate rejects it (bytevc2, H.266-class).
+    UnsupportedCodec,
+}
+
 /// Request-local fallback bodies; failed or empty responses are never inserted.
 type FallbackBodyCache = Arc<Mutex<HashMap<String, Arc<Map<String, Value>>>>>;
 
@@ -1073,18 +1084,28 @@ fn resolve_video_source_direct(parsed: &ParsedVideoResponse) -> VideoSourceResol
             VideoSourceResolution::NotFound => {}
         }
     }
-    if parsed.models.iter().any(model_needs_fallback) {
-        return if codec_rejected {
-            VideoSourceResolution::CodecRejected
-        } else {
-            VideoSourceResolution::NotFound
-        };
+    // The legacy raw extractor must not run for a model whose own list cannot be
+    // decoded locally (encrypted array without a usable seed) or is bytevc2-only
+    // while a fallback door exists: it would hand back an undecodable `main_url`
+    // and skip the fallback entirely (`fallback_rejection_requires_a_conclusive_codec_decision`).
+    let defer = parsed.models.iter().any(|model| {
+        model_needs_fallback(model)
+            && (model_is_encrypted_without_seed(model) || model_primary_rejected_only(model))
+    });
+    if !defer {
+        if let VideoSourceResolution::Found(url, key) = extract_parsed_video_url(parsed) {
+            return VideoSourceResolution::Found(url, key);
+        }
     }
-    match extract_parsed_video_url(parsed) {
-        VideoSourceResolution::Found(url, key) => VideoSourceResolution::Found(url, key),
-        VideoSourceResolution::CodecRejected => VideoSourceResolution::CodecRejected,
-        VideoSourceResolution::NotFound if codec_rejected => VideoSourceResolution::CodecRejected,
-        VideoSourceResolution::NotFound => VideoSourceResolution::NotFound,
+    // Keep a shortplay codec rejection terminal when no fallback door exists.
+    // When a door exists the caller's fallback resolution owns the verdict, and
+    // a plain `CodecRejected` here would short-circuit it. A compatible primary
+    // already returned `Found` above, so a rejection never hides a playable
+    // model.
+    if codec_rejected && !defer {
+        VideoSourceResolution::CodecRejected
+    } else {
+        VideoSourceResolution::NotFound
     }
 }
 
@@ -1100,43 +1121,27 @@ async fn resolve_video_source_fallback_status(
     let mut conclusive = true;
     let mut attempted_fallback = false;
     for model in &parsed.models {
-        if !video_model_encrypted(model) {
-            continue;
-        }
         let fallback_url = fallback_api_url(model);
         if fallback_url.is_empty() {
             continue;
         }
         attempted_fallback = true;
-        let cached = fallback_bodies.and_then(|cache| {
-            let cache = cache.lock().unwrap_or_else(|error| error.into_inner());
-            cache.get(&fallback_url).cloned()
-        });
-        if cached.is_none() && Instant::now() >= deadline {
-            conclusive = false;
-            break;
-        }
-        let fallback_result = match cached {
-            Some(fallback_data) => Ok(fallback_data),
-            None => fetch_fallback_video_info(ctx, video_id, source, &fallback_url, deadline)
-                .await
-                .map(Arc::new),
-        };
-        match fallback_result {
-            Ok(fallback_data) => match extract_fallback_video_source(fallback_data.as_ref()) {
-                VideoSourceResolution::Found(url, key) => {
-                    if let Some(cache) = fallback_bodies {
-                        let mut cache = cache.lock().unwrap_or_else(|error| error.into_inner());
-                        cache
-                            .entry(fallback_url)
-                            .or_insert_with(|| fallback_data.clone());
-                    }
-                    return FallbackResolution::Found(url, key);
-                }
-                VideoSourceResolution::CodecRejected => codec_rejected = true,
-                VideoSourceResolution::NotFound => conclusive = false,
-            },
-            Err(_) => conclusive = false,
+        match resolve_fallback_body(
+            ctx,
+            video_id,
+            source,
+            &fallback_url,
+            fallback_bodies,
+            deadline,
+        )
+        .await
+        {
+            FallbackBody::Found(url, key) => return FallbackResolution::Found(url, key),
+            FallbackBody::Rejected => codec_rejected = true,
+            // A door that yielded nothing decodable while H.265 was never
+            // ruled out keeps the request retryable; a later model may still
+            // carry a playable source.
+            FallbackBody::NoSource => conclusive = false,
         }
     }
     if !codec_rejected && !attempted_fallback {
@@ -1157,8 +1162,183 @@ async fn resolve_video_source_fallback_status(
     }
 }
 
+/// The verdict of one `fallback_api` door: a decodable source, a terminal
+/// unsupported-codec rejection, or nothing conclusive.
+enum FallbackBody {
+    Found(String, Vec<u8>),
+    Rejected,
+    NoSource,
+}
+
+/// Turns one `fallback_api` door into a verdict for
+/// `resolve_video_source_fallback_status`. A playable original body wins
+/// immediately; only a rejected or empty original asks the same endpoint for its
+/// H.265 variant. A transport/parse/deadline failure retrieving H.265 is not a
+/// statement about the codec: it returns [`FallbackBody::NoSource`] so the
+/// request stays retryable. Only inspected bodies can be
+/// [`FallbackBody::Rejected`].
+async fn resolve_fallback_body(
+    ctx: &Ctx,
+    video_id: &str,
+    source: &str,
+    fallback_url: &str,
+    fallback_bodies: Option<&FallbackBodyCache>,
+    deadline: Instant,
+) -> FallbackBody {
+    // Fetch (or reuse a cached) original door. A cached H.265 body is read
+    // below, not here, so the original verdict is always the real one.
+    let original_cache_key = fallback_url.to_string();
+    let cached_original = fallback_bodies.and_then(|cache| {
+        let cache = cache.lock().unwrap_or_else(|error| error.into_inner());
+        cache.get(&original_cache_key).cloned()
+    });
+    let original = match cached_original {
+        Some(data) => data,
+        None if Instant::now() < deadline => {
+            match fetch_fallback_video_info(ctx, video_id, source, &original_cache_key, deadline)
+                .await
+            {
+                Ok(data) => Arc::new(data),
+                // Transport/parse/deadline failure: retryable, not a verdict.
+                Err(_) => return FallbackBody::NoSource,
+            }
+        }
+        None => return FallbackBody::NoSource,
+    };
+    let primary_outcome = extract_fallback_video_source(original.as_ref());
+    if let VideoSourceResolution::Found(url, key) = primary_outcome {
+        cache_fallback_body(fallback_bodies, Some(fallback_url), Some(original));
+        return FallbackBody::Found(url, key);
+    }
+    let primary_rejected = matches!(primary_outcome, VideoSourceResolution::CodecRejected);
+    let Some(alt) = h265_fallback_url(fallback_url) else {
+        // No `codec_type` to rewrite: only the original body could decide.
+        return if primary_rejected {
+            FallbackBody::Rejected
+        } else {
+            FallbackBody::NoSource
+        };
+    };
+    let fetched = {
+        let cached = fallback_bodies.and_then(|cache| {
+            let cache = cache.lock().unwrap_or_else(|error| error.into_inner());
+            cache.get(&alt).cloned()
+        });
+        match cached {
+            Some(data) => Some(data),
+            None if Instant::now() < deadline => {
+                match fetch_fallback_video_info(ctx, video_id, source, &alt, deadline).await {
+                    Ok(data) => Some(Arc::new(data)),
+                    // Transport/parse/deadline failure getting H.265: never a
+                    // conclusion about the codec, even if the original rejected.
+                    Err(_) => return FallbackBody::NoSource,
+                }
+            }
+            None => return FallbackBody::NoSource,
+        }
+    };
+    // Every failure branch above returned, so the fetch produced a body.
+    let Some(fetched) = fetched else {
+        return FallbackBody::NoSource;
+    };
+    let h265_outcome = extract_fallback_video_source(fetched.as_ref());
+    match h265_outcome {
+        VideoSourceResolution::Found(url, key) => {
+            cache_fallback_body(fallback_bodies, Some(&alt), Some(fetched));
+            FallbackBody::Found(url, key)
+        }
+        // Both doors were inspected and neither carries a decodable codec.
+        VideoSourceResolution::CodecRejected => FallbackBody::Rejected,
+        // A missing/undecodable H.265 body is not proof the codec is
+        // unsupported: keep it retryable. Only an inspected body that the codec
+        // gate itself rejects is terminal.
+        VideoSourceResolution::NotFound => FallbackBody::NoSource,
+    }
+}
+
+/// Stores one fetched `fallback_api` body under the endpoint URL it actually
+/// answered, but only when it carries a decodable tier. A bytevc2-only body is
+/// left uncached so the H.265 door of the same endpoint is still tried later in
+/// the request instead of being shadowed by an unusable body.
+fn cache_fallback_body(
+    cache: Option<&FallbackBodyCache>,
+    url: Option<&str>,
+    data: Option<Arc<Map<String, Value>>>,
+) {
+    let (Some(cache), Some(url), Some(data)) = (cache, url, data) else {
+        return;
+    };
+    if !fallback_body_is_cacheable(data.as_ref()) {
+        return;
+    }
+    let mut cache = cache.lock().unwrap_or_else(|error| error.into_inner());
+    cache.entry(url.to_string()).or_insert(data);
+}
+
 fn model_needs_fallback(model: &Map<String, Value>) -> bool {
-    video_model_encrypted(model) && !fallback_api_url(model).is_empty()
+    !fallback_api_url(model).is_empty()
+}
+
+/// True when the model's own `video_list` is the encrypted array shape and there
+/// is no *usable* seed to decrypt it. A non-empty string that fails base64
+/// decoding is no better than a missing seed: the shortplay extractor drops it
+/// via `audio_b64_decode(..).ok()` too, so the two must agree.
+fn model_is_encrypted_without_seed(model: &Map<String, Value>) -> bool {
+    let usable_seed = model
+        .get("key_seed")
+        .and_then(Value::as_str)
+        .filter(|seed| !seed.is_empty())
+        .and_then(|seed| audio_b64_decode(seed).ok())
+        .is_some();
+    video_model_encrypted(model) && !usable_seed
+}
+
+fn primary_variant_class(info: &Map<String, Value>) -> PrimaryVariantClass {
+    let playable_url = ["main_url", "backup_url", "backup_url_1", "play_url"]
+        .iter()
+        .filter_map(|key| info.get(*key).and_then(Value::as_str))
+        .any(|url| !url.trim().is_empty());
+    if !playable_url {
+        PrimaryVariantClass::None
+    } else if video_quality_score(info).is_some() {
+        PrimaryVariantClass::Compatible
+    } else {
+        PrimaryVariantClass::UnsupportedCodec
+    }
+}
+
+fn primary_variant_classes(model: &Map<String, Value>) -> Vec<PrimaryVariantClass> {
+    let mut classes = Vec::new();
+    let mut push = |item: &Value| {
+        if let Some(info) = item.as_object() {
+            classes.push(primary_variant_class(info));
+        } else if let Some(entries) = item.as_array() {
+            for entry in entries {
+                if let Some(info) = entry.as_object() {
+                    classes.push(primary_variant_class(info));
+                }
+            }
+        }
+    };
+    match model.get("video_list") {
+        Some(Value::Object(video_list)) => video_list.values().for_each(&mut push),
+        Some(Value::Array(video_list)) => video_list.iter().for_each(&mut push),
+        _ => {}
+    }
+    classes
+}
+
+/// True when the model's own `video_list` carries at least one variant and every
+/// entry is codec-rejected. Works for both `video_list` shapes, unlike
+/// [`video_model_encrypted`] which only reads the array form. The primary
+/// resolution and the H.265 fallback both use it so a pure-VVC list is only a
+/// terminal verdict after the fallback door has been tried.
+fn model_primary_rejected_only(model: &Map<String, Value>) -> bool {
+    let classes = primary_variant_classes(model);
+    !classes.is_empty()
+        && classes
+            .iter()
+            .all(|class| *class == PrimaryVariantClass::UnsupportedCodec)
 }
 
 async fn resolve_video_source_until(
@@ -1389,36 +1569,75 @@ async fn fallback_variant_rows(
         // 多数模型本来就没有这一条,不是异常。
         return (VariantBatch::default(), false);
     }
+    // The primary resolution stores the endpoint it actually read under its own
+    // URL, which is the H.265 door when the original list was bytevc2-only.
+    // Consult that key before the original so a successful fallback is reused
+    // instead of re-fetching the original door (and vice versa).
+    let h265_url = h265_fallback_url(&fallback_url);
     let cached = {
-        let cache = cache.lock().unwrap_or_else(|error| error.into_inner());
-        cache.get(&fallback_url).cloned()
+        let cache_guard = cache.lock().unwrap_or_else(|error| error.into_inner());
+        h265_url
+            .as_deref()
+            .and_then(|alt| {
+                cache_guard
+                    .get(alt)
+                    .cloned()
+                    .map(|data| (alt.to_string(), data))
+            })
+            .or_else(|| {
+                cache_guard
+                    .get(&fallback_url)
+                    .cloned()
+                    .map(|data| (fallback_url.clone(), data))
+            })
     };
-    if let Some(fallback_data) = cached {
-        return (fallback_rows_from_body(fallback_data.as_ref()), true);
+    if let Some((_, cached_body)) = cached {
+        let batch = fallback_rows_from_body(cached_body.as_ref());
+        // Only a body that already carries a decodable tier is a usable cache
+        // hit; a cached VVC-only body (kept for other reasons) must not hide the
+        // H.265 door.
+        if playable_variant_tier_count(&batch.rows) > 0 {
+            return (batch, true);
+        }
     }
     if Instant::now() >= deadline {
         return (VariantBatch::default(), false);
     }
-    let fallback_data =
-        match fetch_fallback_video_info(ctx, video_id, source, &fallback_url, deadline).await {
-            Ok(fallback_data) => fallback_data,
-            Err(_) => {
-                // 有地址却拉不到,是这一档列表整片消失的另一种静默路径。
-                log::warn!(
-                    "video {video_id}: {source} fallback_api fetch failed (quality tiers lost)"
-                );
-                return (VariantBatch::default(), false);
-            }
-        };
-    let fallback_data = Arc::new(fallback_data);
-    let batch = fallback_rows_from_body(fallback_data.as_ref());
-    if playable_variant_tier_count(&batch.rows) > 0 {
-        let mut cache = cache.lock().unwrap_or_else(|error| error.into_inner());
-        cache
+    let original = match fetch_fallback_video_info(ctx, video_id, source, &fallback_url, deadline)
+        .await
+    {
+        Ok(fallback_data) => Arc::new(fallback_data),
+        Err(_) => {
+            // 有地址却拉不到,是这一档列表整片消失的另一种静默路径。
+            log::warn!("video {video_id}: {source} fallback_api fetch failed (quality tiers lost)");
+            return (VariantBatch::default(), false);
+        }
+    };
+    // The original body is the first source of tiers. Only when it yields
+    // nothing decodable do we ask the same endpoint for its H.265 variant,
+    // which is where a bytevc2-only episode keeps the real quality ladder.
+    if fallback_body_is_cacheable(original.as_ref()) {
+        let mut cache_guard = cache.lock().unwrap_or_else(|error| error.into_inner());
+        cache_guard
             .entry(fallback_url)
-            .or_insert_with(|| fallback_data.clone());
+            .or_insert_with(|| original.clone());
+        return (fallback_rows_from_body(original.as_ref()), false);
     }
-    (batch, false)
+    if let Some(alt) = h265_url {
+        if Instant::now() < deadline {
+            if let Ok(h265_data) =
+                fetch_fallback_video_info(ctx, video_id, source, &alt, deadline).await
+            {
+                let h265_data = Arc::new(h265_data);
+                if fallback_body_is_cacheable(h265_data.as_ref()) {
+                    let mut cache_guard = cache.lock().unwrap_or_else(|error| error.into_inner());
+                    cache_guard.entry(alt).or_insert_with(|| h265_data.clone());
+                    return (fallback_rows_from_body(h265_data.as_ref()), false);
+                }
+            }
+        }
+    }
+    (fallback_rows_from_body(original.as_ref()), false)
 }
 
 fn fallback_rows_from_body(fallback_data: &Map<String, Value>) -> VariantBatch {
@@ -1433,6 +1652,21 @@ fn fallback_rows_from_body(fallback_data: &Map<String, Value>) -> VariantBatch {
         .and_then(|s| audio_b64_decode(s).ok());
     let list = list.and_then(|d| d.get("video_list"));
     variant_rows_scored_any(list, key_seed)
+}
+
+/// Whether a fallback body is worth caching under its endpoint URL: it must
+/// yield at least one playable, codec-compatible tier. A bytevc2-only body is
+/// deliberately left uncached so the H.265 door of the same endpoint is still
+/// tried later in the request instead of being hidden by a poisoned cache
+/// entry.
+fn fallback_body_is_cacheable(fallback_data: &Map<String, Value>) -> bool {
+    let batch = fallback_rows_from_body(fallback_data);
+    playable_variant_tier_count(&batch.rows) > 0
+        && batch.rows.iter().all(|(_, row)| {
+            row.get("url")
+                .and_then(Value::as_str)
+                .is_some_and(|url| !url.is_empty())
+        })
 }
 
 /// Why an entry in an upstream variant list never became a playable tier.
@@ -1900,6 +2134,43 @@ fn fallback_api_url(model: &Map<String, Value>) -> String {
     u
 }
 
+/// The same `fallback_api` endpoint re-served as H.265.
+///
+/// Some 漫剧 episodes only carry `bytevc2` (ByteDance VVC) tiers, and
+/// `codec_type=4` in the fallback URL asks for exactly those. No mpv build can
+/// decode VVC, but the same endpoint returns `h265_hvc1` tiers when asked for
+/// `codec_type=1`. Rewriting that one query parameter is enough to get a
+/// playable stream, so parse the parameter instead of matching the raw string.
+fn h265_fallback_url(url: &str) -> Option<String> {
+    let mut parsed = url::Url::parse(url).ok()?;
+    let codec = parsed
+        .query_pairs()
+        .find_map(|(key, value)| (key == "codec_type").then_some(value.into_owned()));
+    match codec.as_deref() {
+        None | Some("1") => None,
+        Some(_) => {
+            let fragment = parsed.fragment().map(str::to_string);
+            let pairs: Vec<(String, String)> = parsed
+                .query_pairs()
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect();
+            let mut encoded = url::form_urlencoded::Serializer::new(String::new());
+            for (key, value) in pairs {
+                if key == "codec_type" {
+                    encoded.append_pair(&key, "1");
+                } else {
+                    encoded.append_pair(&key, &value);
+                }
+            }
+            parsed.set_query(Some(&encoded.finish()));
+            if let Some(fragment) = fragment {
+                parsed.set_fragment(Some(&fragment));
+            }
+            Some(parsed.into())
+        }
+    }
+}
+
 async fn fetch_fallback_video_info(
     ctx: &Ctx,
     video_id: &str,
@@ -1967,13 +2238,16 @@ fn extract_fallback_video_source(root: &Map<String, Value>) -> VideoSourceResolu
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .and_then(|s| audio_b64_decode(s).ok());
-    let Some(video_list) = data_root.get("video_list").and_then(|v| v.as_object()) else {
-        return VideoSourceResolution::NotFound;
-    };
-
-    select_video_source(video_list.values(), |info| {
-        decrypt_variant_entry(info, key_seed.as_deref())
-    })
+    // The fallback body may carry the same object or array `video_list` shapes
+    // the primary door does; route both through the shared selector so the codec
+    // gate applies identically. That selector is what returns `CodecRejected`
+    // for a bytevc2-only body, the terminal verdict the H.265 fallback relies on.
+    let resolve = |info: &Map<String, Value>| decrypt_variant_entry(info, key_seed.as_deref());
+    match data_root.get("video_list") {
+        Some(Value::Object(video_list)) => select_video_source(video_list.values(), resolve),
+        Some(Value::Array(video_list)) => select_video_source(video_list.iter(), resolve),
+        _ => VideoSourceResolution::NotFound,
+    }
 }
 
 fn select_video_source<'a>(
