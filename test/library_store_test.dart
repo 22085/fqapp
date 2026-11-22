@@ -24,6 +24,16 @@ void main() {
     await directory.delete(recursive: true);
   });
 
+  test('history snapshot is empty after Hive closes', () async {
+    await store.init();
+    await store.addHistory({'id': 'book', 'title': 'Book', 'time': 100});
+    expect(store.historySnapshot().single['id'], 'book');
+
+    await Hive.close();
+
+    expect(store.historySnapshot(), isEmpty);
+  });
+
   test(
     'migration skips damaged entries and retains all valid history',
     () async {
