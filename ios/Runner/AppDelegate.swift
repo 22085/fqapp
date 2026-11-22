@@ -103,8 +103,7 @@ final class SecureKeyBridge {
 
   private static func write(_ key: String, _ value: String) throws {
     let data = Data(value.utf8)
-    var update = query(key)
-    update[kSecValueData as String] = data
+    let update = [kSecValueData as String: data]
     let updated = SecItemUpdate(query(key) as CFDictionary, update as CFDictionary)
     if updated == errSecSuccess { return }
     if updated != errSecItemNotFound { throw KeychainError(updated) }

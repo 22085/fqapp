@@ -38,6 +38,7 @@ Rust 模拟器库按当前 Mac 架构编译，Xcode 根据 SDK 自动选择，�
 `.github/workflows/ios.yml` 在相关 PR 上运行云端 Mac 构建，也支持手动触发。流程安装
 CocoaPods 依赖、编译真机/模拟器 Rust 库，构建未签名真机应用和完整模拟器应用，再使用
 `simctl` 安装、启动应用，检查应用进程存活、Rust 后端健康以及未处理的启动异常。
+同时确认需要 Keychain 密钥的加密同步存储已实际创建，防止密钥失败被可选初始化降级掩盖。
 
 在工作流的 `fqapp-ios-validation-*` 产物中查看 `startup.png`、`startup.json`、应用日志
 及构建日志。未签名真机应用仅证明能编译链接，不能直接安装到 iPhone。模拟器启动证据

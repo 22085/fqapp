@@ -171,6 +171,14 @@ jobs:
               fatal = re.compile(r'^\[E\] \S+ (?:framework|zone|main):', re.MULTILINE)
               if any(fatal.search(log.read_text(errors='replace')) for log in app_logs):
                   raise RuntimeError('Unhandled startup error recorded in application log')
+              encrypted_boxes = list(container.rglob('multi_device_sync_v1_enc.hive'))
+              report['encrypted_sync_store_created'] = any(
+                  box.with_suffix('.lock').is_file()
+                  and box.with_suffix('.lock').stat().st_size > 0
+                  for box in encrypted_boxes
+              )
+              if not report['encrypted_sync_store_created']:
+                  raise RuntimeError('Keychain-backed encrypted sync store was not created')
               report['process_and_backend_verified'] = True
           finally:
               if container is not None:
