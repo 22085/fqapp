@@ -56,47 +56,52 @@ jobs:
             grep -E "platform:iOS Simulator, arch:|Unable to find a destination" /tmp/out.txt | head -n 3
           }
 
-          dump "E baseline id=" \
-            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
-            -configuration Debug -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings
-          dump "E2 override ARCHS" \
-            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
-            -configuration Debug -sdk iphonesimulator -destination "id=$UDID" \
-            ARCHS="arm64 x86_64" -showBuildSettings
-          dump "E3 override SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD=NO" \
-            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
-            -configuration Debug -sdk iphonesimulator -destination "id=$UDID" \
-            SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD=NO -showBuildSettings
-          dump "E4 override ONLY_ACTIVE_ARCH=YES" \
-            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
-            -configuration Debug -sdk iphonesimulator -destination "id=$UDID" \
-            ONLY_ACTIVE_ARCH=YES -showBuildSettings
-          dump "E5 override TARGETED_DEVICE_FAMILY" \
-            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
-            -configuration Debug -sdk iphonesimulator -destination "id=$UDID" \
-            TARGETED_DEVICE_FAMILY="1,2" -showBuildSettings
+          try_project() {
+            echo
+            echo "########## $1"
+            xcodebuild -project "$2" -scheme Runner -configuration Debug \
+              -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings \
+              >/tmp/out.txt 2>&1
+            echo "exit=$? concrete=$(count /tmp/out.txt)"
+            grep -E "platform:iOS Simulator, arch:|Unable to find a destination" /tmp/out.txt | head -n 2
+          }
 
-          echo
-          echo "########## vanilla flutter project comparison"
-          rm -rf /tmp/probeapp
-          flutter create --platforms=ios --project-name probeapp /tmp/probeapp >/tmp/create.txt 2>&1
-          echo "create exit=$?"
-          (cd /tmp/probeapp && flutter pub get >/tmp/pubget.txt 2>&1; echo "pubget exit=$?")
-          dump "G vanilla id= -configuration Debug -sdk" \
-            xcodebuild -project /tmp/probeapp/ios/Runner.xcodeproj -scheme Runner \
-            -configuration Debug -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings
+          try_project "T0 baseline current ios" ios/Runner.xcodeproj
 
-          keys='SDKROOT|PLATFORM_NAME|EFFECTIVE_PLATFORM_NAME|SUPPORTED_PLATFORMS|SUPPORTS_MACCATALYST|SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD|ARCHS|VALID_ARCHS|EXCLUDED_ARCHS|NATIVE_ARCH_ACTUAL|ONLY_ACTIVE_ARCH|TARGETED_DEVICE_FAMILY|IPHONEOS_DEPLOYMENT_TARGET|ASSETCATALOG_COMPILER_APPICON_NAME|PRODUCT_BUNDLE_IDENTIFIER'
-          ours=/tmp/ours.txt
-          theirs=/tmp/theirs.txt
-          xcodebuild -project ios/Runner.xcodeproj -scheme Runner -configuration Debug \
-            -sdk iphonesimulator -showBuildSettings >"$ours" 2>&1
-          echo "ours dump exit=$?"
-          xcodebuild -project /tmp/probeapp/ios/Runner.xcodeproj -scheme Runner -configuration Debug \
-            -sdk iphonesimulator -showBuildSettings >"$theirs" 2>&1
-          echo "vanilla dump exit=$?"
-          echo
-          echo "########## relevant build settings diff (ours vs vanilla)"
-          grep -E "^ *($keys) " "$ours" | sort -u >/tmp/ours.k
-          grep -E "^ *($keys) " "$theirs" | sort -u >/tmp/theirs.k
-          diff /tmp/theirs.k /tmp/ours.k || true
+          rm -rf /tmp/ios_noarchs
+          cp -R ios /tmp/ios_noarchs
+          python3 - <<'PY'
+          import pathlib
+          path = pathlib.Path('/tmp/ios_noarchs/Flutter/Rust.xcconfig')
+          lines = path.read_text().splitlines()
+          path.write_text('\n'.join(
+              '// disabled for probe: ' + line
+              if 'ARCHS[sdk=iphonesimulator*]' in line else line
+              for line in lines
+          ) + '\n')
+          PY
+          try_project "T1 current ios without ARCHS override" /tmp/ios_noarchs/Runner.xcodeproj
+
+          rm -rf /tmp/ios_norust
+          cp -R ios /tmp/ios_norust
+          python3 - <<'PY'
+          import pathlib
+          for name in ('Debug.xcconfig', 'Release.xcconfig'):
+              path = pathlib.Path('/tmp/ios_norust/Flutter') / name
+              path.write_text('\n'.join(
+                  '// disabled for probe: ' + line
+                  if line.strip() == '#include "Rust.xcconfig"' else line
+                  for line in path.read_text().splitlines()
+              ) + '\n')
+          PY
+          try_project "T2 current ios without Rust.xcconfig" /tmp/ios_norust/Runner.xcodeproj
+
+          rm -rf /tmp/ios_base467
+          mkdir -p /tmp/ios_base467
+          git archive '6129034e^' ios | tar -x -C /tmp/ios_base467
+          try_project "T3 ios before #467 merge" /tmp/ios_base467/ios/Runner.xcodeproj
+
+          rm -rf /tmp/ios_base465
+          mkdir -p /tmp/ios_base465
+          git archive 4be18f34 ios | tar -x -C /tmp/ios_base465
+          try_project "T4 ios at #465 base" /tmp/ios_base465/ios/Runner.xcodeproj
