@@ -86,12 +86,12 @@ BUNDLE_ID=com.fqapp.fqapp IPA=/tmp/pack/fqapp_ios_unsigned.ipa ./your-sign-scrip
 4. **图标与应用名**：`scripts/generate_ios_app_icon.py` 从 `assets/branding/app_icon_source.png` 生成 1024 无 alpha 图标（复用 Android 生成器的「去纸张外框」逻辑），`CFBundleDisplayName` 设为「什锦铺」。
 5. **使用 CocoaPods**：构建前执行 `flutter config --no-enable-swift-package-manager`，与当前 Podfile 和锁文件保持一致。
 6. **文件与网页登录**：TXT/EPUB 和 JSON 导入传入 iOS UTI；文件导出通过系统分享面板，取消不算成功。番茄登录使用 `WKWebView`，成功或取消都结束原登录请求。
-7. **系统朗读与后台音频**：朗读使用 `flutter_tts`，完成事件复用播放器适配层。音频会话启动时设为 `playback`，听书开始时激活、结束时释放；`Info.plist` 声明后台音频。系统语音设置入口显示手动前往设置的说明。
+7. **系统朗读与后台音频**：朗读使用 `flutter_tts`，完成事件复用播放器适配层。听书、视频及朗读通过同一 `AudioSessionBridge` 管理会话，在播放前配置 `playback` 并激活，停止后释放；冷启动不抢占音频。`Info.plist` 声明后台音频。系统语音设置入口显示手动前往设置的说明。媒体卡片、系统控制键与中断恢复的所有权和验收范围见 [IOS_MEDIA_SESSION.md](IOS_MEDIA_SESSION.md)。
 
 ## 已知限制
 
 - 视频、音频、系统朗读、文件选择和网页登录的 iOS 适配已接入源码；仍需完成 Mac 签名构建与真机验证，不能以 Windows 宿主检查代替。
-- 画中画、悬浮窗和锁屏媒体控制尚未接入。后台音频、锁屏与来电中断的实际行为需在 iPhone 上验证。
+- 画中画和悬浮窗尚未接入。锁屏媒体卡片与控制键已接入；后台音频、锁屏、来电恢复、蓝牙路由和播放器相互接管的实际行为需在 iPhone 上验证。
 - 分享成功返回的是应用临时文件路径；文件是否已存入「文件」或发送到其他应用由用户选择的分享操作决定。
 - 阅读亮度、墨水屏和其他 Android 专有能力继续按平台支持情况降级；LAN 分享与番茄接口兼容性需要单独验证。
 - 免费 Apple ID 签名 7 天过期，过期后 App 闪退，重跑一次自签脚本即可。
