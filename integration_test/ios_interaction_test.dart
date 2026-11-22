@@ -384,6 +384,22 @@ void main() {
           () => audio.playing && audio.position.inSeconds >= 13,
           'audio resume',
         );
+        final nativeAudioId = audio.playerId;
+        await audio.reopen(
+          '$origin/encrypted.mp4',
+          '00112233445566778899aabbccddeeff',
+        );
+        expect(audio.playerId, nativeAudioId);
+        expect(audio.completed, isFalse);
+        expect(audio.playing, isFalse);
+        await audio.play();
+        await waitFor(
+          () => audio.playing && audio.position.inMilliseconds > 1200,
+          'same native player resumes reopened CENC source',
+        );
+        checks.add(
+          'Same native player reopens CENC source and resumes after identified completion',
+        );
         await tester.tap(find.byTooltip('下一章').first);
         await waitFor(
           () =>

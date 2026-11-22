@@ -445,6 +445,14 @@ class NativePlayer {
 
   final _createdCompleter = Completer<int>();
 
+  /// 原地换源（后台切章）的等待者：`reopen` 的回包只说明请求已受理，
+  /// 必须等 native 发回 `reopened` 才算真的打开（此时 duration 还是上一章
+  /// 的残留值，用它判断会提前起播、连到已关闭的本地代理端口）。
+  Completer<void>? _reopenCompleter;
+  Future<void> _reopenQueue = Future<void>.value();
+  int _reopenRequest = 0;
+  static const _reopenTimeout = Duration(seconds: 15);
+
   /// 起播位置（毫秒）：> 0 才下发；原生在 prepare() 前应用，不是装载后再 seek。
   Future<int> create(String cdnUrl, String keyHex, {int? startMs}) {
     if (_disposed) {
@@ -576,6 +584,35 @@ class NativePlayer {
     if (_playWhenReady == value) return;
     _playWhenReady = value;
     _playWhenReadyCtrl.add(value);
+  }
+
+  /// 复用同一个 native 播放器打开新的音源（iOS 后台切章专用）。
+  Future<void> reopen(String cdnUrl, String keyHex) {
+    final operation = _reopenQueue.then((_) => _reopen(cdnUrl, keyHex));
+    _reopenQueue = operation.then<void>((_) {}).catchError((Object _) {});
+    return operation;
+  }
+
+  Future<void> _reopen(String cdnUrl, String keyHex) async {
+    if (_disposed) throw StateError('NativePlayer was disposed');
+    _lastError = null;
+    _position = Duration.zero;
+    _duration = Duration.zero;
+    _completed = false;
+    final completer = Completer<void>();
+    completer.future.ignore();
+    final request = ++_reopenRequest;
+    _reopenCompleter = completer;
+    try {
+      await _invoke('reopen', {
+        'requestId': request,
+        'cdnUrl': cdnUrl,
+        'keyHex': keyHex,
+      });
+      await completer.future.timeout(_reopenTimeout);
+    } finally {
+      if (identical(_reopenCompleter, completer)) _reopenCompleter = null;
+    }
   }
 
   Future<void> seek(Duration position) async {
@@ -888,6 +925,11 @@ class NativePlayer {
       unawaited(IosAudioSession.stop(owner: iosMediaOwner));
     }
     _disposed = true;
+    final reopen = _reopenCompleter;
+    _reopenCompleter = null;
+    if (reopen != null && !reopen.isCompleted) {
+      reopen.completeError(StateError('NativePlayer disposed during reopen'));
+    }
     if (_createFuture != null && !_createdCompleter.isCompleted) {
       _createdCompleter.completeError(StateError('NativePlayer disposed'));
     }
@@ -975,7 +1017,16 @@ class NativePlayer {
           }
           if (!_textureIdCtrl.isClosed) _textureIdCtrl.add(_textureId!);
         }
+      case 'reopened':
+        if (event['requestId'] != _reopenRequest) return;
+        final pending = _reopenCompleter;
+        _reopenCompleter = null;
+        if (pending != null && !pending.isCompleted) pending.complete();
       case 'error':
+        if (event['requestId'] != null &&
+            event['requestId'] != _reopenRequest) {
+          return;
+        }
         final error = NativePlaybackException.fromEvent(event['value']);
         final value = event['value'];
         AppLog.d(
@@ -991,6 +1042,11 @@ class NativePlayer {
         _lastError = error;
         if (!_createdCompleter.isCompleted) {
           _createdCompleter.completeError(error);
+        }
+        final pendingReopen = _reopenCompleter;
+        _reopenCompleter = null;
+        if (pendingReopen != null && !pendingReopen.isCompleted) {
+          pendingReopen.completeError(error);
         }
         if (!_errorCtrl.isClosed) _errorCtrl.add(error);
       case 'decoderInitialized':

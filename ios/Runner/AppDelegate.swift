@@ -562,6 +562,8 @@ final class AudioSessionBridge: NSObject {
   private static var configured = false
   private static var sessionActive = false
   private static var playing = false
+  private static var backgroundWindows: [Int: UIBackgroundTaskIdentifier] = [:]
+  private static var nextBackgroundWindow = 0
   private static var artwork: MPMediaItemArtwork?
   private static var artworkKey: String?
   private static var artworkTask: URLSessionDataTask?
@@ -632,6 +634,24 @@ final class AudioSessionBridge: NSObject {
           apply(arguments)
         }
         result(nil)
+      case "beginBackgroundWindow":
+        guard let args = call.arguments as? [String: Any], matches(args) else {
+          result(nil)
+          return
+        }
+        nextBackgroundWindow += 1
+        let token = nextBackgroundWindow
+        let task = UIApplication.shared.beginBackgroundTask(withName: "fqapp-chapter-switch") {
+          endBackgroundWindow(token)
+        }
+        if task == .invalid { result(nil); return }
+        backgroundWindows[token] = task
+        result(token)
+      case "endBackgroundWindow":
+        if let args = call.arguments as? [String: Any], let token = args["token"] as? Int {
+          endBackgroundWindow(token)
+        }
+        result(nil)
       case "stop":
         if let args = call.arguments as? [String: Any], matches(args) {
           teardown()
@@ -648,6 +668,11 @@ final class AudioSessionBridge: NSObject {
     // 无声模拟器上还可能拖慢启动。第一次 update 会按 mode 配置并激活。
     registerCommands()
     observeInterruptions()
+  }
+
+  private static func endBackgroundWindow(_ token: Int) {
+    guard let task = backgroundWindows.removeValue(forKey: token) else { return }
+    UIApplication.shared.endBackgroundTask(task)
   }
 
   private static func matches(_ arguments: [String: Any]) -> Bool {
@@ -753,6 +778,7 @@ final class AudioSessionBridge: NSObject {
   }
 
   private static func clearMedia() {
+    for token in Array(backgroundWindows.keys) { endBackgroundWindow(token) }
     playing = false
     interruptedSession = nil
     MPNowPlayingInfoCenter.default().nowPlayingInfo = nil

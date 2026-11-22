@@ -506,9 +506,9 @@ class _AudioPlaybackController extends ChangeNotifier
       case 'playPause':
         unawaited(_togglePlayback());
       case 'prev':
-        if (_index > 0) unawaited(_openChapter(_index - 1));
+        unawaited(_switchChapter(_index - 1));
       case 'next':
-        if (_index < _chapters.length - 1) unawaited(_openChapter(_index + 1));
+        unawaited(_switchChapter(_index + 1));
       case 'stop':
         if (onStop case final stop?) {
           stop();
@@ -598,6 +598,144 @@ class _AudioPlaybackController extends ChangeNotifier
     _update(() => _wantPlay = true);
     final player = _player;
     if (_ready && player != null) await _play(player, generation);
+  }
+
+  /// 换到 [target] 章；后台时不能走 `_openChapter`。
+  ///
+  /// `_openChapter` 会先 `await` 旧播放器释放再新建 mpv，而 iOS 在后台不允许
+  /// 新建播放器（音频输出初始化直接挂住），音频一停进程就被挂起，换章永远走
+  /// 不完、锁屏卡片也被系统收回。后台改为复用当前播放器 [NativePlayer.reopen]。
+  Future<void> _chapterSwitches = Future<void>.value();
+
+  Future<void> _switchChapter(int target) {
+    final operation = _chapterSwitches.then((_) => _switchChapterNow(target));
+    _chapterSwitches = operation.catchError((Object _) {});
+    return operation;
+  }
+
+  Future<void> _switchChapterNow(int target) async {
+    if (_closed || target < 0 || target >= _chapters.length) return;
+    if (target == _index) return;
+    final player = _player;
+    if (!isIOSPlatform || _appActive || player == null || !player.isCreated) {
+      await _openChapter(target);
+      return;
+    }
+    if (!IosAudioSession.owns(_mediaOwner)) return;
+    IosAudioSession.cancelInterruption(_mediaOwner);
+    final window = await IosAudioSession.beginBackgroundWindow(
+      owner: _mediaOwner,
+    );
+    try {
+      if (_closed ||
+          !identical(player, _player) ||
+          !IosAudioSession.owns(_mediaOwner))
+        return;
+      await _advanceInBackground(target);
+    } finally {
+      await IosAudioSession.endBackgroundWindow(window);
+    }
+  }
+
+  /// 后台复用同一播放器换章（配合 [IosAudioSession.beginBackgroundWindow]）。
+  Future<void> _advanceInBackground(int target) async {
+    final player = _player;
+    if (player == null || !player.isCreated) {
+      await _openChapter(target);
+      return;
+    }
+    final generation = ++_generation;
+    _resetTrackRecovery(this);
+    _cancelTrackRequests();
+    final trackCancellation = Completer<void>();
+    _trackCancellation = trackCancellation;
+    final trackCancelled = trackCancellation.future;
+    _cancelAdvanceCountdown(this);
+    ++_seekGeneration;
+    _saveTimer?.cancel();
+    _listenTime.stop();
+    unawaited(_persistProgress());
+    final subscriptions = List.of(_subscriptions);
+    _subscriptions.clear();
+    await Future.wait([for (final sub in subscriptions) sub.cancel()]);
+    if (!_current(generation, player)) return;
+    _update(() {
+      _index = target;
+      _loading = true;
+      _error = null;
+      _completed = false;
+      _position.value = Duration.zero;
+      _duration = Duration.zero;
+      _seekPreview.value = null;
+      _subtitles = SubtitleTrack.empty;
+      _subtitlesEstimated = false;
+      _timeTrack = AudioTimeTrack.empty;
+      _timeTrackReady = false;
+      _skipOutroFired = false;
+      _toneSwitchedForChapter = false;
+      _wantPlay =
+          _appActive || AudioPreferences.instance.backgroundPlayback.value;
+    });
+    _publishReadAlong();
+    _publishMoreState();
+    try {
+      final itemId = _chapters[target].itemId;
+      final source = await _loadSourceWithRetry(itemId);
+      if (!_current(generation, player)) return;
+      final uri = Uri.tryParse(source.url);
+      if (source.itemId != itemId ||
+          uri == null ||
+          !(uri.scheme == 'file' ||
+              const ['https', 'http'].contains(uri.scheme)) ||
+          (uri.scheme != 'file' && uri.host.isEmpty)) {
+        throw const FormatException('Invalid audio source');
+      }
+      await player.reopen(source.url, source.keyHex);
+      if (!_current(generation, player)) return;
+      if (player.lastError case final Object error) throw error;
+      _subscribe(player, generation);
+      await player.setRate(_rate);
+      if (!_current(generation, player)) return;
+      final duration = player.duration > Duration.zero
+          ? player.duration
+          : (source.duration ?? Duration.zero);
+      _skipPoints = AudioSkipPoints(
+        introSeconds: AudioPreferences.instance.skipIntroSeconds(_bookId),
+        outroSeconds: AudioPreferences.instance.skipOutroSeconds(_bookId),
+      );
+      final intro = _skipPoints.introSeek(duration);
+      if (intro != null) {
+        await player.seek(intro);
+        if (!_current(generation, player)) return;
+      }
+      _update(() {
+        _activeIndex = target;
+        _toneId = source.toneId;
+        _duration = duration;
+        _position.value = _boundedPosition(player.position, duration);
+        _loading = false;
+      });
+      _publishReadAlong();
+      _publishMoreState();
+      unawaited(_loadExcerpt(itemId));
+      unawaited(
+        _refreshSubtitles(generation, itemId, source.toneId, trackCancelled),
+      );
+      unawaited(
+        _refreshTimePoints(generation, itemId, source.toneId, trackCancelled),
+      );
+      if (_wantPlay) await _play(player, generation);
+      if (!_current(generation, player)) return;
+      _syncForeground();
+      _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+        if (!player.playing) return;
+        unawaited(_persistProgress());
+        _syncForeground();
+      });
+      _syncListenClock();
+    } catch (error) {
+      if (_current(generation, player)) _fail(error, generation);
+    }
   }
 
   Future<void> _openChapter(

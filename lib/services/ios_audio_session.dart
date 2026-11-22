@@ -121,6 +121,24 @@ class IosAudioSession {
     return identity['session'] == _generation && owner == _owner;
   }
 
+  static Future<int?> beginBackgroundWindow({required String owner}) async {
+    if (!owns(owner)) return null;
+    try {
+      return await _channel.invokeMethod<int>(
+        'beginBackgroundWindow',
+        _identity,
+      );
+    } catch (error) {
+      AppLog.w('audio-session', 'iOS 后台换章额度申请失败: $error');
+      return null;
+    }
+  }
+
+  static Future<void> endBackgroundWindow(int? token) async {
+    if (!isIOSPlatform || token == null) return;
+    await _invoke('endBackgroundWindow', {'token': token});
+  }
+
   /// 内联播放器没有媒体卡片，但中断观察仍需真实的播放意图。
   static Future<void> setPlaying({
     required String owner,

@@ -349,6 +349,23 @@ class DesktopPlatform with WindowListener {
           );
           return {'playerId': id};
         }
+        if (method == 'reopen') {
+          // 后台切章不能新建 mpv（音频输出初始化会挂住），改为复用同一个
+          // 播放器原地换源；完成时发 `reopened` 事件，由 Dart 侧等待。
+          final rawId = args['id'];
+          final host = rawId is num ? _players[rawId.toInt()] : null;
+          if (host == null) {
+            throw StateError('Player is unavailable for reopen');
+          }
+          unawaited(
+            host.reopen(
+              args['cdnUrl'] as String,
+              args['keyHex'] as String,
+              args['requestId'] as int,
+            ),
+          );
+          return null;
+        }
         if (method == 'setKeepScreenOn') {
           await _setAwake(player: args['on'] == true);
           return null;
@@ -1127,7 +1144,9 @@ class _DesktopPlayer {
     video = VideoController(player);
     requestVideoControllerFrame();
     void event(String type, dynamic value) {
-      if (!disposed) emit({'playerId': id, 'type': type, 'value': value});
+      if (!disposed && !_reopening) {
+        emit({'playerId': id, 'type': type, 'value': value});
+      }
     }
 
     subscriptions.addAll([
@@ -1171,6 +1190,8 @@ class _DesktopPlayer {
   final ready = Completer<void>();
   DesktopMedia? media;
   bool disposed = false;
+  bool _reopening = false;
+  Future<void> _reopenQueue = Future<void>.value();
   Future<void> open(String url, String key, {Object? startPositionMs}) async {
     ready.future.ignore();
     try {
@@ -1203,6 +1224,72 @@ class _DesktopPlayer {
         emit({'playerId': id, 'type': 'error', 'value': value});
       }
       media?.close();
+    }
+  }
+
+  /// 复用当前 mpv 实例换源，新源打开后才释放旧代理会话。
+  ///
+  /// 这条路径专门给 iOS 后台用：后台新建 `Player()` 会卡在音频输出初始化
+  /// （实测 25 秒超时都回不来），而同一个实例 `open()` 新地址是可行的。
+  Future<void> reopen(String url, String key, int request) {
+    final operation = _reopenQueue.then((_) => _reopen(url, key, request));
+    _reopenQueue = operation.catchError((Object _) {});
+    return operation;
+  }
+
+  Future<void> _reopen(String url, String key, int request) async {
+    if (disposed) return;
+    DesktopMedia? nextMedia;
+    final previousMedia = media;
+    _reopening = true;
+    try {
+      var playbackUrl = url;
+      if (key.isNotEmpty) {
+        final session = await DesktopMedia.open(url, key);
+        nextMedia = session;
+        if (disposed) {
+          session.close();
+          return;
+        }
+        playbackUrl = session.url;
+      }
+      if (disposed) return;
+      await player.open(desktopPlaybackMedia(playbackUrl, null), play: false);
+      AppLog.d('desktop-player', 'id=$id reopened paused');
+      if (disposed) return;
+      media = nextMedia;
+      previousMedia?.close();
+      _reopening = false;
+      for (final entry in {
+        'position': player.state.position.inMilliseconds,
+        'duration': player.state.duration.inMilliseconds,
+        'playing': false,
+        'playWhenReady': false,
+        'completed': false,
+      }.entries) {
+        emit({'playerId': id, 'type': entry.key, 'value': entry.value});
+      }
+      emit({
+        'playerId': id,
+        'type': 'reopened',
+        'value': id,
+        'requestId': request,
+      });
+      _size();
+    } catch (error) {
+      nextMedia?.close();
+      final value = desktopOpenFailure(id, error);
+      if (!disposed) {
+        emit({
+          'playerId': id,
+          'type': 'error',
+          'value': value,
+          'requestId': request,
+        });
+      }
+    } finally {
+      _reopening = false;
+      if (disposed) nextMedia?.close();
     }
   }
 
