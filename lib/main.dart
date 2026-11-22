@@ -142,26 +142,29 @@ Future<void> _prepareRuntime() async {
     DesktopPlatform.instance.beforeClose = LinuxPlatform.beforeClose =
         () async {
           try {
-            await BossKeyService.instance.shutdown();
-          } catch (error, stack) {
-            AppLog.w('exit', '退出前注销老板键失败', error: error, stack: stack);
+            try {
+              await BossKeyService.instance.shutdown();
+            } catch (error, stack) {
+              AppLog.w('exit', '退出前注销老板键失败', error: error, stack: stack);
+            }
+            DramaDownloader.instance.pauseAll();
+            AudioDownloader.instance.pauseAll();
+            await FairMemoryService.instance.flushForExit();
+            try {
+              if (isMediaDesktop) await NativePlayer.pauseOthers();
+            } catch (error, stack) {
+              // 退出路径继续往下走，但失败要留痕：否则「关闭后还有声音」无从查起。
+              AppLog.w('exit', '退出前暂停播放器失败', error: error, stack: stack);
+            }
+            try {
+              await BackendService.instance.stop();
+            } catch (error, stack) {
+              AppLog.w('exit', '退出前停止后端失败', error: error, stack: stack);
+            }
+            await MultiDeviceSyncService.instance.shutdown();
+          } finally {
+            await Hive.close();
           }
-          DramaDownloader.instance.pauseAll();
-          AudioDownloader.instance.pauseAll();
-          await FairMemoryService.instance.flushForExit();
-          try {
-            if (isMediaDesktop) await NativePlayer.pauseOthers();
-          } catch (error, stack) {
-            // 退出路径继续往下走，但失败要留痕：否则「关闭后还有声音」无从查起。
-            AppLog.w('exit', '退出前暂停播放器失败', error: error, stack: stack);
-          }
-          try {
-            await BackendService.instance.stop();
-          } catch (error, stack) {
-            AppLog.w('exit', '退出前停止后端失败', error: error, stack: stack);
-          }
-          await MultiDeviceSyncService.instance.shutdown();
-          await Hive.close();
         };
   }
 }
