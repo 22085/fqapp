@@ -99,9 +99,15 @@ jobs:
           rm -rf /tmp/ios_base467
           mkdir -p /tmp/ios_base467
           git archive '6129034e^' ios | tar -x -C /tmp/ios_base467
+          mkdir -p /tmp/ios_base467/ios/Flutter
+          cp ios/Flutter/Generated.xcconfig /tmp/ios_base467/ios/Flutter/ || true
+          cp -R ios/Pods /tmp/ios_base467/ios/Pods || true
           try_project "T3 ios before #467 merge" /tmp/ios_base467/ios/Runner.xcodeproj
 
           rm -rf /tmp/ios_base465
           mkdir -p /tmp/ios_base465
           git archive 4be18f34 ios | tar -x -C /tmp/ios_base465
+          mkdir -p /tmp/ios_base465/ios/Flutter
+          cp ios/Flutter/Generated.xcconfig /tmp/ios_base465/ios/Flutter/ || true
+          cp -R ios/Pods /tmp/ios_base465/ios/Pods || true
           try_project "T4 ios at #465 base" /tmp/ios_base465/ios/Runner.xcodeproj
