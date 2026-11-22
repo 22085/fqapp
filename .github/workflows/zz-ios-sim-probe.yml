@@ -43,54 +43,43 @@ jobs:
           print(picks[-1])
           ")
           echo "UDID=$UDID"
-          echo "xcode-select=$(xcode-select -p)"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b >/dev/null 2>&1 || true
 
+          count() { grep -c "platform:iOS Simulator, arch:" "$1"; }
           dump() {
             echo
             echo "########## $1"
             shift
             "$@" >/tmp/out.txt 2>&1
-            echo "exit=$?"
-            head -n 45 /tmp/out.txt
+            echo "exit=$? concrete=$(count /tmp/out.txt)"
+            grep -E "platform:iOS Simulator, arch:|Unable to find a destination" /tmp/out.txt | head -n 3
           }
 
-          xcrun simctl shutdown "$UDID" || true
-          dump "A showdestinations plain (device shutdown)" \
+          dump "A showdestinations plain" \
             xcodebuild -project ios/Runner.xcodeproj -scheme Runner -showdestinations
-          dump "B id= shutdown" \
-            xcodebuild -project ios/Runner.xcodeproj -scheme Runner -configuration Debug \
-            -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings
+          dump "B showdestinations -configuration Debug" \
+            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
+            -configuration Debug -showdestinations
+          dump "C showdestinations -sdk iphonesimulator" \
+            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
+            -sdk iphonesimulator -showdestinations
+          dump "D showdestinations -configuration Debug -sdk iphonesimulator" \
+            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
+            -configuration Debug -sdk iphonesimulator -showdestinations
+          dump "E id= -configuration Debug -sdk" \
+            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
+            -configuration Debug -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings
 
           echo
-          echo "########## retry loop: killall CoreSimulatorService then match id="
-          for attempt in 1 2 3 4 5; do
-            sudo killall -9 com.apple.CoreSimulator.CoreSimulatorService >/dev/null 2>&1 || true
-            sleep 8
-            xcodebuild -project ios/Runner.xcodeproj -scheme Runner -configuration Debug \
-              -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings >/tmp/out.txt 2>&1
-            code=$?
-            echo "attempt $attempt exit=$code"
-            if [ $code -eq 0 ]; then
-              grep -E "^ *(SDKROOT|PLATFORM_NAME) " /tmp/out.txt | sort -u
-              break
-            fi
-            grep -E "Unable to find a destination|Available destinations|platform:iOS Simulator" \
-              /tmp/out.txt | head -n 6
-          done
-
-          echo
-          echo "########## boot then re-check"
-          xcrun simctl boot "$UDID" || true
-          xcrun simctl bootstatus "$UDID" -b
-          dump "C id= booted" \
-            xcodebuild -project ios/Runner.xcodeproj -scheme Runner -configuration Debug \
-            -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings
-          dump "D showdestinations booted" \
-            xcodebuild -project ios/Runner.xcodeproj -scheme Runner -showdestinations
-          dump "E generic booted" \
-            xcodebuild -project ios/Runner.xcodeproj -scheme Runner -configuration Debug \
-            -sdk iphonesimulator -destination "generic/platform=iOS Simulator" -showBuildSettings
-
-          echo
-          echo "########## flutter devices booted"
-          flutter devices || true
+          echo "########## vanilla flutter project comparison"
+          rm -rf /tmp/probeapp
+          flutter create --platforms=ios --project-name probeapp /tmp/probeapp >/tmp/create.txt 2>&1
+          echo "create exit=$?"
+          (cd /tmp/probeapp && flutter pub get >/tmp/pubget.txt 2>&1; echo "pubget exit=$?")
+          dump "F vanilla showdestinations -configuration Debug -sdk" \
+            xcodebuild -project /tmp/probeapp/ios/Runner.xcodeproj -scheme Runner \
+            -configuration Debug -sdk iphonesimulator -showdestinations
+          dump "G vanilla id= -configuration Debug -sdk" \
+            xcodebuild -project /tmp/probeapp/ios/Runner.xcodeproj -scheme Runner \
+            -configuration Debug -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings
