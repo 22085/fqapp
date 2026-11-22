@@ -4,6 +4,6 @@ FQAPI_CORE_LIBRARY[sdk=iphonesimulator*] = $(SRCROOT)/Frameworks/iphonesimulator
 ARCHS[sdk=iphonesimulator*] = $(NATIVE_ARCH_ACTUAL)
 
 // FRB 和媒体入口通过 process()/dlsym 查找，保留并导出静态库符号。
-OTHER_LDFLAGS = $(inherited) -force_load $(FQAPI_CORE_LIBRARY) -framework Security -framework CoreFoundation -Wl,-export_dynamic -liconv
+OTHER_LDFLAGS = $(inherited) -force_load $(FQAPI_CORE_LIBRARY) -framework Security -framework CoreFoundation -Wl,-export_dynamic -liconv -lz
 DEAD_CODE_STRIPPING = NO
 STRIP_INSTALLED_PRODUCT = NO

@@ -49,6 +49,7 @@ jobs:
           xcodebuild -version | tee build/validation/ios/xcode.txt
           xcodebuild -version | grep -Fx 'Xcode 26.6'
           pod --version | tee build/validation/ios/cocoapods.txt
+          pod --version | grep -Fx '1.17.0'
           xcrun simctl list --json > build/validation/ios/simulators.json
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
@@ -81,6 +82,12 @@ jobs:
         run: |
           flutter build ios --release --no-codesign --no-pub --target lib/main.dart \
             2>&1 | tee build/validation/ios/device-build.log
+          xcrun nm -gU build/ios/iphoneos/Runner.app/Runner \
+            > build/validation/ios/device-symbols.txt
+          for symbol in frb_get_rust_content_hash frb_init_frb_dart_api_dl \
+            fq_desktop_media_open fq_desktop_media_close fq_desktop_media_free; do
+            grep -Eq "[[:space:]]_${symbol}$" build/validation/ios/device-symbols.txt
+          done
           ditto -c -k --sequesterRsrc --keepParent \
             build/ios/iphoneos/Runner.app build/validation/ios/Runner-device-unsigned.zip
 
@@ -164,7 +171,7 @@ jobs:
               fatal = re.compile(r'^\[E\] \S+ (?:framework|zone|main):', re.MULTILINE)
               if any(fatal.search(log.read_text(errors='replace')) for log in app_logs):
                   raise RuntimeError('Unhandled startup error recorded in application log')
-              report['startup_verified'] = True
+              report['process_and_backend_verified'] = True
           finally:
               if container is not None:
                   for name in ('backend.log', 'app.log'):
