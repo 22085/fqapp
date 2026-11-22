@@ -43,33 +43,54 @@ jobs:
           print(picks[-1])
           ")
           echo "UDID=$UDID"
+          echo "xcode-select=$(xcode-select -p)"
 
-          probe() {
-            local label="$1"; shift
+          dump() {
             echo
-            echo "########## $label"
-            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
-              "$@" >/tmp/out.txt 2>&1
-            local code=$?
-            echo "exit=$code"
-            if [ $code -eq 0 ]; then
-              head -n 4 /tmp/out.txt
-              grep -E "^ *(SDKROOT|PLATFORM_NAME|SUPPORTED_PLATFORMS|ARCHS|EXCLUDED_ARCHS|VALID_ARCHS|NATIVE_ARCH_ACTUAL|ONLY_ACTIVE_ARCH) " /tmp/out.txt | sort -u | head -n 20
-            else
-              grep -E "Unable to find a destination|Available destinations|platform:iOS Simulator" /tmp/out.txt | head -n 8
-            fi
+            echo "########## $1"
+            shift
+            "$@" >/tmp/out.txt 2>&1
+            echo "exit=$?"
+            head -n 45 /tmp/out.txt
           }
 
           xcrun simctl shutdown "$UDID" || true
-          probe "A showdestinations plain" -showdestinations
-          probe "B showdestinations debug+sdk" -configuration Debug -sdk iphonesimulator -showdestinations
-          probe "C generic debug+sdk" -configuration Debug -sdk iphonesimulator -destination generic/platform=iOS Simulator -showBuildSettings
-          probe "D settings no destination debug+sdk" -configuration Debug -sdk iphonesimulator -showBuildSettings
-          probe "E id= debug+sdk" -configuration Debug -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings
-          probe "F platform+id debug+sdk" -configuration Debug -sdk iphonesimulator -destination "platform=iOS Simulator,id=$UDID" -showBuildSettings
-          probe "G name+os debug+sdk" -configuration Debug -sdk iphonesimulator -destination "platform=iOS Simulator,name=iPhone 17,OS=26.5" -showBuildSettings
-          probe "H id= no sdk" -configuration Debug -destination "id=$UDID" -showBuildSettings
+          dump "A showdestinations plain (device shutdown)" \
+            xcodebuild -project ios/Runner.xcodeproj -scheme Runner -showdestinations
+          dump "B id= shutdown" \
+            xcodebuild -project ios/Runner.xcodeproj -scheme Runner -configuration Debug \
+            -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings
 
           echo
-          echo "########## flutter devices"
+          echo "########## retry loop: killall CoreSimulatorService then match id="
+          for attempt in 1 2 3 4 5; do
+            sudo killall -9 com.apple.CoreSimulator.CoreSimulatorService >/dev/null 2>&1 || true
+            sleep 8
+            xcodebuild -project ios/Runner.xcodeproj -scheme Runner -configuration Debug \
+              -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings >/tmp/out.txt 2>&1
+            code=$?
+            echo "attempt $attempt exit=$code"
+            if [ $code -eq 0 ]; then
+              grep -E "^ *(SDKROOT|PLATFORM_NAME) " /tmp/out.txt | sort -u
+              break
+            fi
+            grep -E "Unable to find a destination|Available destinations|platform:iOS Simulator" \
+              /tmp/out.txt | head -n 6
+          done
+
+          echo
+          echo "########## boot then re-check"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          dump "C id= booted" \
+            xcodebuild -project ios/Runner.xcodeproj -scheme Runner -configuration Debug \
+            -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings
+          dump "D showdestinations booted" \
+            xcodebuild -project ios/Runner.xcodeproj -scheme Runner -showdestinations
+          dump "E generic booted" \
+            xcodebuild -project ios/Runner.xcodeproj -scheme Runner -configuration Debug \
+            -sdk iphonesimulator -destination "generic/platform=iOS Simulator" -showBuildSettings
+
+          echo
+          echo "########## flutter devices booted"
           flutter devices || true
