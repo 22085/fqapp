@@ -5,6 +5,8 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 
 import 'app_log.dart';
+import 'desktop_platform.dart' show isIOSPlatform;
+import 'ios_audio_session.dart';
 import 'audio_preferences.dart';
 import 'linux_platform.dart' show isLinuxDesktop;
 import 'player_preferences.dart';
@@ -104,6 +106,16 @@ class NativePlayer {
     _onRemoteAction = handler.action;
     _onRemoteSeek = handler.seek;
     _onBecomingNoisy = handler.noisy;
+    IosAudioSession.claim(
+      owner: owner,
+      onAction: (action, positionMs) {
+        if (action == 'seek') {
+          if (positionMs != null) handler.seek?.call(positionMs);
+        } else {
+          handler.action?.call(action);
+        }
+      },
+    );
   }
 
   static VoidCallback? _onBecomingNoisy;
@@ -170,11 +182,15 @@ class NativePlayer {
     _onRemoteSeek = onSeek;
     _onRemoteAction = onAction;
     _onBecomingNoisy = onBecomingNoisy;
+    if (isIOSPlatform && owner != null) claimRemoteOwner(owner);
     _channel.setMethodCallHandler(_handleMethodCall);
   }
 
   static void clearRemoteCommandHandler({String? owner}) {
-    if (owner != null) _remoteHandlers.remove(owner);
+    if (owner != null) {
+      _remoteHandlers.remove(owner);
+      unawaited(IosAudioSession.stop(owner: owner));
+    }
     if (owner != null && owner != _remoteOwner) return;
     _remoteOwner = null;
     _onRemoteSeek = null;
@@ -485,6 +501,10 @@ class NativePlayer {
       if (value) {
         await beforePlay?.call(this);
         if (_disposed || generation != _playWhenReadyGeneration) return;
+        if (isIOSPlatform) {
+          await IosAudioSession.prepare(mode: audioOnly ? 'audio' : 'video');
+          if (_disposed || generation != _playWhenReadyGeneration) return;
+        }
       }
       await _invoke(value ? 'play' : 'pause');
     } catch (_) {
@@ -563,7 +583,10 @@ class NativePlayer {
     double minimumRate = 0.5,
     double maximumRate = 3,
   }) async {
-    if (isLinuxDesktop && (owner == null || owner != _remoteOwner)) return;
+    if ((isLinuxDesktop || isIOSPlatform) &&
+        (owner == null || owner != _remoteOwner)) {
+      return;
+    }
     final generation = ++_foregroundGeneration;
     _remoteChapterId = chapterId;
     try {
@@ -581,6 +604,7 @@ class NativePlayer {
       // pending 10s timer that breaks widget tests under FakeAsync when
       // the fire-and-forget call is still in flight at test end.
       await _channel.invokeMethod<void>('startListenForeground', {
+        if (isIOSPlatform) 'owner': owner,
         if (isLinuxDesktop) ...{
           'owner': owner,
           'chapterId': chapterId,
@@ -613,7 +637,9 @@ class NativePlayer {
       // Same as startListenForeground: no .timeout(), see above.
       await _channel.invokeMethod<void>(
         'stopListenForeground',
-        isLinuxDesktop && owner != null ? {'owner': owner} : null,
+        (isLinuxDesktop || isIOSPlatform) && owner != null
+            ? {'owner': owner}
+            : null,
       );
     } on PlatformException catch (error) {
       if (isLinuxDesktop) AppLog.w('media', 'Linux 媒体会话不可用: ${error.code}');

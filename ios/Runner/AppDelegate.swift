@@ -1,4 +1,5 @@
 import AVFoundation
+import MediaPlayer
 import Flutter
 import Security
 import UIKit
@@ -6,32 +7,13 @@ import WebKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
-  override func application(
-    _ application: UIApplication,
-    didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
-  ) -> Bool {
-    configureAudioSession()
-    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
-  }
-
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     let messenger = engineBridge.applicationRegistrar.messenger()
     SecureKeyBridge.register(messenger: messenger)
     FanqieLoginBridge.register(messenger: messenger)
     IosFilesBridge.register(messenger: messenger)
-    IosAudioBridge.register(messenger: messenger)
-  }
-
-  /// 后台朗读/播放的音频类别:只有 playback 才能在锁屏后继续出声、且不被
-  /// 静音键静掉。这里只设类别、不激活,避免应用一启动就抢断其他应用的音频;
-  /// 真正的激活交给播放开始时的 [IosAudioBridge]。
-  private func configureAudioSession() {
-    do {
-      try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
-    } catch {
-      // 个别机型/耳机路由异常不能挡住启动。
-    }
+    AudioSessionBridge.register(messenger: messenger)
   }
 }
 
@@ -439,33 +421,331 @@ final class IosFilesBridge {
   }
 }
 
-// MARK: - 后台音频会话(iOS)
+// MARK: - 锁屏 / 控制中心 / 耳机键（iOS 的媒体会话）
+//
+// 安卓侧由 `ListenKeepAliveService` 提供前台服务 + MediaSessionCompat；iOS 没有
+// 等价物，必须自己组合 AVAudioSession（让音频在后台继续）+ MPNowPlayingInfoCenter
+// （锁屏与任务切换器里的卡片）+ MPRemoteCommandCenter（锁屏按钮、耳机线控、
+// 车机与蓝牙按键）。Dart 侧只在播放状态变化时推一次元数据，收到的远端命令
+// 复用安卓那套 `_handleRemoteAction`，两端行为因此一致。
+//
+//   MethodChannel `fqapp/audio_session`        "update" / "stop"
+//   EventChannel  `fqapp/audio_session/events` play / pause / playPause / next / prev / seek / stop
+final class AudioSessionBridge: NSObject {
+  private static let methodName = "fqapp/audio_session"
+  private static let eventName = "fqapp/audio_session/events"
 
-/// 后台朗读/播放的音频会话开合。
-///
-/// 类别已在启动时设为 `playback`(见 `configureAudioSession`),这里按播放的
-/// 起停激活/释放会话:不激活的话,iOS 在其他应用占用音频时可能不让我们出声,
-/// 锁屏后声音会被系统静掉。实际解码由进程内的 media_kit 与 flutter_tts 完成。
-final class IosAudioBridge {
+  private static var sink: FlutterEventSink?
+  private static var owner: String?
+  private static var sessionID = 0
+  private static var intent = 0
+  private static var interruptedSession: Int?
+  private static var interrupted = false
+  private static var configured = false
+  private static var sessionActive = false
+  private static var playing = false
+  private static var artwork: MPMediaItemArtwork?
+  private static var artworkKey: String?
+  private static var artworkTask: URLSessionDataTask?
+
   static func register(messenger: FlutterBinaryMessenger) {
-    let channel = FlutterMethodChannel(name: "fqapp/ios_audio", binaryMessenger: messenger)
+    let channel = FlutterMethodChannel(name: methodName, binaryMessenger: messenger)
     channel.setMethodCallHandler { call, result in
       switch call.method {
-      case "activate":
-        do {
-          try AVAudioSession.sharedInstance().setActive(true)
-          result(nil)
-        } catch {
-          result(FlutterError(code: "AUDIO_SESSION", message: error.localizedDescription, details: nil))
+      case "claim":
+        guard let args = call.arguments as? [String: Any],
+              let newOwner = args["owner"] as? String,
+              let newSession = args["session"] as? Int,
+              newSession > sessionID else { result(nil); return }
+        teardown()
+        owner = newOwner
+        sessionID = newSession
+        intent = args["intent"] as? Int ?? 0
+        result(nil)
+      case "cancelInterruption":
+        if let args = call.arguments as? [String: Any], matches(args),
+           (args["intent"] as? Int ?? -1) >= intent {
+          intent = args["intent"] as? Int ?? intent
+          interruptedSession = nil
         }
-      case "deactivate":
-        // 释放失败无需上报:下一个开始播放会重新激活。
-        try? AVAudioSession.sharedInstance().setActive(
-          false, options: .notifyOthersOnDeactivation)
+        result(nil)
+      case "prepare":
+        if let args = call.arguments as? [String: Any],
+           matches(args) || (owner == nil && args["owner"] is NSNull) {
+          configureSession(args["mode"] as? String ?? "audio")
+          activateSession()
+        }
+        result(nil)
+      case "update":
+        guard let arguments = call.arguments as? [String: Any] else {
+          result(FlutterError(code: "BAD_ARGUMENT", message: "缺少媒体元数据", details: nil))
+          return
+        }
+        if matches(arguments), (arguments["intent"] as? Int ?? -1) >= intent {
+          intent = arguments["intent"] as? Int ?? intent
+          apply(arguments)
+        }
+        result(nil)
+      case "stop":
+        if let args = call.arguments as? [String: Any], matches(args) {
+          teardown()
+          owner = nil
+        }
         result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
+    }
+    FlutterEventChannel(name: eventName, binaryMessenger: messenger)
+      .setStreamHandler(Events())
+    // 冷启动不主动激活音频会话：没有音频在播时抢会话既没必要，在 CI 的
+    // 无声模拟器上还可能拖慢启动。第一次 update 会按 mode 配置并激活。
+    registerCommands()
+    observeInterruptions()
+  }
+
+  private static func matches(_ arguments: [String: Any]) -> Bool {
+    owner != nil && arguments["owner"] as? String == owner &&
+      arguments["session"] as? Int == sessionID
+  }
+
+  // MARK: - 会话
+
+  /// 当前音频会话的用途：`audio` 是听书（长语音），`video` 是影视。
+  private static var sessionMode = ""
+
+  private static func configureSession(_ mode: String = "audio") {
+    let session = AVAudioSession.sharedInstance()
+    // 听书是长语音，走 spokenAudio：静音键不打断，也不会启用系统为音乐准备的
+    // 空间音频；影视要走 moviePlayback，否则 AirPods 的语音优化会压到音轨上。
+    let wanted = mode == "video" ? AVAudioSession.Mode.moviePlayback
+                                 : AVAudioSession.Mode.spokenAudio
+    let changed = !configured || sessionMode != mode
+    guard changed else { return }
+    do {
+      try session.setCategory(.playback, mode: wanted, options: [])
+      configured = true
+      sessionMode = mode
+    } catch {
+      configured = false
+      NSLog("audio session category failed: \(error.localizedDescription)")
+    }
+  }
+
+  private static func activateSession() {
+    guard configured, !interrupted else { return }
+    do {
+      try AVAudioSession.sharedInstance().setActive(true, options: [])
+      sessionActive = true
+    } catch {
+      sessionActive = false
+      NSLog("audio session activate failed: \(error.localizedDescription)")
+    }
+  }
+
+  private static func apply(_ arguments: [String: Any]) {
+    configureSession(arguments["mode"] as? String ?? "audio")
+    // 只有 playing 为真才强行激活：暂停时保持会话，让锁屏卡片留在原地。
+    let nowPlaying = arguments["playing"] as? Bool ?? false
+    if nowPlaying { activateSession() }
+    playing = nowPlaying
+
+    let title = arguments["title"] as? String ?? ""
+    let episode = arguments["episode"] as? String ?? ""
+    let positionMs = arguments["positionMs"] as? Int ?? 0
+    let durationMs = arguments["durationMs"] as? Int ?? 0
+    let rate = arguments["rate"] as? Double ?? 1
+    let hasPrev = arguments["hasPrev"] as? Bool ?? false
+    let hasNext = arguments["hasNext"] as? Bool ?? false
+    let cover = arguments["cover"] as? String ?? ""
+
+    var info: [String: Any] = [
+      MPMediaItemPropertyTitle: title.isEmpty ? "什锦铺" : title,
+      MPMediaItemPropertyAlbumTitle: episode,
+      MPMediaItemPropertyPlaybackDuration: Double(durationMs) / 1000.0,
+      MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(positionMs) / 1000.0,
+      MPNowPlayingInfoPropertyPlaybackRate: nowPlaying ? rate : 0.0,
+      MPNowPlayingInfoPropertyDefaultPlaybackRate: rate,
+      MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
+      MPNowPlayingInfoPropertyIsLiveStream: false,
+      MPMediaItemPropertyAlbumTrackNumber: 1,
+    ]
+    if cover != artworkKey {
+      artwork = nil
+      artworkKey = nil
+      artworkTask?.cancel()
+    }
+    if let artwork { info[MPMediaItemPropertyArtwork] = artwork }
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    MPNowPlayingInfoCenter.default().playbackState = nowPlaying ? .playing : .paused
+
+    MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyArtist] = episode
+
+    commands(enabled: true, hasPrev: hasPrev, hasNext: hasNext)
+    if !cover.isEmpty { loadArtwork(coverURL: cover) }
+  }
+
+  private static func loadArtwork(coverURL: String) {
+    guard coverURL != artworkKey else { return }
+    artworkKey = coverURL
+    artworkTask?.cancel()
+    guard let url = URL(string: coverURL) else { return }
+    // 封面来自 CDN，下载失败只是没有大图，不影响播放。
+    let artworkSession = sessionID
+    artworkTask = URLSession.shared.dataTask(with: url) { data, _, _ in
+      guard let data, let image = UIImage(data: data) else { return }
+      let cover = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+      DispatchQueue.main.async {
+        guard coverURL == artworkKey, artworkSession == sessionID, owner != nil else { return }
+        artwork = cover
+        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        info[MPMediaItemPropertyArtwork] = cover
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+      }
+    }
+    artworkTask?.resume()
+  }
+
+  private static func teardown() {
+    playing = false
+    interruptedSession = nil
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    MPNowPlayingInfoCenter.default().playbackState = .stopped
+    commands(enabled: false, hasPrev: false, hasNext: false)
+    artwork = nil
+    artworkKey = nil
+    artworkTask?.cancel()
+    artworkTask = nil
+    guard sessionActive else { return }
+    sessionActive = false
+    do {
+      // notifyOthersOnDeactivation：让别的 App（音乐、播客）能接着播。
+      try AVAudioSession.sharedInstance().setActive(
+        false, options: [.notifyOthersOnDeactivation])
+    } catch {
+      NSLog("audio session deactivate failed: \(error.localizedDescription)")
+    }
+  }
+
+  // MARK: - 远端命令
+
+  private static func commands(enabled: Bool, hasPrev: Bool, hasNext: Bool) {
+    let center = MPRemoteCommandCenter.shared()
+    center.playCommand.isEnabled = enabled
+    center.pauseCommand.isEnabled = enabled
+    center.togglePlayPauseCommand.isEnabled = enabled
+    center.stopCommand.isEnabled = enabled
+    center.changePlaybackPositionCommand.isEnabled = enabled
+    center.previousTrackCommand.isEnabled = enabled && hasPrev
+    center.nextTrackCommand.isEnabled = enabled && hasNext
+    center.skipForwardCommand.isEnabled = false
+    center.skipBackwardCommand.isEnabled = false
+  }
+
+  private static func registerCommands() {
+    let center = MPRemoteCommandCenter.shared()
+
+    func handler(_ action: String) -> (MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus {
+      return { _ in
+        if action == "pause" || action == "stop" || action == "playPause" ||
+           action == "next" || action == "prev" {
+          interruptedSession = nil
+        }
+        emit(["action": action])
+        return .success
+      }
+    }
+
+    center.playCommand.addTarget { handler("play")($0) }
+    center.pauseCommand.addTarget { handler("pause")($0) }
+    center.togglePlayPauseCommand.addTarget { handler("playPause")($0) }
+    center.stopCommand.addTarget { handler("stop")($0) }
+    center.nextTrackCommand.addTarget { handler("next")($0) }
+    center.previousTrackCommand.addTarget { handler("prev")($0) }
+    center.changePlaybackPositionCommand.addTarget { event in
+      guard let seek = event as? MPChangePlaybackPositionCommandEvent else {
+        return .commandFailed
+      }
+      emit(["action": "seek", "positionMs": Int(seek.positionTime * 1000)])
+      return .success
+    }
+    commands(enabled: false, hasPrev: false, hasNext: false)
+  }
+
+  // MARK: - 中断与路由变化
+
+  private static func observeInterruptions() {
+    let center = NotificationCenter.default
+    center.addObserver(
+      forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
+    ) { note in
+      guard
+        let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+        let type = AVAudioSession.InterruptionType(rawValue: raw)
+      else { return }
+      switch type {
+      case .began:
+        guard !interrupted else { return }
+        interrupted = true
+        sessionActive = false
+        interruptedSession = playing && owner != nil ? sessionID : nil
+        if interruptedSession != nil { emit(["action": "interruptionPause"]) }
+      case .ended:
+        let options = (note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt)
+          .map(AVAudioSession.InterruptionOptions.init(rawValue:)) ?? []
+        interrupted = false
+        let resume = interruptedSession == sessionID && owner != nil &&
+          options.contains(.shouldResume)
+        interruptedSession = nil
+        if resume {
+          activateSession()
+          if sessionActive { emit(["action": "interruptionResume"]) }
+        }
+      @unknown default:
+        break
+      }
+    }
+    center.addObserver(
+      forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
+    ) { note in
+      guard
+        let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+        let reason = AVAudioSession.RouteChangeReason(rawValue: raw)
+      else { return }
+      // 拔耳机时 iOS 会把音频切到外放，听书场景里这是打扰，直接暂停。
+      if reason == .oldDeviceUnavailable {
+        interruptedSession = nil
+        if playing { emit(["action": "pause"]) }
+      }
+    }
+  }
+
+  private static func emit(_ payload: [String: Any]) {
+    guard let sink, let eventOwner = owner else { return }
+    // 先固定事件身份再交给主线程，不能把旧命令重新标为新会话。
+    var event = payload
+    event["owner"] = eventOwner
+    event["session"] = sessionID
+    event["intent"] = intent
+    let captured = event
+    if Thread.isMainThread {
+      sink(captured)
+    } else {
+      DispatchQueue.main.async { sink(captured) }
+    }
+  }
+
+  private final class Events: NSObject, FlutterStreamHandler {
+    func onListen(
+      withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink
+    ) -> FlutterError? {
+      AudioSessionBridge.sink = events
+      return nil
+    }
+
+    func onCancel(withArguments arguments: Any?) -> FlutterError? {
+      AudioSessionBridge.sink = nil
+      return nil
     }
   }
 }

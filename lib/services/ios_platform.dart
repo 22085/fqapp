@@ -3,6 +3,7 @@ import 'package:media_kit/media_kit.dart';
 
 import 'desktop_platform.dart';
 import 'platform_channel.dart';
+import 'ios_audio_session.dart';
 
 /// iOS 的进程内平台适配层。
 ///
@@ -10,7 +11,7 @@ import 'platform_channel.dart';
 /// 窗口管理器。这里把同一份通道契约接到 Dart 侧的 media_kit 播放器(与
 /// Windows/Linux 共用 [DesktopPlatform]),于是播放页、短剧页、听书页的代码
 /// 一行都不用改,只是能力收敛到桌面那一档:能播、能暂停/拖动/倍速/音量,
-/// 没有悬浮窗、画中画与锁屏媒体卡片。
+/// 没有悬浮窗、画中画；锁屏媒体会话交给 [IosAudioSession]。
 ///
 /// 没有原生实现的通道仍然交回真正的 [MethodChannel]:缺失时照常抛
 /// `MissingPluginException`,与没装适配层之前完全一致,不会把「没做这件事」
@@ -36,15 +37,27 @@ class IosPlatform {
     PlatformChannels.invoke = (channel, method, arguments) async {
       switch (channel) {
         case 'fqapp/native_player':
-          // Windows 的 SMTC「正在播放」卡片与前台服务通知在 iOS 上没有等价
-          // 物。这两个方法在 iOS 上正好对应「后台音频会话」的开合:交给
-          // AppDelegate 的 AVAudioSession(category 已在启动时设为 playback)。
           if (method == 'startListenForeground') {
-            await _audioSession('activate');
+            final args = (arguments as Map?) ?? const {};
+            final owner = args['owner'] as String?;
+            if (owner == null) return null;
+            await IosAudioSession.update(
+              owner: owner,
+              title: args['title'] as String? ?? '',
+              episode: args['episode'] as String? ?? '',
+              cover: args['coverUrl'] as String? ?? '',
+              playing: args['playing'] == true,
+              positionMs: (args['positionMs'] as num?)?.toInt() ?? 0,
+              durationMs: (args['durationMs'] as num?)?.toInt() ?? 0,
+              rate: (args['speed'] as num?)?.toDouble() ?? 1,
+              hasPrev: args['hasPrev'] == true,
+              hasNext: args['hasNext'] == true,
+            );
             return null;
           }
           if (method == 'stopListenForeground') {
-            await _audioSession('deactivate');
+            final owner = (arguments as Map?)?['owner'] as String?;
+            if (owner != null) await IosAudioSession.stop(owner: owner);
             return null;
           }
           // 亮屏锁与其他播放器指令都落到 DesktopPlatform:它的
@@ -65,13 +78,5 @@ class IosPlatform {
       // iOS 自己的原生通道(Keychain 等)与插件通道照旧。
       return MethodChannel(channel).invokeMethod<dynamic>(method, arguments);
     };
-  }
-
-  /// 后台音频会话的激活/释放是尽力而为:个别机型激活失败不能反过来让朗读
-  /// 报错(见 AppDelegate 的 IosAudioBridge)。
-  static Future<void> _audioSession(String method) async {
-    try {
-      await const MethodChannel('fqapp/ios_audio').invokeMethod<void>(method);
-    } catch (_) {}
   }
 }

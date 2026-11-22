@@ -499,6 +499,7 @@ class DesktopPlatform with WindowListener {
           ],
         };
       case 'initialize':
+        if (isIOSPlatform) await _tts.autoStopSharedSession(false);
         await _tts.stop();
         _utterance = null;
         final engine = args['engine'];
@@ -541,7 +542,7 @@ class DesktopPlatform with WindowListener {
         // Android's native pause stops the engine but keeps audio focus. The
         // shared flutter_tts path has no separate pause, so stopping the
         // current utterance and clearing it is equivalent; the session/focus
-        // stays put until stopListenForeground releases it (IosAudioBridge).
+        // stays put until stopListenForeground releases it (AudioSessionBridge).
         _utterance = null;
         await _tts.stop();
         return null;

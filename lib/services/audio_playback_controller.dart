@@ -464,7 +464,8 @@ class _AudioPlaybackController extends ChangeNotifier
   void _syncForeground({bool seeked = false}) {
     if (_closed || _index < 0 || _index >= _chapters.length) return;
     if (!isLinuxDesktop &&
-        !AudioPreferences.instance.backgroundPlayback.value) {
+        !AudioPreferences.instance.backgroundPlayback.value &&
+        (!isIOSPlatform || !_appActive)) {
       unawaited(NativePlayer.stopListenForeground(owner: _mediaOwner));
       return;
     }
@@ -495,8 +496,11 @@ class _AudioPlaybackController extends ChangeNotifier
   void _handleRemoteAction(String action) {
     if (_closed) return;
     switch (action) {
+      case 'interruptionResume':
       case 'play':
         if (!_wantPlay) unawaited(_togglePlayback());
+      case 'interruptionPause':
+        unawaited(_pauseForOtherMedia(forInterruption: true));
       case 'pause':
         unawaited(_pauseForOtherMedia());
       case 'playPause':
@@ -518,7 +522,8 @@ class _AudioPlaybackController extends ChangeNotifier
     unawaited(_pauseForOtherMedia());
   }
 
-  Future<void> _pauseForOtherMedia() async {
+  Future<void> _pauseForOtherMedia({bool forInterruption = false}) async {
+    if (!forInterruption) IosAudioSession.cancelInterruption(_mediaOwner);
     _visibilityResumeGeneration = null;
     if (_closed) return;
     _cancelTrackRecovery(this);
@@ -606,6 +611,7 @@ class _AudioPlaybackController extends ChangeNotifier
     bool? completed,
     bool persistCurrent = true,
   }) async {
+    IosAudioSession.cancelInterruption(_mediaOwner);
     if (_closed || index < 0 || index >= _chapters.length) return;
     // 任何换章动作都意味着用户自己接管了，倒计时窗口必须作废。
     _resetTrackRecovery(this);
@@ -1308,7 +1314,9 @@ class _AudioPlaybackController extends ChangeNotifier
 
   Future<void> _play(NativePlayer player, int generation) async {
     if (!_current(generation, player) || !_wantPlay) return;
-    if (isLinuxDesktop) NativePlayer.claimRemoteOwner(_mediaOwner);
+    if (isLinuxDesktop || isIOSPlatform) {
+      NativePlayer.claimRemoteOwner(_mediaOwner);
+    }
     if (isLinuxDesktop && DesktopSystemSession.instance.suspended) return;
     if (!_appActive && !AudioPreferences.instance.backgroundPlayback.value) {
       await _pauseForOtherMedia();
@@ -1339,6 +1347,7 @@ class _AudioPlaybackController extends ChangeNotifier
   }
 
   Future<void> _togglePlayback() async {
+    IosAudioSession.cancelInterruption(_mediaOwner);
     _visibilityResumeGeneration = null;
     final player = _player;
     if (!_ready || player == null) return;
