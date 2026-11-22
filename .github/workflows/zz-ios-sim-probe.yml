@@ -56,20 +56,25 @@ jobs:
             grep -E "platform:iOS Simulator, arch:|Unable to find a destination" /tmp/out.txt | head -n 3
           }
 
-          dump "A showdestinations plain" \
-            xcodebuild -project ios/Runner.xcodeproj -scheme Runner -showdestinations
-          dump "B showdestinations -configuration Debug" \
-            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
-            -configuration Debug -showdestinations
-          dump "C showdestinations -sdk iphonesimulator" \
-            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
-            -sdk iphonesimulator -showdestinations
-          dump "D showdestinations -configuration Debug -sdk iphonesimulator" \
-            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
-            -configuration Debug -sdk iphonesimulator -showdestinations
-          dump "E id= -configuration Debug -sdk" \
+          dump "E baseline id=" \
             xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
             -configuration Debug -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings
+          dump "E2 override ARCHS" \
+            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
+            -configuration Debug -sdk iphonesimulator -destination "id=$UDID" \
+            ARCHS="arm64 x86_64" -showBuildSettings
+          dump "E3 override SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD=NO" \
+            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
+            -configuration Debug -sdk iphonesimulator -destination "id=$UDID" \
+            SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD=NO -showBuildSettings
+          dump "E4 override ONLY_ACTIVE_ARCH=YES" \
+            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
+            -configuration Debug -sdk iphonesimulator -destination "id=$UDID" \
+            ONLY_ACTIVE_ARCH=YES -showBuildSettings
+          dump "E5 override TARGETED_DEVICE_FAMILY" \
+            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
+            -configuration Debug -sdk iphonesimulator -destination "id=$UDID" \
+            TARGETED_DEVICE_FAMILY="1,2" -showBuildSettings
 
           echo
           echo "########## vanilla flutter project comparison"
@@ -77,9 +82,21 @@ jobs:
           flutter create --platforms=ios --project-name probeapp /tmp/probeapp >/tmp/create.txt 2>&1
           echo "create exit=$?"
           (cd /tmp/probeapp && flutter pub get >/tmp/pubget.txt 2>&1; echo "pubget exit=$?")
-          dump "F vanilla showdestinations -configuration Debug -sdk" \
-            xcodebuild -project /tmp/probeapp/ios/Runner.xcodeproj -scheme Runner \
-            -configuration Debug -sdk iphonesimulator -showdestinations
           dump "G vanilla id= -configuration Debug -sdk" \
             xcodebuild -project /tmp/probeapp/ios/Runner.xcodeproj -scheme Runner \
             -configuration Debug -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings
+
+          keys='SDKROOT|PLATFORM_NAME|EFFECTIVE_PLATFORM_NAME|SUPPORTED_PLATFORMS|SUPPORTS_MACCATALYST|SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD|ARCHS|VALID_ARCHS|EXCLUDED_ARCHS|NATIVE_ARCH_ACTUAL|ONLY_ACTIVE_ARCH|TARGETED_DEVICE_FAMILY|IPHONEOS_DEPLOYMENT_TARGET|ASSETCATALOG_COMPILER_APPICON_NAME|PRODUCT_BUNDLE_IDENTIFIER'
+          ours=/tmp/ours.txt
+          theirs=/tmp/theirs.txt
+          xcodebuild -project ios/Runner.xcodeproj -scheme Runner -configuration Debug \
+            -sdk iphonesimulator -showBuildSettings >"$ours" 2>&1
+          echo "ours dump exit=$?"
+          xcodebuild -project /tmp/probeapp/ios/Runner.xcodeproj -scheme Runner -configuration Debug \
+            -sdk iphonesimulator -showBuildSettings >"$theirs" 2>&1
+          echo "vanilla dump exit=$?"
+          echo
+          echo "########## relevant build settings diff (ours vs vanilla)"
+          grep -E "^ *($keys) " "$ours" | sort -u >/tmp/ours.k
+          grep -E "^ *($keys) " "$theirs" | sort -u >/tmp/theirs.k
+          diff /tmp/theirs.k /tmp/ours.k || true
