@@ -605,6 +605,7 @@ class _AudioPlaybackController extends ChangeNotifier
     bool autoplay = true,
     bool? completed,
     bool persistCurrent = true,
+    bool refreshSource = false,
   }) async {
     if (_closed || index < 0 || index >= _chapters.length) return;
     // 任何换章动作都意味着用户自己接管了，倒计时窗口必须作废。
@@ -672,7 +673,7 @@ class _AudioPlaybackController extends ChangeNotifier
           completed ??
           (position == null && sameChapter && saved?['completed'] == true);
       final itemId = _chapters[index].itemId;
-      final source = await _loadSourceWithRetry(itemId);
+      final source = await _loadSourceWithRetry(itemId, refresh: refreshSource);
       if (!_current(generation)) return;
       final uri = Uri.tryParse(source.url);
       // 离线命中给的是 `file://<path>`：本地文件桥不经 HTTP，没有 host。
@@ -756,6 +757,11 @@ class _AudioPlaybackController extends ChangeNotifier
           introSeek ??
           _boundedPosition(resume, duration);
       if (restoredPosition > Duration.zero) {
+        AppLog.d(
+          'audio',
+          'event=seek generation=$generation '
+              'position_ms=${restoredPosition.inMilliseconds}',
+        );
         await player.seek(restoredPosition);
         if (!_current(generation, player)) return;
       }
@@ -805,18 +811,24 @@ class _AudioPlaybackController extends ChangeNotifier
 
   /// Fetches one chapter's audio source.
   ///
-  /// The backend picks a pooled device per upstream request, so a dropped
-  /// connection or a 5xx can hit a single draw; only those transient failures
-  /// are retried (see [isTransientNetworkFailure]). An injected loader is
-  /// exact and is never multiplied.
+  /// The backend handles HTTP authentication failures and transient transport
+  /// retries. Only recoverable network failures are retried here (see
+  /// [isTransientNetworkFailure]). An injected loader is never multiplied.
   ///
   /// A pure-TTS book has no default voice: the playinfo endpoint answers
   /// NO_THIS_TONE for tone 0, so the first selectable voice is retried once.
-  Future<AudioSource> _loadSourceWithRetry(String itemId) async {
+  Future<AudioSource> _loadSourceWithRetry(
+    String itemId, {
+    bool refresh = false,
+  }) async {
+    final generation = _generation;
     // 已下载的章节直接命中本地文件：离线可播，在线也不重复拉流。本地命中
     // 排在注入 loader 之前，测试才能覆盖「离线优先」这条真实顺序。
     final local = await _localSource(itemId, _toneId);
-    if (local != null) return local;
+    if (local != null) {
+      AppLog.d('audio', 'event=source origin=local');
+      return local;
+    }
     final loader = request.sourceLoader;
     if (loader != null) {
       return loader(
@@ -825,8 +837,17 @@ class _AudioPlaybackController extends ChangeNotifier
       ).timeout(const Duration(seconds: 30));
     }
     final cacheKey = '$itemId|$_toneId';
+    // A failed CDN address must not survive an explicit user retry. Local
+    // downloads remain authoritative; this only invalidates the online model.
+    if (refresh) {
+      _audioSourceCache.removeWhere((key, _) => key.startsWith('$itemId|'));
+    }
     final cached = _audioSourceCache[cacheKey];
-    if (cached != null) return cached;
+    if (cached != null) {
+      AppLog.d('audio', 'event=source origin=cache');
+      return cached;
+    }
+    AppLog.d('audio', 'event=source origin=network refresh=$refresh');
     final toneId = _toneId;
     AudioSource result;
     try {
@@ -834,7 +855,7 @@ class _AudioPlaybackController extends ChangeNotifier
     } on ApiException catch (error) {
       if (toneId != '0' ||
           !error.message.contains('NO_THIS_TONE') ||
-          !_current(_generation)) {
+          !_current(generation)) {
         rethrow;
       }
       final fallback = _firstSelectableTone();
@@ -843,17 +864,20 @@ class _AudioPlaybackController extends ChangeNotifier
       _toneSwitchedForChapter = true;
       result = await _fetchSource(itemId, tone);
     }
-    _audioSourceCache[cacheKey] = result;
-    while (_audioSourceCache.length > 5) {
-      _audioSourceCache.remove(_audioSourceCache.keys.first);
+    // A prefetch from the previous playback generation must not repopulate
+    // the cache after an explicit retry or a chapter change.
+    if (_current(generation)) {
+      _audioSourceCache[cacheKey] = result;
+      while (_audioSourceCache.length > 5) {
+        _audioSourceCache.remove(_audioSourceCache.keys.first);
+      }
     }
     return result;
   }
 
   /// 默认音色与换音色回退共用同一套重试策略。每次尝试最多等 30 秒；超时、
-  /// 404/403 和业务错误码（NO_THIS_TONE、审核失败）再试也是同一个结果，
-  /// 只有网络中断、HTTP 408/429/5xx 值得再来一次——否则一次失败最坏要拖
-  /// 近三分钟才告诉用户。
+  /// 404 和业务错误码（NO_THIS_TONE、审核失败）不在这里重复请求；鉴权
+  /// 失败由后端处理。只有网络中断、HTTP 408/429/5xx 值得再来一次。
   Future<AudioSource> _fetchSource(String itemId, String toneId) =>
       retryTransient(
         () => ApiClient.instance
@@ -1171,6 +1195,12 @@ class _AudioPlaybackController extends ChangeNotifier
         // this candidate actually starts foreground playback.
         if (playing && !_hasPlayed && _activeIndex == _index && _wantPlay) {
           _hasPlayed = true;
+          AppLog.d(
+            'audio',
+            'event=started generation=$generation '
+                'position_ms=${player.position.inMilliseconds} '
+                'duration_ms=${_duration.inMilliseconds} rate=$_rate',
+          );
           unawaited(_persistProgress());
         }
         _syncListenClock();
@@ -1280,6 +1310,15 @@ class _AudioPlaybackController extends ChangeNotifier
 
   void _fail(Object error, int generation) {
     if (!_current(generation)) return;
+    AppLog.w(
+      'audio',
+      'event=failed generation=$generation loading=$_loading '
+          'position_ms=${_position.value.inMilliseconds} '
+          'duration_ms=${_duration.inMilliseconds} type=${error.runtimeType}'
+          '${error is ApiException ? ' http=${error.statusCode} upstream=${error.upstreamCode}' : ''}'
+          '${error is NativePlaybackException ? ' native=${error.errorCode} http=${error.httpStatusCode}' : ''}'
+          '${error is BackendRequestAborted ? ' timed_out=${error.timedOut}' : ''}',
+    );
     _cancelAdvanceCountdown(this);
     _resetTrackRecovery(this);
     _cancelTrackRequests();
@@ -1298,10 +1337,8 @@ class _AudioPlaybackController extends ChangeNotifier
       // 识别不到才回落到通用提示。
       _error =
           audioPlayErrorMessage(error, switchedTone: _toneSwitchedForChapter) ??
-          (error is TimeoutException
-              ? '加载超时，请检查网络后重试。'
-              // 官方 `f4` = 「播放出错，请稍后重试」。
-              : '播放出错，请稍后重试');
+          // 官方 `f4` = 「播放出错，请稍后重试」。
+          '播放出错，请稍后重试';
     });
     _publishMoreState();
   }
