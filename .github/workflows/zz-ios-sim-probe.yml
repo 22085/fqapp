@@ -35,7 +35,7 @@ jobs:
 
       - name: Destination matrix
         run: |
-          set -u
+          set +e
           UDID=$(xcrun simctl list devices available --json | python3 -c "
           import json, sys
           devices = json.load(sys.stdin)['devices']
@@ -48,37 +48,27 @@ jobs:
             local label="$1"; shift
             echo
             echo "########## $label"
-            xcrun simctl list devices | grep -F "$UDID" || true
             xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
-              -configuration Debug -sdk iphonesimulator "$@" -showBuildSettings \
-              >/tmp/out.txt 2>&1
+              "$@" >/tmp/out.txt 2>&1
             local code=$?
             echo "exit=$code"
             if [ $code -eq 0 ]; then
-              grep -E "^( *BUILD_DIR| *SDKROOT| *PLATFORM_NAME| *EFFECTIVE_PLATFORM_NAME| *ARCHS) " /tmp/out.txt || true
+              head -n 4 /tmp/out.txt
+              grep -E "^ *(SDKROOT|PLATFORM_NAME|SUPPORTED_PLATFORMS|ARCHS|EXCLUDED_ARCHS|VALID_ARCHS|NATIVE_ARCH_ACTUAL|ONLY_ACTIVE_ARCH) " /tmp/out.txt | sort -u | head -n 20
             else
-              tail -n 6 /tmp/out.txt
+              grep -E "Unable to find a destination|Available destinations|platform:iOS Simulator" /tmp/out.txt | head -n 8
             fi
           }
 
           xcrun simctl shutdown "$UDID" || true
-          probe "A shutdown device, -destination id=" -destination "id=$UDID"
-
-          xcrun simctl boot "$UDID" || true
-          xcrun simctl bootstatus "$UDID" -b
-          probe "B booted device, -destination id=" -destination "id=$UDID"
-          probe "C booted device, platform+id" -destination "platform=iOS Simulator,id=$UDID"
-          probe "D booted device, platform+name+os" -destination "platform=iOS Simulator,name=iPhone 17,OS=26.5"
-          probe "E booted device, platform+name" -destination "platform=iOS Simulator,name=iPhone 17"
-          probe "F booted device, generic" -destination "generic/platform=iOS Simulator"
-
-          sudo killall -9 com.apple.CoreSimulator.CoreSimulatorService || true
-          sleep 15
-          probe "G after service restart, -destination id=" -destination "id=$UDID"
-
-          xcrun simctl shutdown "$UDID" || true
-          sleep 5
-          probe "H shutdown again, -destination id=" -destination "id=$UDID"
+          probe "A showdestinations plain" -showdestinations
+          probe "B showdestinations debug+sdk" -configuration Debug -sdk iphonesimulator -showdestinations
+          probe "C generic debug+sdk" -configuration Debug -sdk iphonesimulator -destination generic/platform=iOS Simulator -showBuildSettings
+          probe "D settings no destination debug+sdk" -configuration Debug -sdk iphonesimulator -showBuildSettings
+          probe "E id= debug+sdk" -configuration Debug -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings
+          probe "F platform+id debug+sdk" -configuration Debug -sdk iphonesimulator -destination "platform=iOS Simulator,id=$UDID" -showBuildSettings
+          probe "G name+os debug+sdk" -configuration Debug -sdk iphonesimulator -destination "platform=iOS Simulator,name=iPhone 17,OS=26.5" -showBuildSettings
+          probe "H id= no sdk" -configuration Debug -destination "id=$UDID" -showBuildSettings
 
           echo
           echo "########## flutter devices"
