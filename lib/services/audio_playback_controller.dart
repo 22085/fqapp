@@ -629,8 +629,9 @@ class _AudioPlaybackController extends ChangeNotifier
     try {
       if (_closed ||
           !identical(player, _player) ||
-          !IosAudioSession.owns(_mediaOwner))
+          !IosAudioSession.owns(_mediaOwner)) {
         return;
+      }
       await _advanceInBackground(target);
     } finally {
       await IosAudioSession.endBackgroundWindow(window);
