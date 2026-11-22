@@ -153,10 +153,19 @@ class _ReaderPageScrollPhysics extends PageScrollPhysics {
     ScrollMetrics position,
     double velocity,
   ) {
-    final simulation = super.createBallisticSimulation(position, velocity);
-    if (simulation == null) return null;
     final width = position.viewportDimension;
+    if (width <= 0) return null;
     final page = position.pixels / width;
+    // A release at a page boundary has nowhere to settle. Running a spring
+    // with identical clamp bounds can leave an invisible scroll activity.
+    final aligned =
+        (position.pixels - page.round() * width).abs() <=
+        toleranceFor(position).distance;
+    final simulation = super.createBallisticSimulation(
+      position,
+      aligned ? 0 : velocity,
+    );
+    if (simulation == null || aligned) return simulation;
     // A fast release can drive the spring past its target and reveal a third page.
     return ClampedSimulation(
       simulation,
@@ -540,8 +549,11 @@ class ReaderPagedViewState extends State<ReaderPagedView>
       onHorizontalDragStart: (details) {
         if (_turning || _boundaryPending) return;
         final position = _attachedPosition;
-        if (position == null || !position.haveDimensions) return;
-        _pageDragFrom = _attachedPage!.round();
+        if (position == null ||
+            !position.haveDimensions ||
+            position.viewportDimension <= 0) {
+          return;
+        }
         _pageDragDirection = null;
         _pageDragAnchorDx = details.globalPosition.dx;
         _pageDragStartPixels = position.pixels;
@@ -553,7 +565,20 @@ class ReaderPagedViewState extends State<ReaderPagedView>
         if (drag == null || position == null) return;
         final delta = details.primaryDelta ?? 0;
         if (delta == 0) return;
-        final direction = _pageDragDirection ??= delta < 0 ? 1 : -1;
+        if (_pageDragDirection == null) {
+          final direction = delta < 0 ? 1 : -1;
+          final start = _pageDragStartPixels / position.viewportDimension;
+          // An interrupted settle already lies between two pages. Reuse
+          // that pair even if the next swipe reverses before the midpoint.
+          final nearest = start.round();
+          _pageDragFrom = (start - nearest).abs() < .000001
+              ? nearest
+              : direction > 0
+              ? start.floor()
+              : start.ceil();
+          _pageDragDirection = direction;
+        }
+        final direction = _pageDragDirection!;
         final target = _pageDragFrom + direction;
         if (target < 0 || target >= _itemCount) {
           drag.update(details);
