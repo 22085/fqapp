@@ -623,6 +623,10 @@ class _AudioPlaybackController extends ChangeNotifier
     }
     if (!IosAudioSession.owns(_mediaOwner)) return;
     IosAudioSession.cancelInterruption(_mediaOwner);
+    _update(() {
+      _wantPlay =
+          _appActive || AudioPreferences.instance.backgroundPlayback.value;
+    });
     final window = await IosAudioSession.beginBackgroundWindow(
       owner: _mediaOwner,
     );
@@ -674,8 +678,6 @@ class _AudioPlaybackController extends ChangeNotifier
       _timeTrackReady = false;
       _skipOutroFired = false;
       _toneSwitchedForChapter = false;
-      _wantPlay =
-          _appActive || AudioPreferences.instance.backgroundPlayback.value;
     });
     _publishReadAlong();
     _publishMoreState();
