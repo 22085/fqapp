@@ -275,6 +275,13 @@ void _handleChapterCompleted(
   int generation,
 ) {
   if (c._closed || c._completed) return;
+  AppLog.d(
+    'audio',
+    'event=completed generation=$generation '
+        'position_ms=${player.position.inMilliseconds} '
+        'duration_ms=${c._duration.inMilliseconds} '
+        'skip_outro=${c._skipOutroFired}',
+  );
   _cancelTrackRecovery(c);
   final shouldAdvance = c._wantPlay && c._autoAdvance;
   c._update(() {
