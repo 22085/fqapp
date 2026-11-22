@@ -526,7 +526,7 @@ async fn an_all_undecodable_answer_stays_terminal_and_bounded() {
     );
     let requests = upstream.requests();
     assert_eq!(requests.len(), 8, "four doors on each of two identities");
-    for round in requests.chunks_exact(4) {
+    for round in requests.as_chunks::<4>().0 {
         assert_eq!(
             round
                 .iter()
