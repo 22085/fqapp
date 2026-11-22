@@ -533,7 +533,7 @@ class _AudioPlaybackController extends ChangeNotifier
     _listenTime.stop();
     final player = _player;
     if (player != null && player.isCreated) {
-      await _pause(player, _generation);
+      await _pause(player, _generation, forInterruption: forInterruption);
     }
     _syncForeground();
   }
@@ -693,6 +693,7 @@ class _AudioPlaybackController extends ChangeNotifier
       if (!_current(generation)) return;
       final player = candidate =
           request.playerFactory?.call() ?? NativePlayer(audioOnly: true);
+      player.iosMediaOwner = _mediaOwner;
       _player = player;
       await player.create(source.url, source.keyHex);
       if (!_current(generation, player)) {
@@ -1324,6 +1325,10 @@ class _AudioPlaybackController extends ChangeNotifier
     }
     await player.play();
     if (!_current(generation, player)) return;
+    if (!player.playWhenReady) {
+      await _pauseForOtherMedia();
+      return;
+    }
     if (!_wantPlay) await player.pause();
     if (!_current(generation, player)) return;
     _syncListenClock();
@@ -1331,12 +1336,16 @@ class _AudioPlaybackController extends ChangeNotifier
     _update(() {});
   }
 
-  Future<void> _pause(NativePlayer player, int generation) async {
+  Future<void> _pause(
+    NativePlayer player,
+    int generation, {
+    bool forInterruption = false,
+  }) async {
     _cancelAdvanceCountdown(this);
     _cancelTrackRecovery(this);
     _publishListeningSession(playing: false);
     try {
-      await player.pause();
+      await (forInterruption ? player.pauseForInterruption() : player.pause());
       if (_current(generation, player)) {
         await _persistProgress();
         _syncForeground();

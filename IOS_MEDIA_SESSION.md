@@ -4,16 +4,16 @@
 
 ## 唯一会话桥
 
-`AudioSessionBridge` 是应用侧 AVAudioSession 配置、激活和释放的唯一入口，使用 `fqapp/audio_session` 和 `fqapp/audio_session/events`。移除原来的 `IosAudioBridge`、`fqapp/ios_audio` 和启动时的音频配置。首次播放状态推送配置 `.playback`，听书/朗读使用 `.spokenAudio`，视频使用 `.moviePlayback`；播放/朗读前先通过 `prepare` 激活会话，首次视频自动播放即使尚未挂载媒体控件也会配置；仅元数据到达、暂停或冷启动不会主动激活音频。
+`AudioSessionBridge` 是应用侧 AVAudioSession 配置、激活和释放的唯一入口，使用 `fqapp/audio_session` 和 `fqapp/audio_session/events`。移除原来的 `IosAudioBridge`、`fqapp/ios_audio` 和启动时的音频配置。首次播放状态推送配置 `.playback`，听书/朗读使用 `.spokenAudio`，视频使用 `.moviePlayback`；播放/朗读前先通过 `prepare` 激活会话，每个播放器有自身的会话 owner，首次视频、内联视频与听视频在媒体控件挂载前也能接管并配置；仅元数据到达、暂停或冷启动不会主动激活音频。
 
-听书和阅读器系统朗读保留现有 `NativePlayer.startListenForeground` / `stopListenForeground` 契约，由 `IosPlatform` 转发到同一桥。flutter_tts 的逐句完成不再自行释放共享会话；解码、朗读和屏幕常亮仍使用既有实现。
+听书和阅读器系统朗读保留现有 `NativePlayer.startListenForeground` / `stopListenForeground` 契约，由 `IosPlatform` 转发到同一桥。flutter_tts 的逐句完成不再自行释放共享会话；先清卡片时释放被系统 busy 拒绝则保留状态，在解码器暂停/销毁后校验原 session 并重试释放；解码、朗读和屏幕常亮仍使用既有实现。
 
 ## 所有权与事件
 
-- `IosAudioSession.claim(owner, onAction)` 取得会话；不同 owner 或停止后重新取得会话都会生成新 session。
-- `update(owner, ...)`、`stop(owner)` 和远端事件都校验 owner / session，旧页面的推送、停止和排队事件不会操作新会话。
+- 页面挂载仅注册处理器，真正播放或没有活动 owner 时恢复媒体卡片才申请接管，接管不会释放仍在使用的系统音频。`IosAudioSession.claim(owner, onAction)` 取得会话；不同 owner 或停止后重新取得会话都会生成新 session。
+- `prepare(owner, mode)` 使用播放器绑定的 owner，异步播放等待后不能借用新会话身份。`update(owner, ...)`、`stop(owner)` 和远端事件都校验 owner / session，旧页面的推送、停止和排队事件不会操作新会话。
 - 听书失败时移除卡片，保留控制器的远端处理器注册；重试播放重新取得会话。普通关闭清除处理器并释放其仍持有的会话。
-- 视频开始播放时取得会话，进度按 1 秒节流推送。失去所有权后旧页面不再发布；停止或离开仅释放自己的会话。
+- 视频开始播放或重新启用且已有播放意图时取得会话，进度按 1 秒节流推送。失去所有权后旧页面不再发布；停止或离开仅释放自己的会话。
 - 用户暂停、停止或换章会更新 intent，并撤销中断恢复；停止/换页产生的新会话不会沿用旧的恢复资格。
 
 ## 中断与路由

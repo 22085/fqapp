@@ -694,6 +694,8 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     }
     if (oldWidget.player != widget.player) {
       IosAudioSession.cancelInterruption(_iosMediaOwner);
+      widget.player?.iosMediaOwner = _iosMediaOwner;
+      widget.player?.iosMediaAction = _handleIosMediaAction;
       _listenToPosition();
       // 切集/切清晰度会替换播放器，触摸锁属于播放页面，需跨集保留。
       _doubleTapGuard?.cancel();
@@ -752,8 +754,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     if (oldWidget.enabled && !widget.enabled) {
       unawaited(IosAudioSession.stop(owner: _iosMediaOwner));
     }
-    if (!oldWidget.playing &&
-        widget.playing &&
+    if ((!oldWidget.playing && widget.playing ||
+            !oldWidget.enabled && widget.enabled ||
+            oldWidget.player != widget.player) &&
         (widget.player?.playWhenReady ?? false) &&
         widget.enabled &&
         _iosMediaArmed) {
@@ -820,11 +823,15 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   /// 因此从播放页进听书页不会因为播放页 dispose 而丢掉会话。
   void _attachIosMediaSession() {
     if (!isIOSPlatform) return;
-    IosAudioSession.claim(
-      owner: _iosMediaOwner,
-      onAction: _handleIosMediaAction,
-    );
     _iosMediaArmed = true;
+    widget.player?.iosMediaOwner = _iosMediaOwner;
+    widget.player?.iosMediaAction = _handleIosMediaAction;
+    if (widget.player?.playWhenReady ?? false) {
+      IosAudioSession.claim(
+        owner: _iosMediaOwner,
+        onAction: _handleIosMediaAction,
+      );
+    }
     _publishIosMedia(force: true);
   }
 
@@ -852,7 +859,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
         unawaited(_control((p) => p.play()));
       case 'interruptionPause':
         _resumeOnForeground = false;
-        unawaited(_control((p) => p.pause()));
+        unawaited(_control((p) => p.pauseForInterruption()));
       case 'pause':
         _resumeOnForeground = false;
         unawaited(_control((p) => p.pause()));

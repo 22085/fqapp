@@ -457,7 +457,7 @@ final class AudioSessionBridge: NSObject {
               let newOwner = args["owner"] as? String,
               let newSession = args["session"] as? Int,
               newSession > sessionID else { result(nil); return }
-        teardown()
+        clearMedia()
         owner = newOwner
         sessionID = newSession
         intent = args["intent"] as? Int ?? 0
@@ -471,9 +471,27 @@ final class AudioSessionBridge: NSObject {
         result(nil)
       case "prepare":
         if let args = call.arguments as? [String: Any],
-           matches(args) || (owner == nil && args["owner"] is NSNull) {
+           matches(args) || (owner == nil && args["owner"] is NSNull &&
+                            args["session"] as? Int == sessionID) {
           configureSession(args["mode"] as? String ?? "audio")
           activateSession()
+        }
+        result(nil)
+      case "setPlaying":
+        if let args = call.arguments as? [String: Any], matches(args),
+           (args["intent"] as? Int ?? -1) >= intent {
+          playing = args["playing"] as? Bool ?? false
+          let center = MPNowPlayingInfoCenter.default()
+          if center.nowPlayingInfo != nil {
+            center.playbackState = playing ? .playing : .paused
+            if !playing { center.nowPlayingInfo?[MPNowPlayingInfoPropertyPlaybackRate] = 0.0 }
+          }
+        }
+        result(nil)
+      case "releaseIfIdle":
+        if let args = call.arguments as? [String: Any], owner == nil,
+           args["session"] as? Int == sessionID {
+          deactivateSession()
         }
         result(nil)
       case "update":
@@ -606,7 +624,7 @@ final class AudioSessionBridge: NSObject {
     artworkTask?.resume()
   }
 
-  private static func teardown() {
+  private static func clearMedia() {
     playing = false
     interruptedSession = nil
     MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -616,12 +634,20 @@ final class AudioSessionBridge: NSObject {
     artworkKey = nil
     artworkTask?.cancel()
     artworkTask = nil
+  }
+
+  private static func teardown() {
+    clearMedia()
+    deactivateSession()
+  }
+
+  private static func deactivateSession() {
     guard sessionActive else { return }
-    sessionActive = false
     do {
       // notifyOthersOnDeactivation：让别的 App（音乐、播客）能接着播。
       try AVAudioSession.sharedInstance().setActive(
         false, options: [.notifyOthersOnDeactivation])
+      sessionActive = false
     } catch {
       NSLog("audio session deactivate failed: \(error.localizedDescription)")
     }

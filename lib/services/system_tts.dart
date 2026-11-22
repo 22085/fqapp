@@ -430,7 +430,14 @@ class SystemTtsPlayback extends ChangeNotifier with WidgetsBindingObserver {
     if (!_current(token)) return;
     if (isIOSPlatform) {
       NativePlayer.claimRemoteOwner(_mediaOwner);
-      await IosAudioSession.prepare(mode: 'audio');
+      if (!await IosAudioSession.prepare(owner: _mediaOwner, mode: 'audio')) {
+        if (_current(token)) {
+          wantPlay = false;
+          loading = false;
+          _publish();
+        }
+        return;
+      }
       if (!_current(token)) return;
     }
     if (!_ready) {

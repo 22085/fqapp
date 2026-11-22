@@ -73,7 +73,17 @@ class IosPlatform {
         case 'fqapp/downloads':
         case 'fqapp/reader':
         case 'fqapp/system_tts':
-          return DesktopPlatform.instance.invoke(channel, method, arguments);
+          final iosSession = IosAudioSession.generation;
+          final result = await DesktopPlatform.instance.invoke(
+            channel,
+            method,
+            arguments,
+          );
+          if (channel == 'fqapp/system_tts' &&
+              const {'pause', 'stop', 'shutdown'}.contains(method)) {
+            await IosAudioSession.releaseIfIdle(session: iosSession);
+          }
+          return result;
       }
       // iOS 自己的原生通道(Keychain 等)与插件通道照旧。
       return MethodChannel(channel).invokeMethod<dynamic>(method, arguments);

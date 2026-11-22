@@ -27,6 +27,10 @@ class IosAudioSession {
   static int? _interruptedSession;
   static void Function(String action, int? positionMs)? _onAction;
 
+  static int get generation => _generation;
+
+  static bool get hasOwner => _owner != null;
+
   static bool owns(String owner) => isIOSPlatform && owner == _owner;
 
   /// 每次重新接管生成新会话，丢弃旧页面及旧中断排队中的事件。
@@ -106,9 +110,30 @@ class IosAudioSession {
   }
 
   /// 解码器/语音引擎出声前配置并激活同一桥，不在冷启动激活。
-  static Future<void> prepare({required String mode}) async {
-    if (!isIOSPlatform) return;
-    await _invoke('prepare', {..._identity, 'mode': mode});
+  static Future<bool> prepare({
+    required String? owner,
+    required String mode,
+  }) async {
+    if (!isIOSPlatform) return true;
+    if (owner == null ? hasOwner : !owns(owner)) return false;
+    final identity = _identity;
+    await _invoke('prepare', {...identity, 'mode': mode});
+    return identity['session'] == _generation && owner == _owner;
+  }
+
+  /// 内联播放器没有媒体卡片，但中断观察仍需真实的播放意图。
+  static Future<void> setPlaying({
+    required String owner,
+    required bool playing,
+  }) async {
+    if (!owns(owner)) return;
+    await _invoke('setPlaying', {..._identity, 'playing': playing});
+  }
+
+  /// 解码器停下后重试释放，避免先清卡片时 AVAudioSession 仍处于 busy。
+  static Future<void> releaseIfIdle({required int session}) async {
+    if (!isIOSPlatform || _owner != null || session != _generation) return;
+    await _invoke('releaseIfIdle', _identity);
   }
 
   /// 推送当前的媒体元数据。锁屏卡片、控制中心、CarPlay 与蓝牙都会读这里。

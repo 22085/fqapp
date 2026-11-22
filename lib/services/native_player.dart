@@ -99,6 +99,44 @@ class NativePlayer {
           Future<double> Function(String, double)? setting,
         })
       >{};
+  final String _defaultIosMediaOwner = allocateRemoteOwner();
+  late String iosMediaOwner = _defaultIosMediaOwner;
+  void Function(String, int?)? iosMediaAction;
+
+  void _claimIosMediaSession() {
+    if (!isIOSPlatform) return;
+    if (_remoteHandlers.containsKey(iosMediaOwner)) {
+      claimRemoteOwner(iosMediaOwner);
+    } else {
+      IosAudioSession.claim(
+        owner: iosMediaOwner,
+        onAction: iosMediaAction ?? _handleIosMediaAction,
+      );
+    }
+  }
+
+  void _handleIosMediaAction(String action, int? positionMs) {
+    if (_disposed || !IosAudioSession.owns(iosMediaOwner)) return;
+    switch (action) {
+      case 'interruptionResume':
+      case 'play':
+        unawaited(play());
+      case 'interruptionPause':
+        unawaited(pauseForInterruption());
+      case 'pause':
+        unawaited(pause());
+      case 'playPause':
+        unawaited(playWhenReady ? pause() : play());
+      case 'seek':
+        if (positionMs != null) {
+          unawaited(seek(Duration(milliseconds: positionMs)));
+        }
+      case 'stop':
+        unawaited(pause());
+        unawaited(IosAudioSession.stop(owner: iosMediaOwner));
+    }
+  }
+
   static void claimRemoteOwner(String owner) {
     final handler = _remoteHandlers[owner];
     if (handler == null) return;
@@ -182,7 +220,6 @@ class NativePlayer {
     _onRemoteSeek = onSeek;
     _onRemoteAction = onAction;
     _onBecomingNoisy = onBecomingNoisy;
-    if (isIOSPlatform && owner != null) claimRemoteOwner(owner);
     _channel.setMethodCallHandler(_handleMethodCall);
   }
 
@@ -490,23 +527,43 @@ class NativePlayer {
   }
 
   Future<void> play() => _setPlayWhenReady(true);
-  Future<void> pause() => _setPlayWhenReady(false);
+  Future<void> pause() {
+    IosAudioSession.cancelInterruption(iosMediaOwner);
+    return _setPlayWhenReady(false);
+  }
+
+  Future<void> pauseForInterruption() => _setPlayWhenReady(false);
 
   Future<void> _setPlayWhenReady(bool value) async {
     if (_disposed) return;
     final generation = ++_playWhenReadyGeneration;
     final previous = _playWhenReady;
+    if (value) _claimIosMediaSession();
+    final iosSession = IosAudioSession.generation;
     _updatePlayWhenReady(value);
     try {
       if (value) {
         await beforePlay?.call(this);
         if (_disposed || generation != _playWhenReadyGeneration) return;
         if (isIOSPlatform) {
-          await IosAudioSession.prepare(mode: audioOnly ? 'audio' : 'video');
+          final prepared = await IosAudioSession.prepare(
+            owner: iosMediaOwner,
+            mode: audioOnly ? 'audio' : 'video',
+          );
           if (_disposed || generation != _playWhenReadyGeneration) return;
+          if (!prepared) {
+            _updatePlayWhenReady(false);
+            return;
+          }
         }
       }
       await _invoke(value ? 'play' : 'pause');
+      if (!_disposed && generation == _playWhenReadyGeneration) {
+        await IosAudioSession.setPlaying(owner: iosMediaOwner, playing: value);
+      }
+      if (!value && !_instances.values.any((player) => player.playWhenReady)) {
+        await IosAudioSession.releaseIfIdle(session: iosSession);
+      }
     } catch (_) {
       if (!_disposed && generation == _playWhenReadyGeneration) {
         _updatePlayWhenReady(previous);
@@ -586,6 +643,9 @@ class NativePlayer {
     if ((isLinuxDesktop || isIOSPlatform) &&
         (owner == null || owner != _remoteOwner)) {
       return;
+    }
+    if (isIOSPlatform && !IosAudioSession.hasOwner && owner != null) {
+      claimRemoteOwner(owner);
     }
     final generation = ++_foregroundGeneration;
     _remoteChapterId = chapterId;
@@ -823,11 +883,18 @@ class NativePlayer {
   Future<void> dispose() => _disposeFuture ??= _dispose();
 
   Future<void> _dispose() async {
+    final iosSession = IosAudioSession.generation;
+    if (iosMediaOwner == _defaultIosMediaOwner) {
+      unawaited(IosAudioSession.stop(owner: iosMediaOwner));
+    }
     _disposed = true;
     if (_createFuture != null && !_createdCompleter.isCompleted) {
       _createdCompleter.completeError(StateError('NativePlayer disposed'));
     }
     await _releaseNative();
+    if (!_instances.values.any((player) => player.playWhenReady)) {
+      await IosAudioSession.releaseIfIdle(session: iosSession);
+    }
     await Future.wait<void>([
       _positionCtrl.close(),
       _durationCtrl.close(),
