@@ -33,23 +33,9 @@ jobs:
           flutter pub get --enforce-lockfile
           (cd ios && pod install)
 
-      - name: Environment
+      - name: Destination matrix
         run: |
-          echo "== xcode-select =="
-          xcode-select -p
-          echo "== xcodebuild =="
-          xcodebuild -version
-          echo "== runtimes =="
-          xcrun simctl list runtimes
-          echo "== devices =="
-          xcrun simctl list devices available
-
-      - name: Destinations before booting
-        run: |
-          xcodebuild -project ios/Runner.xcodeproj -scheme Runner -showdestinations || echo "exit=$?"
-
-      - name: Boot one simulator and re-check
-        run: |
+          set -u
           UDID=$(xcrun simctl list devices available --json | python3 -c "
           import json, sys
           devices = json.load(sys.stdin)['devices']
@@ -57,31 +43,43 @@ jobs:
           print(picks[-1])
           ")
           echo "UDID=$UDID"
+
+          probe() {
+            local label="$1"; shift
+            echo
+            echo "########## $label"
+            xcrun simctl list devices | grep -F "$UDID" || true
+            xcodebuild -project ios/Runner.xcodeproj -scheme Runner \
+              -configuration Debug -sdk iphonesimulator "$@" -showBuildSettings \
+              >/tmp/out.txt 2>&1
+            local code=$?
+            echo "exit=$code"
+            if [ $code -eq 0 ]; then
+              grep -E "^( *BUILD_DIR| *SDKROOT| *PLATFORM_NAME| *EFFECTIVE_PLATFORM_NAME| *ARCHS) " /tmp/out.txt || true
+            else
+              tail -n 6 /tmp/out.txt
+            fi
+          }
+
+          xcrun simctl shutdown "$UDID" || true
+          probe "A shutdown device, -destination id=" -destination "id=$UDID"
+
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
-          echo "== destinations after boot =="
-          xcodebuild -project ios/Runner.xcodeproj -scheme Runner -showdestinations || echo "exit=$?"
-          echo "== showBuildSettings with -destination id =="
-          xcodebuild -project ios/Runner.xcodeproj -scheme Runner -configuration Debug -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings 2>&1 | head -30 || echo "exit=$?"
-          echo "== showBuildSettings with -destination generic =="
-          xcodebuild -project ios/Runner.xcodeproj -scheme Runner -configuration Debug -sdk iphonesimulator -destination "generic/platform=iOS Simulator" -showBuildSettings 2>&1 | head -10 || echo "exit=$?"
+          probe "B booted device, -destination id=" -destination "id=$UDID"
+          probe "C booted device, platform+id" -destination "platform=iOS Simulator,id=$UDID"
+          probe "D booted device, platform+name+os" -destination "platform=iOS Simulator,name=iPhone 17,OS=26.5"
+          probe "E booted device, platform+name" -destination "platform=iOS Simulator,name=iPhone 17"
+          probe "F booted device, generic" -destination "generic/platform=iOS Simulator"
 
-      - name: Restart CoreSimulator service and re-check
-        run: |
           sudo killall -9 com.apple.CoreSimulator.CoreSimulatorService || true
-          sleep 10
-          xcrun simctl bootstatus all -b || true
-          echo "== destinations after service restart =="
-          xcodebuild -project ios/Runner.xcodeproj -scheme Runner -showdestinations || echo "exit=$?"
-          UDID=$(xcrun simctl list devices available --json | python3 -c "
-          import json, sys
-          devices = json.load(sys.stdin)['devices']
-          picks = [d['udid'] for runtime, items in sorted(devices.items()) if '.iOS-' in runtime for d in items if d['name'].startswith('iPhone')]
-          print(picks[-1])
-          ")
-          echo "UDID=$UDID"
-          xcodebuild -project ios/Runner.xcodeproj -scheme Runner -configuration Debug -sdk iphonesimulator -destination "id=$UDID" -showBuildSettings 2>&1 | head -30 || echo "exit=$?"
+          sleep 15
+          probe "G after service restart, -destination id=" -destination "id=$UDID"
 
-      - name: Flutter device list
-        run: |
+          xcrun simctl shutdown "$UDID" || true
+          sleep 5
+          probe "H shutdown again, -destination id=" -destination "id=$UDID"
+
+          echo
+          echo "########## flutter devices"
           flutter devices || true
