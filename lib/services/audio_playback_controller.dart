@@ -190,7 +190,7 @@ class _AudioPlaybackController extends ChangeNotifier
   }
 
   /// Resolves the listening-page decorations. See [AudioExtras].
-  Future<AudioExtras> _loadExtras() {
+  Future<AudioExtras> _loadExtras(ValueChanged<AudioToneSet>? onTones) {
     final loader = request.extrasLoader;
     if (loader != null) return loader(_bookId);
     if (request.sourceLoader != null ||
@@ -198,7 +198,7 @@ class _AudioPlaybackController extends ChangeNotifier
         request.playerFactory != null) {
       return Future.value(const AudioExtras());
     }
-    return _defaultAudioExtras(_bookId);
+    return _defaultAudioExtras(_bookId, onTones: onTones);
   }
 
   /// Resolves 边听边读 subtitles. A book without generated speech text answers
@@ -349,7 +349,16 @@ class _AudioPlaybackController extends ChangeNotifier
         return <AudioVoice>[_defaultVoice];
       }
     }();
-    final extras = _loadExtrasSafely();
+    final extras = _loadExtrasSafely((tones) {
+      if (_closed || generation != _settingsGeneration || tones.isEmpty) return;
+      _applyExtras(
+        AudioExtras(
+          tones: tones,
+          related: _extras.related,
+          detail: _extras.detail,
+        ),
+      );
+    });
     AudioExtras? readyExtras;
     unawaited(extras.then((value) => readyExtras = value));
     final saved = await history;
@@ -433,9 +442,11 @@ class _AudioPlaybackController extends ChangeNotifier
     unawaited(_publishExtras(extras, generation));
   }
 
-  Future<AudioExtras> _loadExtrasSafely() async {
+  Future<AudioExtras> _loadExtrasSafely([
+    ValueChanged<AudioToneSet>? onTones,
+  ]) async {
     try {
-      return await _loadExtras().timeout(const Duration(seconds: 10));
+      return await _loadExtras(onTones).timeout(const Duration(seconds: 10));
     } catch (_) {
       return const AudioExtras();
     }
@@ -494,6 +505,21 @@ class _AudioPlaybackController extends ChangeNotifier
     }
     if (_closed) return;
     if (generation != null && generation != _settingsGeneration) return;
+    _applyExtras(
+      AudioExtras(
+        tones: loaded.tones.isEmpty ? _extras.tones : loaded.tones,
+        related: loaded.related,
+        detail: loaded.detail,
+      ),
+    );
+  }
+
+  List<String> get _preferredToneIds => _hasFixedTone
+      ? const []
+      : _extras.tones.preferredListeningTones.map((tone) => tone.id).toList();
+
+  void _applyExtras(AudioExtras loaded) {
+    final previous = _preferredToneIds;
     final byId = <String, AudioVoice>{
       for (final voice in _voices) voice.id: voice,
     };
@@ -502,6 +528,10 @@ class _AudioPlaybackController extends ChangeNotifier
       _extras = loaded;
       _voices = List.unmodifiable(byId.values);
     });
+    if (!listEquals(previous, _preferredToneIds)) {
+      _discardNextAudio();
+      _syncListenClock();
+    }
   }
 
   void _syncForeground({bool seeked = false}) {
@@ -1039,9 +1069,7 @@ class _AudioPlaybackController extends ChangeNotifier
     bool refresh = false,
   }) async {
     final bookId = _bookId;
-    final preferred = _hasFixedTone
-        ? const <String>[]
-        : _extras.tones.preferredListeningTones.map((tone) => tone.id);
+    final preferred = _preferredToneIds;
     final fallback = _hasFixedTone
         ? _extras.tones.narratorTones.firstOrNull?.id
         : _firstSelectableTone();

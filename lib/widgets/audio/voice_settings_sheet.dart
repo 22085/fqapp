@@ -34,6 +34,8 @@ class VoiceSettingsSheet extends StatelessWidget {
   final List<VoiceOption> narrators;
   final List<VoiceOption> online;
   final ValueChanged<VoiceOption> onSelect;
+  final VoidCallback? onAutomatic;
+  final bool automaticSelected;
 
   /// 顶部的灰色说明，只在特定入口（阅读页胶囊）传；听书页不传。
   final String? notice;
@@ -45,6 +47,8 @@ class VoiceSettingsSheet extends StatelessWidget {
     this.online = const [],
     required this.onSelect,
     this.notice,
+    this.onAutomatic,
+    this.automaticSelected = false,
   });
 
   @override
@@ -85,6 +89,14 @@ class VoiceSettingsSheet extends StatelessWidget {
           ],
           const SizedBox(height: 10),
         ],
+        if (onAutomatic != null)
+          ListTile(
+            key: const ValueKey('audio-automatic-tone'),
+            title: const Text('自动选音色'),
+            selected: automaticSelected,
+            trailing: automaticSelected ? const Icon(Icons.check) : null,
+            onTap: onAutomatic,
+          ),
         if (online.isNotEmpty) ...[
           const _SectionTitle('智能朗读'),
           const SizedBox(height: 12),

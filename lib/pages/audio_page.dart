@@ -4,6 +4,7 @@ import '../widgets/desktop_chapter_sidebar.dart';
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 
@@ -227,10 +228,14 @@ typedef _RoutePlayback = ({
   bool autoplay,
 });
 
-Future<AudioExtras> _defaultAudioExtras(String bookId) async {
+Future<AudioExtras> _defaultAudioExtras(
+  String bookId, {
+  ValueChanged<AudioToneSet>? onTones,
+}) async {
   final tones = await ApiClient.instance
       .bookTones(bookId)
       .catchError((Object _) => const AudioToneSet());
+  onTones?.call(tones);
   final related = await ApiClient.instance
       .relatedWorks(bookId)
       .catchError((Object _) => const <RelatedWork>[]);
@@ -549,6 +554,10 @@ class _AudioPageState extends State<AudioPage> {
     await _showHomeStyleSheet<void>(
       (sheetContext) => VoiceSettingsSheet(
         selectedId: c._hasFixedTone ? c._bookId : c._toneId,
+        onAutomatic: c._hasFixedTone
+            ? null
+            : () => unawaited(_selectTone('0', replaceContext: sheetContext)),
+        automaticSelected: !c._hasFixedTone && c._automaticTone,
         narrators: _narratorOptions(),
         online: _onlineOptions(),
         onSelect: (option) {
@@ -1242,7 +1251,10 @@ class _AudioPageState extends State<AudioPage> {
     String toneId, {
     BuildContext? replaceContext,
   }) async {
-    if (c._switchingVersion || !c._selectableTone(toneId)) return;
+    if (c._switchingVersion ||
+        (toneId == '0' ? c._hasFixedTone : !c._selectableTone(toneId))) {
+      return;
+    }
     final novel = c._extras.tones.relatedNovel;
     if (c._ttsBookId != c._bookId && novel != null) {
       await _switchBookVersion(
@@ -1255,7 +1267,14 @@ class _AudioPageState extends State<AudioPage> {
       return;
     }
     _popSheet(replaceContext);
-    if (toneId == c._toneId) return;
+    if (toneId == '0' && c._automaticTone) return;
+    if (toneId == c._toneId && toneId != '0') {
+      c._update(() => c._automaticTone = false);
+      c._discardNextAudio();
+      c._syncListenClock();
+      await c._persistProgress();
+      return;
+    }
     await c._openChapter(
       c._index,
       position: c._player?.position ?? c._position.value,
