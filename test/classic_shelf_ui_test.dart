@@ -233,6 +233,34 @@ void main() {
       );
     }
 
+    testWidgets('toolbar pills clip press feedback to the visible capsule', (
+      tester,
+    ) async {
+      final size = const Size(360, 900);
+      await tester.binding.setSurfaceSize(size);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(_app(_style(), size: size));
+      await tester.pumpAndSettle();
+      for (final key in ['shelf-group-chip', 'shelf-layout-picker']) {
+        final button = find.byKey(Key(key));
+        final surface = find.descendant(
+          of: button,
+          matching: find.byType(Material),
+        );
+        final touchRect = tester.getRect(button);
+        final pillRect = tester.getRect(surface);
+        expect(touchRect.height, greaterThanOrEqualTo(48));
+        expect(pillRect.height, lessThan(touchRect.height));
+        expect(tester.widget<Material>(surface).clipBehavior, Clip.antiAlias);
+        final press = await tester.startGesture(touchRect.center);
+        await tester.pump(const Duration(milliseconds: 550));
+        expect(tester.getRect(surface), pillRect);
+        expect(find.text('书架分组：全部书籍'), findsNothing);
+        await press.cancel();
+        await tester.pumpAndSettle();
+      }
+    });
+
     testWidgets(
       'shelf categories stay visible and selected after a style change',
       (tester) async {
