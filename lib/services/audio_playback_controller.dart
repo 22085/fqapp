@@ -355,6 +355,8 @@ class _AudioPlaybackController extends ChangeNotifier
       }
     }();
     final extras = _loadExtrasSafely();
+    AudioExtras? readyExtras;
+    unawaited(extras.then((value) => readyExtras = value));
     final saved = await history;
     final available = await voices;
     if (_closed || generation != _settingsGeneration) return;
@@ -394,16 +396,11 @@ class _AudioPlaybackController extends ChangeNotifier
         if (resolved != null) _mergeToneVoices(resolved, byId);
       }
     }
-    if (resolved == null &&
-        (initialTone == null || initialTone == '0' || initialTone.isEmpty) &&
-        (savedTone == null ||
-            savedTone == '0' ||
-            saved?['automaticTone'] == true)) {
-      try {
-        resolved = await extras.timeout(const Duration(seconds: 3));
-      } catch (_) {}
-      if (_closed || generation != _settingsGeneration) return;
-      if (resolved != null) _mergeToneVoices(resolved, byId);
+    // Voice metadata that is already available can guide the first chapter.
+    // A slow decorations request must not delay a playable default source.
+    if (resolved == null && readyExtras != null) {
+      resolved = readyExtras;
+      _mergeToneVoices(resolved!, byId);
     }
     _update(() {
       if (resolved != null) _extras = resolved;
