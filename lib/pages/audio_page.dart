@@ -554,10 +554,6 @@ class _AudioPageState extends State<AudioPage> {
     await _showHomeStyleSheet<void>(
       (sheetContext) => VoiceSettingsSheet(
         selectedId: c._hasFixedTone ? c._bookId : c._toneId,
-        onAutomatic: c._hasFixedTone
-            ? null
-            : () => unawaited(_selectTone('0', replaceContext: sheetContext)),
-        automaticSelected: !c._hasFixedTone && c._automaticTone,
         narrators: _narratorOptions(),
         online: _onlineOptions(),
         onSelect: (option) {
@@ -1251,8 +1247,7 @@ class _AudioPageState extends State<AudioPage> {
     String toneId, {
     BuildContext? replaceContext,
   }) async {
-    if (c._switchingVersion ||
-        (toneId == '0' ? c._hasFixedTone : !c._selectableTone(toneId))) {
+    if (c._switchingVersion || !c._selectableTone(toneId)) {
       return;
     }
     final novel = c._extras.tones.relatedNovel;
@@ -1267,12 +1262,7 @@ class _AudioPageState extends State<AudioPage> {
       return;
     }
     _popSheet(replaceContext);
-    if (toneId == '0' &&
-        c._automaticTone &&
-        c._preferredToneIds.firstOrNull == c._toneId) {
-      return;
-    }
-    if (toneId == c._toneId && toneId != '0') {
+    if (toneId == c._toneId) {
       c._update(() => c._automaticTone = false);
       c._discardNextAudio();
       c._syncListenClock();

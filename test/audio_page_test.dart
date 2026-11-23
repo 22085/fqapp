@@ -522,39 +522,28 @@ void main() {
     },
   );
 
-  testWidgets('automatic voice can replace a saved manual choice', (
-    tester,
-  ) async {
-    final session = _Session(
-      store: ControlledReaderStore(
-        entry: {
-          'id': 'book',
-          'kind': 'audio',
-          'chapterId': '1',
-          'toneId': '64',
-        },
-      ),
-      extras: (_) async => const AudioExtras(
-        tones: AudioToneSet(
-          ttsTones: [
-            AudioTone(id: '96', title: '多角色对话升级版'),
-            AudioTone(id: '64', title: '成熟大叔音'),
-          ],
+  testWidgets(
+    'the voice sheet shows the automatically selected voice without a separate row',
+    (tester) async {
+      final session = _Session(
+        extras: (_) async => const AudioExtras(
+          tones: AudioToneSet(
+            ttsTones: [
+              AudioTone(id: '96', title: '多角色对话升级版'),
+              AudioTone(id: '64', title: '成熟大叔音'),
+            ],
+          ),
         ),
-      ),
-    );
-    await _mount(tester, session);
-    expect(session.requests, ['1:64']);
-    session.players.first.emitPosition(const Duration(seconds: 23));
-    await tester.ensureVisible(find.byKey(const ValueKey('audio-voice')));
-    await tester.tap(find.byKey(const ValueKey('audio-voice')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('audio-automatic-tone')));
-    await _flush(tester);
-    expect(session.requests, ['1:64', '1:96']);
-    expect(session.players.last.position, const Duration(seconds: 23));
-    expect(session.store.entry?['automaticTone'], isTrue);
-  });
+      );
+      await _mount(tester, session);
+      expect(session.requests, ['1:96']);
+      await tester.ensureVisible(find.byKey(const ValueKey('audio-voice')));
+      await tester.tap(find.byKey(const ValueKey('audio-voice')));
+      await tester.pumpAndSettle();
+      expect(find.text('自动选音色'), findsNothing);
+      expect(find.byKey(const ValueKey('voice_option_96')), findsOneWidget);
+    },
+  );
 
   testWidgets(
     'voice discovery failure uses the default voice and keeps playback available',
