@@ -23,6 +23,13 @@ class DockAutoHide extends ValueNotifier<bool> {
   bool get hidden => value;
 
   /// 喂入壳层 body 冒泡上来的用户拖动通知。
+  ///
+  /// 只接受竖直拖动（横轴 pager/卡片横排忽略）。
+  ///
+  /// 注：#385（嵌套纵向列表也会驱动底栏）暂未在这里过滤：`depth` 没有
+  /// 统一基准（首页 feed 是 0，书架宫格在 TabSwipeArea 的 PageView 里是 1），
+  /// 单一阈值会让其中一套页面失效。真正的修法是页面把主 ScrollController
+  /// 交给壳层，单独 PR 再做。
   void handleUserScroll(UserScrollNotification notification) {
     if (disabledProbe?.call() ?? false) return;
     if (notification.metrics.axis == Axis.horizontal) return;
@@ -82,7 +89,11 @@ class DockRouteReveal {
 }
 
 /// 按控制器状态给 dock 套一层滑入滑出。
-class DockAutoHideSlide extends StatelessWidget {
+///
+/// 做成 StatefulWidget 而不是 StatelessWidget：屏蔽语义/命中用的 Key 必须
+/// instance-scoped（#386）。同一棵树里允许出现多个实例（桌面分栏、抽屉
+/// 预览），固定 ValueKey 会让它们撞 key、把另一份 dock 的屏蔽状态带过来。
+class DockAutoHideSlide extends StatefulWidget {
   const DockAutoHideSlide({
     super.key,
     required this.hide,
@@ -103,36 +114,52 @@ class DockAutoHideSlide extends StatelessWidget {
   /// （main/view.dart 的 AnimatedSlide）。
   static const Duration slideDuration = Duration(milliseconds: 500);
 
+  /// 第 [index] 个实例的语义屏蔽层 Key（测试与多实例定位用）。
+  static Key excludeKeyOf(int index) =>
+      ValueKey('dock-auto-hide-exclude-$index');
+
+  /// 第 [index] 个实例的命中屏蔽层 Key。
+  static Key ignoreKeyOf(int index) => ValueKey('dock-auto-hide-ignore-$index');
+
+  @override
+  State<DockAutoHideSlide> createState() => _DockAutoHideSlideState();
+}
+
+class _DockAutoHideSlideState extends State<DockAutoHideSlide> {
+  static int _nextInstance = 0;
+
+  /// 本实例序号：只用于给两屏蔽层的 Key 去重。
+  late final int _instance = _nextInstance++;
+
   @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<bool>(
-      valueListenable: hide,
+      valueListenable: widget.hide,
       builder: (context, hidden, child) {
         // AnimatedSlide 只平移绘制/命中区，Semantics 节点仍然挂在语义树里；
         // TalkBack/VoiceOver 用户可读到并激活「看不见」的 tab 按钮，产生无
         // 视觉来源的页面切换。hidden 时一并屏蔽语义与指针命中，只保留布局
         // 槽位（extendBody 下 dock 槽位高度不变）。
-        // 注：Key 假设 DockAutoHideSlide 全局单例（RootShell）；若日后出现
-        // 嵌套多实例（如桌面分栏），需改为 instance-scoped key。
         return ExcludeSemantics(
-          key: const ValueKey('dock-auto-hide-exclude'),
+          key: DockAutoHideSlide.excludeKeyOf(_instance),
           excluding: hidden,
           child: IgnorePointer(
-            key: const ValueKey('dock-auto-hide-ignore'),
+            key: DockAutoHideSlide.ignoreKeyOf(_instance),
             ignoring: hidden,
             child: AnimatedSlide(
               offset: Offset(0, hidden ? 1 : 0),
               // 系统「减弱动态效果」或墨水屏下直接落位，不跑 500ms 滑出。
-              duration: MediaQuery.disableAnimationsOf(context) || reduceMotion
+              duration:
+                  MediaQuery.disableAnimationsOf(context) || widget.reduceMotion
                   ? Duration.zero
-                  : slideDuration,
+                  : DockAutoHideSlide.slideDuration,
               curve: Curves.easeInOutCubicEmphasized,
               child: child,
             ),
           ),
         );
       },
-      child: child,
+      child: widget.child,
     );
   }
 }
