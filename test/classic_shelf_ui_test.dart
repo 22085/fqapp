@@ -26,6 +26,7 @@ import 'package:fqapp/services/shelf_view_store.dart';
 import 'package:fqapp/widgets/bookshelf_card.dart';
 import 'package:fqapp/widgets/tab_swipe_area.dart';
 import 'package:fqapp/widgets/home/home_design.dart';
+import 'package:fqapp/widgets/home/home_chip.dart';
 import 'package:fqapp/widgets/shelf/shelf_collection_view.dart';
 import 'package:fqapp/widgets/shelf/shelf_design.dart';
 import 'package:fqapp/widgets/wenku/archive_shelf.dart';
@@ -231,6 +232,32 @@ void main() {
         },
       );
     }
+
+    testWidgets(
+      'shelf categories stay visible and selected after a style change',
+      (tester) async {
+        await _size(tester);
+        final style = _style();
+        await tester.pumpWidget(_app(style));
+        await tester.pumpAndSettle();
+        const kinds = ['all', 'book', 'manga', 'video', 'manju', 'audio'];
+        final audio = find.byKey(const Key('library-shelf-kind-audio'));
+        await tester.tap(audio);
+        await tester.pumpAndSettle();
+        expect(tester.widget<HomeChip>(audio).selected, isTrue);
+
+        style.value = const AppStyleTokens.archive();
+        await tester.pumpAndSettle();
+        for (final kind in kinds) {
+          expect(
+            find.byKey(Key('library-shelf-kind-$kind')).hitTestable(),
+            findsOneWidget,
+          );
+        }
+        expect(tester.widget<HomeChip>(audio).selected, isTrue);
+        expect(tester.takeException(), isNull);
+      },
+    );
 
     for (final initial in [0, 2]) {
       for (final swipe in [false, true]) {
