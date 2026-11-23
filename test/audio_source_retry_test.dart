@@ -143,7 +143,6 @@ void main() {
     ]);
     players.first.emitCompleted();
     await tester.pump();
-    await tester.pump(const Duration(seconds: 3));
     await _pumpUntil(tester, () => players.last.isPlaying);
     expect(players, hasLength(2));
     expect(players.first.disposed, isTrue);

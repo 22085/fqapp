@@ -123,11 +123,6 @@ class _AudioPlaybackController extends ChangeNotifier
   /// 睡眠定时选的是「听完本章」而不是分钟档（官方 `cip`）。
   bool _sleepAtChapterEnd = false;
 
-  /// 连播倒计时的 3 秒窗口（官方 `te`「%s后播放下一集」）。
-  Timer? _advanceTimer;
-  int? _advanceRemaining;
-  final ValueNotifier<int?> _advanceCountdown = ValueNotifier<int?>(null);
-
   /// 跳过片头/片尾（按书，打开章节时读入）。
   AudioSkipPoints _skipPoints = AudioSkipPoints.none;
 
@@ -575,7 +570,6 @@ class _AudioPlaybackController extends ChangeNotifier
     _visibilityResumeGeneration = null;
     if (_closed) return;
     _cancelTrackRecovery(this);
-    _cancelAdvanceCountdown(this);
     if (!_wantPlay) return;
     _update(() => _wantPlay = false);
     _listenTime.stop();
@@ -617,7 +611,6 @@ class _AudioPlaybackController extends ChangeNotifier
       // 若后台听书开关关闭，切后台自动暂停播放并移除前台通知。
       if (!AudioPreferences.instance.backgroundPlayback.value ||
           (isLinuxDesktop && DesktopSystemSession.instance.suspended)) {
-        _cancelAdvanceCountdown(this);
         if (_wantPlay) {
           final resume = isLinuxDesktop;
           _visibilityPause = _pauseForOtherMedia();
@@ -655,8 +648,11 @@ class _AudioPlaybackController extends ChangeNotifier
   /// 不完、锁屏卡片也被系统收回。后台改为复用当前播放器 [NativePlayer.reopen]。
   Future<void> _chapterSwitches = Future<void>.value();
 
-  Future<void> _switchChapter(int target) {
-    final operation = _chapterSwitches.then((_) => _switchChapterNow(target));
+  Future<void> _switchChapter(int target, {int? expectedGeneration}) {
+    final operation = _chapterSwitches.then((_) async {
+      if (expectedGeneration != null && !_current(expectedGeneration)) return;
+      await _switchChapterNow(target);
+    });
     _chapterSwitches = operation.catchError((Object _) {});
     return operation;
   }
@@ -704,7 +700,6 @@ class _AudioPlaybackController extends ChangeNotifier
     final trackCancellation = Completer<void>();
     _trackCancellation = trackCancellation;
     final trackCancelled = trackCancellation.future;
-    _cancelAdvanceCountdown(this);
     ++_seekGeneration;
     _saveTimer?.cancel();
     _listenTime.stop();
@@ -800,9 +795,7 @@ class _AudioPlaybackController extends ChangeNotifier
   }) async {
     IosAudioSession.cancelInterruption(_mediaOwner);
     if (_closed || index < 0 || index >= _chapters.length) return;
-    // 任何换章动作都意味着用户自己接管了，倒计时窗口必须作废。
     _resetTrackRecovery(this);
-    _cancelAdvanceCountdown(this);
     final generation = ++_generation;
     _cancelTrackRequests();
     final trackCancellation = Completer<void>();
@@ -1535,7 +1528,6 @@ class _AudioPlaybackController extends ChangeNotifier
           '${error is BackendRequestAborted ? ' timed_out=${error.timedOut}' : ''}',
     );
     _discardNextAudio();
-    _cancelAdvanceCountdown(this);
     _resetTrackRecovery(this);
     _cancelTrackRequests();
     ListeningSession.instance.clear();
@@ -1587,7 +1579,6 @@ class _AudioPlaybackController extends ChangeNotifier
     int generation, {
     bool forInterruption = false,
   }) async {
-    _cancelAdvanceCountdown(this);
     _cancelTrackRecovery(this);
     _publishListeningSession(playing: false);
     try {
@@ -1606,7 +1597,6 @@ class _AudioPlaybackController extends ChangeNotifier
     _visibilityResumeGeneration = null;
     final player = _player;
     if (!_ready || player == null) return;
-    _cancelAdvanceCountdown(this);
     final generation = _generation;
     if (_wantPlay) {
       _update(() => _wantPlay = false);
@@ -1638,14 +1628,12 @@ class _AudioPlaybackController extends ChangeNotifier
   }
 
   void _previewSeek(double position) {
-    _cancelAdvanceCountdown(this);
     _seekPreview.value = position;
   }
 
   Future<void> _seekTo(Duration position) async {
     final player = _player;
     if (!_ready || player == null) return;
-    _cancelAdvanceCountdown(this);
     final generation = _generation;
     final seekGeneration = ++_seekGeneration;
     final target = _boundedPosition(position, _duration);
@@ -1944,7 +1932,6 @@ class _AudioPlaybackController extends ChangeNotifier
     if (_closed) return;
     _closed = true;
     _discardNextAudio();
-    _cancelAdvanceCountdown(this);
     _resetTrackRecovery(this);
     _unregisterFairMemoryFlush?.call();
     _unregisterFairMemoryFlush = null;
