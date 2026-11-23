@@ -5,14 +5,16 @@
 
 mod common;
 
-use common::{build_server, pool_json, query_map, MockReply, MockUpstream, TempDir};
+use common::{
+    build_server, identity_setup_reply, pool_json, query_map, MockReply, MockUpstream, TempDir,
+    ANON_PLAYER_PATH, LEGACY_V5_PLAYER_PATH,
+};
 use fqapi_core::dispatch::{dispatch, Request};
 use fqapi_core::endpoints::Server;
 use fqapi_core::upstream::reset_playback_route_state_for_tests;
 use md5::{Digest, Md5};
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 
 const ALLOWED_URL: &str = "https://example.invalid/h264.mp4";
 const REJECTED_URL: &str = "https://example.invalid/bytevc2.mp4";
@@ -25,6 +27,17 @@ fn exclusive() -> MutexGuard<'static, ()> {
     let guard = ROUTES.lock().unwrap_or_else(|error| error.into_inner());
     reset_playback_route_state_for_tests();
     guard
+}
+
+fn with_identity_setup<F>(responder: F) -> impl Fn(&common::Recorded) -> MockReply
+where
+    F: Fn(&common::Recorded) -> MockReply + Send + Sync + 'static,
+{
+    move |request| identity_setup_reply(request).unwrap_or_else(|| responder(request))
+}
+
+fn business_rejection() -> MockReply {
+    MockReply::json(json!({"code": 100103, "data": {}}))
 }
 
 fn response_shapes(variants: Vec<Value>) -> Vec<(&'static str, Value)> {
@@ -317,14 +330,7 @@ async fn successful_download_keeps_the_local_source_contract() {
 #[tokio::test]
 async fn stream_variants_merge_the_fallback_list_so_the_top_tier_survives() {
     let _guard = exclusive();
-    let v5_calls = Arc::new(AtomicUsize::new(0));
-    let v5_calls_for_mock = Arc::clone(&v5_calls);
-    let upstream = MockUpstream::start(move |req| {
-        if req.path == "/novel/player/multi_video_model/player/v1"
-            && v5_calls_for_mock.fetch_add(1, Ordering::SeqCst) == 0
-        {
-            return MockReply::status(503);
-        }
+    let upstream = MockUpstream::start(with_identity_setup(|req| {
         if req.path == "/fallback" {
             return MockReply::json(json!({"video_info": {"data": {
                 "key_seed": "AAAA",
@@ -338,17 +344,20 @@ async fn stream_variants_merge_the_fallback_list_so_the_top_tier_survives() {
                 }
             }}}));
         }
-        MockReply::json(json!({"data": {"video_model": {
-            "key_seed": "AAAA",
-            "fallback_api": "https://example.invalid/fallback",
-            "video_list": {
-                "video_1": {"main_url": "https://example.invalid/360.mp4",
-                    "vwidth": 360, "vheight": 640, "codec_type": "bytevc1", "spade_a": SPADE_A},
-                "video_2": {"main_url": "https://example.invalid/720.mp4",
-                    "vwidth": 720, "vheight": 1280, "codec_type": "bytevc1", "spade_a": SPADE_A}
-            }
-        }}}))
-    })
+        if req.path == ANON_PLAYER_PATH {
+            return MockReply::json(json!({"data": {"video_model": {
+                "key_seed": "AAAA",
+                "fallback_api": "https://example.invalid/fallback",
+                "video_list": {
+                    "video_1": {"main_url": "https://example.invalid/360.mp4",
+                        "vwidth": 360, "vheight": 640, "codec_type": "bytevc1", "spade_a": SPADE_A},
+                    "video_2": {"main_url": "https://example.invalid/720.mp4",
+                        "vwidth": 720, "vheight": 1280, "codec_type": "bytevc1", "spade_a": SPADE_A}
+                }
+            }}}));
+        }
+        MockReply::status(200)
+    }))
     .await;
     let dir = TempDir::new("video-variant-merge");
     let server = build_server(&dir, Some(upstream.origin.clone()), &[], &[], &pool_json(5)).await;
@@ -372,35 +381,41 @@ async fn stream_variants_merge_the_fallback_list_so_the_top_tier_survives() {
     );
     let requests = upstream.requests();
     assert!(requests.iter().any(|r| r.path == "/fallback"));
-    let v5_requests: Vec<_> = requests
+    assert!(!requests
         .iter()
-        .filter(|r| r.path == "/novel/player/multi_video_model/player/v1")
+        .any(|request| request.path == LEGACY_V5_PLAYER_PATH));
+    let anon_requests: Vec<_> = requests
+        .iter()
+        .filter(|request| request.path == ANON_PLAYER_PATH)
         .collect();
-    assert_eq!(v5_requests.len(), 2);
-    assert!(v5_requests
-        .iter()
-        .all(|request| !query_map(&request.query).contains_key("_playback_purpose")));
-    assert_ne!(v5_requests[0].query, v5_requests[1].query);
-    let v5 = v5_requests[1];
-    assert_eq!(v5.method, "POST");
     assert_eq!(
-        query_map(&v5.query).get("aid").map(String::as_str),
-        Some("8662")
+        anon_requests.len(),
+        1,
+        "a prefetch gets exactly one anonymous playback attempt"
     );
-    assert_eq!(v5.header("content-encoding"), Some("gzip"));
+    let anon = anon_requests[0];
+    assert_eq!(anon.method, "POST");
+    let anon_query = query_map(&anon.query);
+    assert_eq!(anon_query.get("aid").map(String::as_str), Some("8662"));
+    assert!(anon_query.contains_key("klink_egdi"));
+    assert!(!anon_query.contains_key("_playback_purpose"));
+    assert_eq!(anon.header("content-encoding"), Some("gzip"));
     assert_eq!(
-        v5.header("content-type"),
-        Some("application/json; charset=utf-8")
+        anon.header("content-type"),
+        Some("application/json; charset=utf-8"),
     );
-    assert!(v5.header("x-medusa").is_some());
-    assert!(v5.header("x-argus").is_none());
-    let expected_stub = hex::encode_upper(Md5::digest(&v5.body));
-    assert_eq!(v5.header("x-ss-stub"), Some(expected_stub.as_str()));
-    let plain = fqapi_core::crypto::gunzip(&v5.body).expect("gzip V5 body");
+    for header in ["x-medusa", "x-helios", "x-argus", "x-khronos"] {
+        assert!(anon.header(header).is_some(), "anonymous header {header}");
+    }
+    let expected_stub = hex::encode_upper(Md5::digest(&anon.body));
+    assert_eq!(anon.header("x-ss-stub"), Some(expected_stub.as_str()));
+    let plain = fqapi_core::crypto::gunzip(&anon.body).expect("gzip V5 body");
     let wire: Value = serde_json::from_slice(&plain).expect("V5 JSON body");
     assert!(wire.get("_playback_purpose").is_none());
     assert_eq!(wire["mixed_video_id_map"]["1004"], json!(["episode"]));
     assert_eq!(wire["dr_scene"], "player");
+    assert_eq!(wire["video_id"], json!("episode"));
+    assert_eq!(wire["content_type"], json!(1));
 }
 
 /// The fallback list's low tiers are often bytevc2. Merging must not smuggle
@@ -462,13 +477,15 @@ async fn the_single_episode_model_door_parses_both_video_model_shapes() {
     for (name, payload) in [("object", object), ("string", string)] {
         reset_playback_route_state_for_tests();
         let reply = payload.clone();
-        let upstream = MockUpstream::start(move |req| {
-            if req.path == "/novel/player/multi_video_model/player/v1" {
+        let upstream = MockUpstream::start(with_identity_setup(move |req| {
+            if req.path == ANON_PLAYER_PATH {
+                business_rejection()
+            } else if req.path == LEGACY_V5_PLAYER_PATH {
                 MockReply::status(200)
             } else {
                 MockReply::json(reply.clone())
             }
-        })
+        }))
         .await;
         let dir = TempDir::new("video-model-door");
         let server =
@@ -479,6 +496,10 @@ async fn the_single_episode_model_door_parses_both_video_model_shapes() {
         assert_eq!(body["video_url"], ALLOWED_URL, "{name}: {body}");
 
         let requests = upstream.requests();
+        let v5_request = requests
+            .iter()
+            .find(|request| request.path == LEGACY_V5_PLAYER_PATH)
+            .unwrap_or_else(|| panic!("{name}: the legacy v5 door must be asked"));
         let model_request = requests
             .iter()
             .find(|request| request.path == "/novel/player/video_model/v1/")
@@ -515,11 +536,10 @@ async fn the_single_episode_model_door_parses_both_video_model_shapes() {
             }),
             "{name}"
         );
-        let first = requests.first().expect("initial door");
         assert_eq!(
-            query_map(&first.query).get("device_id"),
+            query_map(&v5_request.query).get("device_id"),
             query_map(&model_request.query).get("device_id"),
-            "the single-episode door must reuse the initial identity"
+            "the single-episode door must reuse the legacy v5 pooled identity"
         );
         for header in ["x-medusa", "x-helios", "x-khronos"] {
             assert!(model_request.header(header).is_some(), "{header}");
