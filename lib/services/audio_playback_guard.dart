@@ -18,6 +18,7 @@ void _applySleepTimerChoice(
   final atChapterEnd = next.endOfChapter;
   if (c._sleepAtChapterEnd != atChapterEnd) {
     c._sleepAtChapterEnd = atChapterEnd;
+    if (atChapterEnd) c._discardNextAudio();
     unawaited(AudioPreferences.instance.setSleepAtChapterEnd(atChapterEnd));
   }
 

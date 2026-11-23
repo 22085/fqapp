@@ -90,6 +90,69 @@ void main() {
     ], reason: '回退音色的 404 也只请求一次');
   });
 
+  testWidgets('the next chapter buffers and falls back before auto-advance', (
+    tester,
+  ) async {
+    final players = <ControlledNativePlayer>[];
+    _sourceResponse = (request) async {
+      final item = request.url.pathSegments.last;
+      final tone = request.url.queryParameters['tone_id'];
+      if (item == '2' && tone != '64') {
+        return _json({'code': 101000, 'message': 'NO_THIS_TONE'}, 200);
+      }
+      return _json(
+        _playinfoPayload(item, url: 'https://cdn.example/$item-$tone.m4a'),
+        200,
+      );
+    };
+    await _mount(
+      tester,
+      players: players,
+      chapters: [
+        Chapter(itemId: '1', title: '第1章', volumeName: ''),
+        Chapter(itemId: '2', title: '第2章', volumeName: ''),
+      ],
+      extras: const AudioExtras(
+        tones: AudioToneSet(
+          ttsTones: [
+            AudioTone(id: '64', title: '成熟大叔音'),
+            AudioTone(id: '74', title: '成熟大叔音升级版'),
+            AudioTone(id: '57', title: '多角色对话'),
+            AudioTone(id: '96', title: '多角色对话升级版'),
+          ],
+        ),
+      ),
+    );
+    await _pumpUntil(
+      tester,
+      () => players.isNotEmpty && players.first.isPlaying,
+    );
+    players.first.emitPosition(const Duration(seconds: 2));
+    await _pumpUntil(
+      tester,
+      () => players.length == 2 && players.last.isCreated,
+    );
+    expect(players.first.isPlaying, isTrue);
+    expect(players.last.isPlaying, isFalse);
+    expect(_sourceRequests.map((url) => url.queryParameters['tone_id']), [
+      '96',
+      '96',
+      '57',
+      '74',
+      '64',
+    ]);
+    players.first.emitCompleted();
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 3));
+    await _pumpUntil(tester, () => players.last.isPlaying);
+    expect(players, hasLength(2));
+    expect(players.first.disposed, isTrue);
+    expect(players.last.calls.where((call) => call.startsWith('create:')), [
+      'create:https://cdn.example/2-64.m4a',
+    ]);
+    expect(_sourceRequests, hasLength(5));
+  });
+
   testWidgets('a 5xx audio source is retried and then plays', (tester) async {
     final sourceAttempts = <String, int>{};
     final timePointAttempts = <String, int>{};
@@ -301,6 +364,7 @@ Map<String, dynamic> _playinfoPayload(
 Widget _app(
   List<ControlledNativePlayer> players, {
   List<Chapter>? chapters,
+  AudioExtras extras = const AudioExtras(),
   SubtitleLoader? subtitleLoader,
   TimePointLoader? timePointLoader,
 }) => MaterialApp(
@@ -310,7 +374,7 @@ Widget _app(
     chapters: chapters ?? [Chapter(itemId: '1', title: '第1章', volumeName: '')],
     historyStore: ControlledReaderStore(),
     voicesLoader: () async => const [AudioVoice(id: '1', label: '音色一')],
-    extrasLoader: (_) async => const AudioExtras(),
+    extrasLoader: (_) async => extras,
     subtitleLoader: subtitleLoader ?? (_, _) async => SubtitleTrack.empty,
     timePointLoader: timePointLoader ?? (_, _) async => AudioTimeTrack.empty,
     excerptLoader: (_) async => null,
@@ -327,6 +391,7 @@ Future<void> _mount(
   WidgetTester tester, {
   List<ControlledNativePlayer>? players,
   List<Chapter>? chapters,
+  AudioExtras extras = const AudioExtras(),
   SubtitleLoader? subtitleLoader,
   TimePointLoader? timePointLoader,
 }) async {
@@ -340,6 +405,7 @@ Future<void> _mount(
     _app(
       players ?? [],
       chapters: chapters,
+      extras: extras,
       subtitleLoader: subtitleLoader,
       timePointLoader: timePointLoader,
     ),

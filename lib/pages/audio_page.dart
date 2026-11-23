@@ -1570,20 +1570,14 @@ class _AudioPageState extends State<AudioPage> {
                               ? null
                               : (enabled) {
                                   if (!mounted || c._loading) return;
-                                  c._update(() => c._autoAdvance = enabled);
-                                  c._publishMoreState();
-                                  unawaited(c._persistProgress());
+                                  c._setAutoAdvance(enabled);
                                 },
                         ),
                         onTap: snapshot.loading
                             ? null
                             : () {
                                 if (!mounted || c._loading) return;
-                                c._update(
-                                  () => c._autoAdvance = !snapshot.autoAdvance,
-                                );
-                                c._publishMoreState();
-                                unawaited(c._persistProgress());
+                                c._setAutoAdvance(!snapshot.autoAdvance);
                               },
                       ),
                       Divider(

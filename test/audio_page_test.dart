@@ -602,7 +602,7 @@ void main() {
       await tester.ensureVisible(find.byKey(const ValueKey('audio-voice')));
       await tester.tap(find.byKey(const ValueKey('audio-voice')));
       await tester.pumpAndSettle();
-      expect(find.text('多角色对话升级版'), findsOneWidget);
+      expect(find.text('多角色对话升级版'), findsNWidgets(2));
     },
   );
 

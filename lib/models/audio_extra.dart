@@ -112,6 +112,23 @@ class AudioToneSet {
     return null;
   }
 
+  /// Listening order for the supported dialogue and narrator variants.
+  List<AudioTone> get preferredListeningTones {
+    const groups = [
+      {'多角色对话升级版', '多角色对话升级'},
+      {'多角色对话经典版', '多角色对话经典', '多角色对话'},
+      {'成熟大叔升级版', '成熟大叔音升级版', '成熟大叔升级', '成熟大叔音升级'},
+      {'成熟大叔', '成熟大叔音'},
+    ];
+    return [
+      for (final names in groups)
+        for (final tone in ttsTones)
+          if (tone.id.trim().isNotEmpty &&
+              names.contains(tone.title.replaceAll(RegExp(r'[\s（）()]'), '')))
+            tone,
+    ];
+  }
+
   static AudioToneSet fromPayload(Map<String, dynamic> payload) {
     final data = _resolveData(payload);
     if (data == null) return const AudioToneSet();

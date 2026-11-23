@@ -138,23 +138,60 @@ class _AudioPlaybackController extends ChangeNotifier
   bool _toneSwitchedForChapter = false;
   bool _inShelf = false;
   bool _switchingVersion = false;
-  final Map<String, AudioSource> _audioSourceCache = {};
+  _NextAudioChapter? _nextAudio;
+  bool _automaticTone = true;
   Timer? _sleepTimerTick;
+
+  void _discardNextAudio() {
+    final next = _nextAudio;
+    _nextAudio = null;
+    if (next != null) unawaited(next.dispose());
+  }
+
+  void _setAutoAdvance(bool enabled) {
+    _update(() => _autoAdvance = enabled);
+    if (enabled) {
+      _syncListenClock();
+    } else {
+      _discardNextAudio();
+    }
+    _publishMoreState();
+    unawaited(_persistProgress());
+  }
 
   void _prefetchNextAudioChapter() {
     if (request.sourceLoader != null ||
         !_autoAdvance ||
-        _index + 1 >= _chapters.length) {
+        _position.value < const Duration(seconds: 1) ||
+        _sleepAtChapterEnd ||
+        _index + 1 >= _chapters.length ||
+        _nextAudio != null) {
       return;
     }
-    final nextId = _chapters[_index + 1].itemId;
-    final cacheKey = '$nextId|$_toneId';
-    if (_audioSourceCache.containsKey(cacheKey)) return;
-    unawaited(
-      _loadSourceWithRetry(
-        nextId,
-      ).catchError((Object _) => AudioSource(itemId: nextId, url: '')),
-    );
+    final itemId = _chapters[_index + 1].itemId;
+    final toneId = _automaticTone ? '0' : _toneId;
+    final next = _NextAudioChapter(itemId, toneId);
+    _nextAudio = next;
+    next.ready = _prepareNextAudio(next);
+  }
+
+  Future<AudioSource?> _prepareNextAudio(_NextAudioChapter next) async {
+    try {
+      final source = await _loadSourceWithRetry(next.itemId, next.toneId);
+      if (next.cancelled) return null;
+      _validateAudioSource(source, next.itemId);
+      final player = next.player =
+          request.playerFactory?.call() ?? NativePlayer(audioOnly: true);
+      await player.create(source.url, source.keyHex);
+      if (player.lastError != null || next.cancelled) {
+        await next.dispose();
+        return null;
+      }
+      return source;
+    } catch (_) {
+      await next.dispose();
+      return null;
+    }
   }
 
   /// Resolves the listening-page decorations. See [AudioExtras].
@@ -357,16 +394,29 @@ class _AudioPlaybackController extends ChangeNotifier
         if (resolved != null) _mergeToneVoices(resolved, byId);
       }
     }
+    if (resolved == null &&
+        (initialTone == null || initialTone == '0' || initialTone.isEmpty) &&
+        (savedTone == null ||
+            savedTone == '0' ||
+            saved?['automaticTone'] == true)) {
+      try {
+        resolved = await extras.timeout(const Duration(seconds: 3));
+      } catch (_) {}
+      if (_closed || generation != _settingsGeneration) return;
+      if (resolved != null) _mergeToneVoices(resolved, byId);
+    }
     _update(() {
       if (resolved != null) _extras = resolved;
       _voices = List.unmodifiable(byId.values);
       _restoredLocalVoice = savedToneDownloaded ? byId[savedTone] : null;
       if (generation == 1) {
         if (savedTone is String && byId.containsKey(savedTone)) {
+          _automaticTone = saved?['automaticTone'] == true || savedTone == '0';
           _toneId = savedTone;
         }
         if (initialTone != null && initialTone.isNotEmpty) {
           _toneId = initialTone;
+          _automaticTone = initialTone == '0';
         }
         if (savedRate is num && isSupportedRate(savedRate.toDouble())) {
           _rate = savedRate.toDouble();
@@ -378,6 +428,7 @@ class _AudioPlaybackController extends ChangeNotifier
       }
       if (forceToneId != null && forceToneId.isNotEmpty) {
         _toneId = forceToneId;
+        _automaticTone = forceToneId == '0';
       }
       if (saved?['autoAdvance'] case final bool enabled) {
         _autoAdvance = enabled;
@@ -641,10 +692,14 @@ class _AudioPlaybackController extends ChangeNotifier
     _publishMoreState();
     unawaited(_loadExcerpt(_chapters[index].itemId));
     NativePlayer? candidate;
+    _NextAudioChapter? claimed;
     try {
       await _settingsReady;
       if (!_current(generation)) return;
-      if (toneId != null) _toneId = toneId;
+      if (toneId != null) {
+        _toneId = toneId;
+        _automaticTone = toneId == '0';
+      }
       _skipOutroFired = false;
       _toneSwitchedForChapter = false;
       Map<String, dynamic>? saved;
@@ -673,23 +728,44 @@ class _AudioPlaybackController extends ChangeNotifier
           completed ??
           (position == null && sameChapter && saved?['completed'] == true);
       final itemId = _chapters[index].itemId;
-      final source = await _loadSourceWithRetry(itemId, refresh: refreshSource);
-      if (!_current(generation)) return;
-      final uri = Uri.tryParse(source.url);
-      // 离线命中给的是 `file://<path>`：本地文件桥不经 HTTP，没有 host。
-      final isLocalFile = uri != null && uri.scheme == 'file';
-      if (source.itemId != itemId ||
-          uri == null ||
-          !(isLocalFile || const ['https', 'http'].contains(uri.scheme)) ||
-          (!isLocalFile && uri.host.isEmpty)) {
-        throw const FormatException('Invalid audio source');
+      final lookupTone = _automaticTone ? '0' : _toneId;
+      final next = _nextAudio;
+      if (!refreshSource &&
+          next != null &&
+          next.itemId == itemId &&
+          next.toneId == lookupTone) {
+        claimed = next;
+        _nextAudio = null;
+      } else {
+        _discardNextAudio();
       }
+      final prepared = await claimed?.ready;
+      if (claimed != null) await released;
+      if (!_current(generation)) return;
+      final warmedPlayer = claimed?.player;
+      final reuse =
+          prepared != null &&
+          warmedPlayer != null &&
+          warmedPlayer.lastError == null;
+      final source = reuse
+          ? prepared
+          : await _loadSourceWithRetry(
+              itemId,
+              lookupTone,
+              refresh: refreshSource,
+            );
+      _validateAudioSource(source, itemId);
+      if (!_current(generation)) return;
+      _toneSwitchedForChapter =
+          lookupTone != '0' && source.toneId != lookupTone;
       await released;
       if (!_current(generation)) return;
-      final player = candidate =
-          request.playerFactory?.call() ?? NativePlayer(audioOnly: true);
+      final player = candidate = reuse
+          ? warmedPlayer
+          : request.playerFactory?.call() ?? NativePlayer(audioOnly: true);
+      if (reuse) claimed = null;
       _player = player;
-      await player.create(source.url, source.keyHex);
+      if (!reuse) await player.create(source.url, source.keyHex);
       if (!_current(generation, player)) {
         await player.dispose();
         return;
@@ -806,85 +882,78 @@ class _AudioPlaybackController extends ChangeNotifier
       } else {
         await candidate?.dispose();
       }
+    } finally {
+      await claimed?.dispose();
     }
   }
 
-  /// Fetches one chapter's audio source.
-  ///
-  /// The backend handles HTTP authentication failures and transient transport
-  /// retries. Only recoverable network failures are retried here (see
-  /// [isTransientNetworkFailure]). An injected loader is never multiplied.
-  ///
-  /// A pure-TTS book has no default voice: the playinfo endpoint answers
-  /// NO_THIS_TONE for tone 0, so the first selectable voice is retried once.
+  static void _validateAudioSource(AudioSource source, String itemId) {
+    final uri = Uri.tryParse(source.url);
+    if (source.itemId != itemId ||
+        uri == null ||
+        (uri.scheme != 'file' &&
+            (!const ['https', 'http'].contains(uri.scheme) ||
+                uri.host.isEmpty))) {
+      throw const FormatException('Invalid audio source');
+    }
+  }
+
   Future<AudioSource> _loadSourceWithRetry(
-    String itemId, {
+    String itemId,
+    String toneId, {
     bool refresh = false,
   }) async {
-    final generation = _generation;
-    // 已下载的章节直接命中本地文件：离线可播，在线也不重复拉流。本地命中
-    // 排在注入 loader 之前，测试才能覆盖「离线优先」这条真实顺序。
-    final local = await _localSource(itemId, _toneId);
-    if (local != null) {
-      AppLog.d('audio', 'event=source origin=local');
-      return local;
-    }
-    final loader = request.sourceLoader;
-    if (loader != null) {
-      return loader(
-        itemId,
-        toneId: _toneId,
-      ).timeout(const Duration(seconds: 30));
-    }
-    final cacheKey = '$itemId|$_toneId';
-    // A failed CDN address must not survive an explicit user retry. Local
-    // downloads remain authoritative; this only invalidates the online model.
-    if (refresh) {
-      _audioSourceCache.removeWhere((key, _) => key.startsWith('$itemId|'));
-    }
-    final cached = _audioSourceCache[cacheKey];
-    if (cached != null) {
-      AppLog.d('audio', 'event=source origin=cache');
-      return cached;
-    }
+    final bookId = _bookId;
+    final preferred = _hasFixedTone
+        ? const <String>[]
+        : _extras.tones.preferredListeningTones.map((tone) => tone.id);
+    final fallback = _hasFixedTone
+        ? _extras.tones.narratorTones.firstOrNull?.id
+        : _firstSelectableTone();
+    final candidates = <String>{
+      if (toneId != '0') toneId,
+      ...preferred,
+      if (toneId == '0') '0',
+      ?fallback,
+    };
     AppLog.d('audio', 'event=source origin=network refresh=$refresh');
-    final toneId = _toneId;
-    AudioSource result;
-    try {
-      result = await _fetchSource(itemId, toneId);
-    } on ApiException catch (error) {
-      if (toneId != '0' ||
-          !error.message.contains('NO_THIS_TONE') ||
-          !_current(generation)) {
-        rethrow;
+    ApiException? unavailable;
+    for (final tone in candidates) {
+      final local = await _localSource(itemId, tone);
+      if (local != null) {
+        AppLog.d('audio', 'event=source origin=local');
+        return local;
       }
-      final fallback = _firstSelectableTone();
-      if (fallback == null) rethrow;
-      final tone = fallback;
-      _toneSwitchedForChapter = true;
-      result = await _fetchSource(itemId, tone);
-    }
-    // A prefetch from the previous playback generation must not repopulate
-    // the cache after an explicit retry or a chapter change.
-    if (_current(generation)) {
-      _audioSourceCache[cacheKey] = result;
-      while (_audioSourceCache.length > 5) {
-        _audioSourceCache.remove(_audioSourceCache.keys.first);
+      try {
+        final loader = request.sourceLoader;
+        return await (loader == null
+            ? _fetchSource(bookId, itemId, tone)
+            : loader(
+                itemId,
+                toneId: tone,
+              ).timeout(const Duration(seconds: 30)));
+      } on ApiException catch (error) {
+        if (!error.message.contains('NO_THIS_TONE')) rethrow;
+        unavailable = error;
       }
     }
-    return result;
+    throw unavailable!;
   }
 
   /// 默认音色与换音色回退共用同一套重试策略。每次尝试最多等 30 秒；超时、
-  /// 404 和业务错误码（NO_THIS_TONE、审核失败）不在这里重复请求；鉴权
-  /// 失败由后端处理。只有网络中断、HTTP 408/429/5xx 值得再来一次。
-  Future<AudioSource> _fetchSource(String itemId, String toneId) =>
-      retryTransient(
-        () => ApiClient.instance
-            .audioSource(itemId, bookId: _bookId, toneId: toneId)
-            .timeout(const Duration(seconds: 30)),
-        shouldRetry: isTransientNetworkFailure,
-      );
+  /// 404/403 和业务错误码（NO_THIS_TONE、审核失败）再试也是同一个结果，
+  /// 只有网络中断、HTTP 408/429/5xx 值得再来一次——否则一次失败最坏要拖
+  /// 近三分钟才告诉用户。
+  Future<AudioSource> _fetchSource(
+    String bookId,
+    String itemId,
+    String toneId,
+  ) => retryTransient(
+    () => ApiClient.instance
+        .audioSource(itemId, bookId: bookId, toneId: toneId)
+        .timeout(const Duration(seconds: 30)),
+    shouldRetry: isTransientNetworkFailure,
+  );
 
   /// 离线命中：当前音色下这一章已下载完成时直接用本地文件。
   ///
@@ -1164,6 +1233,9 @@ class _AudioPlaybackController extends ChangeNotifier
         if (!_current(generation, player)) return;
         // Notifier-only: the 5Hz tick rebuilds the progress row, not the page.
         _position.value = _boundedPosition(position, _duration);
+        if (player.playing && !player.buffering && _wantPlay && !_loading) {
+          _prefetchNextAudioChapter();
+        }
         _publishReadAlong();
         // 片尾跳过：进入尾部区间就按「本章播完」处理，复用同一条完成路径，
         // 用 _skipOutroFired 挡住重复触发。
@@ -1274,6 +1346,7 @@ class _AudioPlaybackController extends ChangeNotifier
           ? position.inMilliseconds / duration.inMilliseconds
           : 0.0,
       'toneId': _toneId,
+      'automaticTone': _automaticTone,
       'rate': _rate,
       'autoAdvance': _autoAdvance,
       'inShelf': _inShelf,
@@ -1319,6 +1392,7 @@ class _AudioPlaybackController extends ChangeNotifier
           '${error is NativePlaybackException ? ' native=${error.errorCode} http=${error.httpStatusCode}' : ''}'
           '${error is BackendRequestAborted ? ' timed_out=${error.timedOut}' : ''}',
     );
+    _discardNextAudio();
     _cancelAdvanceCountdown(this);
     _resetTrackRecovery(this);
     _cancelTrackRequests();
@@ -1570,6 +1644,7 @@ class _AudioPlaybackController extends ChangeNotifier
     _cancelTrackRecovery(this);
     _update(() => _wantPlay = false);
     _publishListeningSession(playing: false);
+    _discardNextAudio();
     final suspendedGeneration = ++_generation;
     _cancelTrackRequests();
     ++_seekGeneration;
@@ -1615,6 +1690,7 @@ class _AudioPlaybackController extends ChangeNotifier
       final start = _chapters.isEmpty ? 0 : _narratorChapterIndex(chapters);
       await _persistProgress();
       if (!_current(generation)) return;
+      _discardNextAudio();
       generation = ++_generation;
       _resetTrackRecovery(this);
       _cancelTrackRequests();
@@ -1714,6 +1790,7 @@ class _AudioPlaybackController extends ChangeNotifier
   Future<void> _close() async {
     if (_closed) return;
     _closed = true;
+    _discardNextAudio();
     _cancelAdvanceCountdown(this);
     _resetTrackRecovery(this);
     _unregisterFairMemoryFlush?.call();
@@ -1745,5 +1822,26 @@ class _AudioPlaybackController extends ChangeNotifier
     await Future.wait([saved, released]);
     // Views/sheets may still be detaching during close; their listenables
     // remain readable until they release this controller for collection.
+  }
+}
+
+class _NextAudioChapter {
+  _NextAudioChapter(this.itemId, this.toneId);
+
+  final String itemId;
+  final String toneId;
+  late Future<AudioSource?> ready;
+  NativePlayer? player;
+  bool cancelled = false;
+
+  Future<void> dispose() async {
+    cancelled = true;
+    final unused = player;
+    player = null;
+    try {
+      await unused?.dispose();
+    } catch (_) {
+      // The native player may already have released a failed allocation.
+    }
   }
 }
