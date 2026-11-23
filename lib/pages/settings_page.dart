@@ -151,7 +151,6 @@ class _SettingsPageState extends State<SettingsPage> {
               MaterialPageRoute(builder: (_) => const ReaderPreferencesPage()),
             ),
           ),
-          _defaultVoiceItem(),
           _shelfDirectReaderItem(),
           _discoverDirectReaderItem(),
           SettingsItem(
@@ -177,8 +176,9 @@ class _SettingsPageState extends State<SettingsPage> {
       SettingsCategory(
         icon: SettingsCategoryIcons.listening,
         title: '听书',
-        subtitle: '后台播放、通知栏控制与系统朗读',
+        subtitle: '默认音色、后台播放与系统朗读',
         items: [
+          _defaultVoiceItem(),
           _backgroundAudioItem(),
           if (!isMediaDesktop) _audioRateEngineItem(),
           SettingsItem(
