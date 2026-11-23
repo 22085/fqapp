@@ -156,7 +156,8 @@ class _AudioPlaybackController extends ChangeNotifier
   }
 
   void _prefetchNextAudioChapter() {
-    if (request.sourceLoader != null ||
+    if ((isIOSPlatform && !_appActive) ||
+        request.sourceLoader != null ||
         !_autoAdvance ||
         _position.value < const Duration(seconds: 1) ||
         _sleepAtChapterEnd ||
@@ -176,6 +177,15 @@ class _AudioPlaybackController extends ChangeNotifier
       final source = await _loadSourceWithRetry(next.itemId, next.toneId);
       if (next.cancelled) return null;
       _validateAudioSource(source, next.itemId);
+      // iOS 在后台新建 media_kit Player 会卡在音频输出初始化；预取可能在
+      // 前台发起、等待音源时退到后台，所以建播放器前还要再确认一次。
+      if (isIOSPlatform && !_appActive) {
+        if (identical(_nextAudio, next)) {
+          _nextAudio = null;
+          await next.dispose();
+        }
+        return null;
+      }
       final player = next.player =
           request.playerFactory?.call() ?? NativePlayer(audioOnly: true);
       await player.create(source.url, source.keyHex);

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -39,6 +40,21 @@ Future<http.Response> _handle(http.Request request) {
     return _sourceResponse(request);
   }
   return Future.value(_json({'code': 0, 'data': <String, Object>{}}, 200));
+}
+
+void _mockIosAudioSessionEvents() {
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  messenger.setMockMethodCallHandler(
+    const MethodChannel('fqapp/audio_session/events'),
+    (_) async => null,
+  );
+  addTearDown(
+    () => messenger.setMockMethodCallHandler(
+      const MethodChannel('fqapp/audio_session/events'),
+      null,
+    ),
+  );
 }
 
 void main() {
@@ -188,6 +204,117 @@ void main() {
     ]);
     expect(_sourceRequests, hasLength(5));
   });
+
+  testWidgets('iOS background defers next-chapter prefetch until foreground', (
+    tester,
+  ) async {
+    _mockIosAudioSessionEvents();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    addTearDown(
+      () => tester.binding.handleAppLifecycleStateChanged(
+        AppLifecycleState.resumed,
+      ),
+    );
+    final players = <ControlledNativePlayer>[];
+    _sourceResponse = (request) async {
+      final item = request.url.pathSegments.last;
+      final tone = request.url.queryParameters['tone_id'];
+      return _json(
+        _playinfoPayload(item, url: 'https://cdn.example/$item-$tone.m4a'),
+        200,
+      );
+    };
+    await _mount(
+      tester,
+      players: players,
+      chapters: [
+        Chapter(itemId: '1', title: '第1章', volumeName: ''),
+        Chapter(itemId: '2', title: '第2章', volumeName: ''),
+      ],
+    );
+    await _pumpUntil(
+      tester,
+      () => players.isNotEmpty && players.first.isPlaying,
+    );
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await _flush(tester);
+    players.first.emitPosition(const Duration(seconds: 2));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    }
+    expect(players.first.isPlaying, isTrue);
+    expect(_sourceRequests, isNotEmpty);
+    expect(players, hasLength(1), reason: 'iOS 后台不能新建 media_kit 播放器');
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await _flush(tester);
+    players.first.emitPosition(const Duration(seconds: 3));
+    await _pumpUntil(
+      tester,
+      () => players.length == 2 && players.last.isCreated,
+    );
+  }, variant: TargetPlatformVariant({TargetPlatform.iOS}));
+
+  testWidgets('iOS background during prefetch source wait allocates nothing', (
+    tester,
+  ) async {
+    _mockIosAudioSessionEvents();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    addTearDown(
+      () => tester.binding.handleAppLifecycleStateChanged(
+        AppLifecycleState.resumed,
+      ),
+    );
+    final players = <ControlledNativePlayer>[];
+    final nextSource = Completer<http.Response>();
+    _sourceResponse = (request) async {
+      final item = request.url.pathSegments.last;
+      final tone = request.url.queryParameters['tone_id'];
+      if (item == '2') return nextSource.future;
+      return _json(
+        _playinfoPayload(item, url: 'https://cdn.example/$item-$tone.m4a'),
+        200,
+      );
+    };
+    await _mount(
+      tester,
+      players: players,
+      chapters: [
+        Chapter(itemId: '1', title: '第1章', volumeName: ''),
+        Chapter(itemId: '2', title: '第2章', volumeName: ''),
+      ],
+    );
+    await _pumpUntil(
+      tester,
+      () => players.isNotEmpty && players.first.isPlaying,
+    );
+    players.first.emitPosition(const Duration(seconds: 2));
+    await _pumpUntil(
+      tester,
+      () => _sourceRequests.any((url) => url.pathSegments.last == '2'),
+    );
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await _flush(tester);
+    nextSource.complete(
+      _json(_playinfoPayload('2', url: 'https://cdn.example/2-0.m4a'), 200),
+    );
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    }
+    expect(players, hasLength(1), reason: '退到后台后不再新建播放器');
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await _flush(tester);
+    players.first.emitPosition(const Duration(seconds: 3));
+    await _pumpUntil(
+      tester,
+      () => players.length == 2 && players.last.isCreated,
+    );
+  }, variant: TargetPlatformVariant({TargetPlatform.iOS}));
 
   testWidgets('late voice metadata replaces the prebuffered default tone', (
     tester,
