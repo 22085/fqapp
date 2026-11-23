@@ -18,6 +18,7 @@ class ClassicShellDock extends StatefulWidget {
     required this.onSelected,
     required this.overVideo,
     this.animating = false,
+    this.showDrama = true,
   });
 
   final int selectedIndex;
@@ -26,9 +27,8 @@ class ClassicShellDock extends StatefulWidget {
   /// 短剧 tab 背后是全屏视频流：dock 按深色外观绘制并跳过实时模糊。
   final bool overVideo;
 
-  /// 页面切换动画进行中：跳过 BackdropFilter 实时模糊，避免每帧
-  /// 对滑动中的页面做全屏高斯模糊（动画结束后自动恢复）。
   final bool animating;
+  final bool showDrama;
 
   @override
   State<ClassicShellDock> createState() => _ClassicShellDockState();
@@ -74,12 +74,15 @@ class _ClassicShellDockState extends State<ClassicShellDock> {
   static const _itemIdealWidth = 90.0;
   static const _dockMaxWidth = _itemIdealWidth * 4 + _innerInset * 2;
 
-  static const _items = [
+  static const _allItems = [
     (LucideIcons.house, '首页'),
     (LucideIcons.clapperboard, '短剧'),
     (LucideIcons.library_big, '书架'),
     (LucideIcons.circle_user_round, '我的'),
   ];
+
+  List<(IconData, String)> get _items =>
+      widget.showDrama ? _allItems : [_allItems[0], _allItems[2], _allItems[3]];
 
   /// 背景块的连续项序号（欠阻尼弹簧驱动，松手回弹带过冲）。
   final ValueNotifier<double> _selection = ValueNotifier(0);
@@ -432,9 +435,8 @@ class _ClassicShellDockState extends State<ClassicShellDock> {
                   borderRadius: borderRadius,
                   child:
                       eink ||
-                          widget.selectedIndex == 1 ||
-                          oled ||
-                          widget.animating
+                          (widget.showDrama && widget.selectedIndex == 1) ||
+                          oled
                       ? bar
                       : BackdropFilter(
                           filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),

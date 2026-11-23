@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:material_ui/material_ui.dart';
@@ -88,6 +89,177 @@ void main() {
       '0',
       '1',
     ], reason: '回退音色的 404 也只请求一次');
+  });
+
+  testWidgets('saved preferred voice is requested before automatic fallback', (
+    tester,
+  ) async {
+    await AudioPreferences.instance.setDefaultVoice(
+      DefaultListeningVoice.matureClassic,
+    );
+    _sourceResponse = (request) async {
+      final tone = request.url.queryParameters['tone_id'];
+      if (tone == '64') {
+        return _json({'code': 101000, 'message': 'NO_THIS_TONE'}, 200);
+      }
+      return _json(_playinfoPayload('1'), 200);
+    };
+    final players = <ControlledNativePlayer>[];
+    await _mount(
+      tester,
+      players: players,
+      extras: const AudioExtras(
+        tones: AudioToneSet(
+          ttsTones: [
+            AudioTone(id: '96', title: '多角色对话升级版'),
+            AudioTone(id: '64', title: '成熟大叔'),
+          ],
+        ),
+      ),
+    );
+    await _pumpUntil(
+      tester,
+      () => players.isNotEmpty && players.single.isPlaying,
+    );
+    expect(_sourceRequests.map((url) => url.queryParameters['tone_id']), [
+      '64',
+      '96',
+    ]);
+  });
+
+  testWidgets('the next chapter buffers and falls back before auto-advance', (
+    tester,
+  ) async {
+    final players = <ControlledNativePlayer>[];
+    _sourceResponse = (request) async {
+      final item = request.url.pathSegments.last;
+      final tone = request.url.queryParameters['tone_id'];
+      if (item == '2' && tone != '64') {
+        return _json({'code': 101000, 'message': 'NO_THIS_TONE'}, 200);
+      }
+      return _json(
+        _playinfoPayload(item, url: 'https://cdn.example/$item-$tone.m4a'),
+        200,
+      );
+    };
+    await _mount(
+      tester,
+      players: players,
+      chapters: [
+        Chapter(itemId: '1', title: '第1章', volumeName: ''),
+        Chapter(itemId: '2', title: '第2章', volumeName: ''),
+      ],
+      extras: const AudioExtras(
+        tones: AudioToneSet(
+          ttsTones: [
+            AudioTone(id: '64', title: '成熟大叔音'),
+            AudioTone(id: '74', title: '成熟大叔音升级版'),
+            AudioTone(id: '57', title: '多角色对话'),
+            AudioTone(id: '96', title: '多角色对话升级版'),
+          ],
+        ),
+      ),
+    );
+    await _pumpUntil(
+      tester,
+      () => players.isNotEmpty && players.first.isPlaying,
+    );
+    players.first.emitPosition(const Duration(seconds: 2));
+    await _pumpUntil(
+      tester,
+      () => players.length == 2 && players.last.isCreated,
+    );
+    expect(players.first.isPlaying, isTrue);
+    expect(players.last.isPlaying, isFalse);
+    expect(_sourceRequests.map((url) => url.queryParameters['tone_id']), [
+      '96',
+      '96',
+      '57',
+      '74',
+      '64',
+    ]);
+    players.first.emitCompleted();
+    await tester.pump();
+    await _pumpUntil(tester, () => players.last.isPlaying);
+    expect(players, hasLength(2));
+    expect(players.first.disposed, isTrue);
+    expect(players.last.calls.where((call) => call.startsWith('create:')), [
+      'create:https://cdn.example/2-64.m4a',
+    ]);
+    expect(_sourceRequests, hasLength(5));
+  });
+
+  testWidgets('late voice metadata replaces the prebuffered default tone', (
+    tester,
+  ) async {
+    final players = <ControlledNativePlayer>[];
+    final extras = Completer<AudioExtras>();
+    _sourceResponse = (request) async {
+      final item = request.url.pathSegments.last;
+      final tone = request.url.queryParameters['tone_id'];
+      return _json(
+        _playinfoPayload(item, url: 'https://cdn.example/$item-$tone.m4a'),
+        200,
+      );
+    };
+    await _mount(
+      tester,
+      players: players,
+      extrasLoader: (_) => extras.future,
+      chapters: [
+        Chapter(itemId: '1', title: '第1章', volumeName: ''),
+        Chapter(itemId: '2', title: '第2章', volumeName: ''),
+      ],
+    );
+    await _pumpUntil(
+      tester,
+      () => players.isNotEmpty && players.first.isPlaying,
+    );
+    players.first.emitPosition(const Duration(seconds: 2));
+    await _pumpUntil(
+      tester,
+      () => players.length == 2 && players.last.isCreated,
+    );
+    extras.complete(
+      const AudioExtras(
+        tones: AudioToneSet(
+          ttsTones: [AudioTone(id: '96', title: '多角色对话升级版')],
+        ),
+      ),
+    );
+    await _pumpUntil(
+      tester,
+      () =>
+          players.any(
+            (player) =>
+                player.isPlaying &&
+                player.calls.contains('create:https://cdn.example/1-96.m4a'),
+          ) &&
+          players.any(
+            (player) =>
+                player.isCreated &&
+                player.calls.contains('create:https://cdn.example/2-96.m4a'),
+          ),
+    );
+    final current = players.singleWhere((player) => player.isPlaying);
+    expect(players[1].disposed, isTrue);
+    expect(players.first.disposed, isTrue);
+    expect(current.position, const Duration(seconds: 2));
+    current.emitCompleted();
+    await _pumpUntil(
+      tester,
+      () => players.any(
+        (player) =>
+            player.isPlaying &&
+            player.calls.contains('create:https://cdn.example/2-96.m4a'),
+      ),
+    );
+    expect(
+      _sourceRequests.map(
+        (url) => '${url.pathSegments.last}:${url.queryParameters['tone_id']}',
+      ),
+      unorderedEquals(['1:0', '2:0', '1:96', '2:96']),
+    );
   });
 
   testWidgets('a 5xx audio source is retried and then plays', (tester) async {
@@ -301,6 +473,8 @@ Map<String, dynamic> _playinfoPayload(
 Widget _app(
   List<ControlledNativePlayer> players, {
   List<Chapter>? chapters,
+  AudioExtras extras = const AudioExtras(),
+  AudioExtrasLoader? extrasLoader,
   SubtitleLoader? subtitleLoader,
   TimePointLoader? timePointLoader,
 }) => MaterialApp(
@@ -310,7 +484,7 @@ Widget _app(
     chapters: chapters ?? [Chapter(itemId: '1', title: '第1章', volumeName: '')],
     historyStore: ControlledReaderStore(),
     voicesLoader: () async => const [AudioVoice(id: '1', label: '音色一')],
-    extrasLoader: (_) async => const AudioExtras(),
+    extrasLoader: extrasLoader ?? (_) async => extras,
     subtitleLoader: subtitleLoader ?? (_, _) async => SubtitleTrack.empty,
     timePointLoader: timePointLoader ?? (_, _) async => AudioTimeTrack.empty,
     excerptLoader: (_) async => null,
@@ -327,6 +501,8 @@ Future<void> _mount(
   WidgetTester tester, {
   List<ControlledNativePlayer>? players,
   List<Chapter>? chapters,
+  AudioExtras extras = const AudioExtras(),
+  AudioExtrasLoader? extrasLoader,
   SubtitleLoader? subtitleLoader,
   TimePointLoader? timePointLoader,
 }) async {
@@ -340,6 +516,8 @@ Future<void> _mount(
     _app(
       players ?? [],
       chapters: chapters,
+      extras: extras,
+      extrasLoader: extrasLoader,
       subtitleLoader: subtitleLoader,
       timePointLoader: timePointLoader,
     ),

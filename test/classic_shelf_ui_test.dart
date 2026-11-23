@@ -26,6 +26,7 @@ import 'package:fqapp/services/shelf_view_store.dart';
 import 'package:fqapp/widgets/bookshelf_card.dart';
 import 'package:fqapp/widgets/tab_swipe_area.dart';
 import 'package:fqapp/widgets/home/home_design.dart';
+import 'package:fqapp/widgets/home/home_chip.dart';
 import 'package:fqapp/widgets/shelf/shelf_collection_view.dart';
 import 'package:fqapp/widgets/shelf/shelf_design.dart';
 import 'package:fqapp/widgets/wenku/archive_shelf.dart';
@@ -181,6 +182,110 @@ void main() {
       ClassicShelfLayout.instance.resetForTest();
       ShelfViewStore.instance.resetForTest();
     });
+
+    for (final (width, scale, columns) in [
+      (360.0, 1.0, 6),
+      (320.0, 1.0, 3),
+      (360.0, 2.0, 3),
+    ]) {
+      testWidgets(
+        'shelf filters fit $columns columns at $width dp and ${scale}x',
+        (tester) async {
+          final size = Size(width, 900);
+          await tester.binding.setSurfaceSize(size);
+          addTearDown(() => tester.binding.setSurfaceSize(null));
+          await tester.pumpWidget(
+            _app(_style(), size: size, textScaler: TextScaler.linear(scale)),
+          );
+          await tester.pumpAndSettle();
+
+          final chips = [
+            for (final kind in [
+              'all',
+              'book',
+              'manga',
+              'video',
+              'manju',
+              'audio',
+            ])
+              find.byKey(Key('library-shelf-kind-$kind')),
+          ];
+          final bounds = chips.map(tester.getRect).toList();
+          expect(
+            bounds.where((rect) => rect.top == bounds.first.top),
+            hasLength(columns),
+          );
+          for (final rect in bounds) {
+            expect(rect.left, greaterThanOrEqualTo(0));
+            expect(rect.right, lessThanOrEqualTo(width));
+            expect(rect.width, greaterThanOrEqualTo(48));
+            expect(rect.height, greaterThanOrEqualTo(48));
+          }
+          await tester.tap(chips.last);
+          await tester.pumpAndSettle();
+          expect(chips.map(tester.getRect), orderedEquals(bounds));
+          expect(
+            find.byKey(const Key('classic-shelf-active-filters')),
+            findsOneWidget,
+          );
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    testWidgets('toolbar pills clip press feedback to the visible capsule', (
+      tester,
+    ) async {
+      final size = const Size(360, 900);
+      await tester.binding.setSurfaceSize(size);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(_app(_style(), size: size));
+      await tester.pumpAndSettle();
+      for (final key in ['shelf-group-chip', 'shelf-layout-picker']) {
+        final button = find.byKey(Key(key));
+        final surface = find.descendant(
+          of: button,
+          matching: find.byType(Material),
+        );
+        final touchRect = tester.getRect(button);
+        final pillRect = tester.getRect(surface);
+        expect(touchRect.height, greaterThanOrEqualTo(48));
+        expect(pillRect.height, lessThan(touchRect.height));
+        expect(tester.widget<Material>(surface).clipBehavior, Clip.antiAlias);
+        final press = await tester.startGesture(touchRect.center);
+        await tester.pump(const Duration(milliseconds: 550));
+        expect(tester.getRect(surface), pillRect);
+        expect(find.text('书架分组：全部书籍'), findsNothing);
+        await press.cancel();
+        await tester.pumpAndSettle();
+      }
+    });
+
+    testWidgets(
+      'shelf categories stay visible and selected after a style change',
+      (tester) async {
+        await _size(tester);
+        final style = _style();
+        await tester.pumpWidget(_app(style));
+        await tester.pumpAndSettle();
+        const kinds = ['all', 'book', 'manga', 'video', 'manju', 'audio'];
+        final audio = find.byKey(const Key('library-shelf-kind-audio'));
+        await tester.tap(audio);
+        await tester.pumpAndSettle();
+        expect(tester.widget<HomeChip>(audio).selected, isTrue);
+
+        style.value = const AppStyleTokens.archive();
+        await tester.pumpAndSettle();
+        for (final kind in kinds) {
+          expect(
+            find.byKey(Key('library-shelf-kind-$kind')).hitTestable(),
+            findsOneWidget,
+          );
+        }
+        expect(tester.widget<HomeChip>(audio).selected, isTrue);
+        expect(tester.takeException(), isNull);
+      },
+    );
 
     for (final initial in [0, 2]) {
       for (final swipe in [false, true]) {
@@ -537,7 +642,15 @@ void main() {
       (tester) async {
         await _size(tester);
         final style = _style();
-        await tester.pumpWidget(_app(style));
+        await tester.pumpWidget(
+          _app(
+            style,
+            page: LibraryPage(
+              cacheStore: MemoryChapterCache(),
+              onFindDrama: () {},
+            ),
+          ),
+        );
         await tester.pumpAndSettle();
         await tester.tap(find.text('收藏'));
         await tester.pumpAndSettle();
@@ -570,7 +683,15 @@ void main() {
       (tester) async {
         await _size(tester);
         final style = _style();
-        await tester.pumpWidget(_app(style));
+        await tester.pumpWidget(
+          _app(
+            style,
+            page: LibraryPage(
+              cacheStore: MemoryChapterCache(),
+              onFindDrama: () {},
+            ),
+          ),
+        );
         await tester.pumpAndSettle();
         await tester.tap(find.text('收藏'));
         await tester.pumpAndSettle();

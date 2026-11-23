@@ -111,12 +111,13 @@ class ShelfCollectionEmptyState extends StatelessWidget {
     icon: LucideIcons.clapperboard,
     title: text,
     actions: [
-      GlassPillButton(
-        key: const Key('collection-find-drama-button'),
-        icon: LucideIcons.clapperboard,
-        label: '找短剧',
-        onPressed: onFindDrama,
-      ),
+      if (onFindDrama != null)
+        GlassPillButton(
+          key: const Key('collection-find-drama-button'),
+          icon: LucideIcons.clapperboard,
+          label: '找短剧',
+          onPressed: onFindDrama,
+        ),
     ],
   );
 }

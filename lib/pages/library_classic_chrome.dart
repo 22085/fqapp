@@ -283,32 +283,13 @@ mixin _LibraryClassicChrome on _LibraryShelfViews {
         ),
         if (tab == 0) ...[
           const SizedBox(height: ShelfTokens.spaceXS),
-          _classicShelfKindFilter(),
+          _ShelfKindFilter(
+            selected: _shelfKindFilter,
+            onChanged: (value) => setState(() => _shelfKindFilter = value),
+          ),
         ],
       ],
     ),
-  );
-
-  /// 书架 tab 的媒介类型筛选(全部 / 小说 / 漫画 / 短剧 / 漫剧 / 听书)。
-  Widget _classicShelfKindFilter() => Wrap(
-    spacing: 8,
-    runSpacing: 8,
-    children: [
-      for (final (value, label) in const [
-        (null, '全部'),
-        ('book', '小说'),
-        ('manga', '漫画'),
-        ('video', '短剧'),
-        ('manju', '漫剧'),
-        ('audio', '听书'),
-      ])
-        HomeChip(
-          key: Key('library-shelf-kind-${value ?? 'all'}'),
-          label: label,
-          selected: _shelfKindFilter == value,
-          onTap: () => setState(() => _shelfKindFilter = value),
-        ),
-    ],
   );
 
   /// 窄屏或大字号时让整块控件换行，保留每个入口的触控宽度。

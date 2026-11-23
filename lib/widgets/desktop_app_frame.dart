@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../pages/settings_page.dart';
 import '../services/desktop_platform.dart';
+import '../services/drama_feature_preferences.dart';
 import 'desktop_shell_scope.dart';
 import 'desktop_window_bar.dart';
 import 'home/home_design.dart';
@@ -21,6 +22,7 @@ class DesktopAppFrame extends StatelessWidget {
   ];
 
   void _select(int index) {
+    if (index == 1 && !DramaFeaturePreferences.instance.enabled.value) return;
     DesktopPlatform.navigatorKey.currentState?.popUntil(
       (route) => route.isFirst,
     );
@@ -170,53 +172,66 @@ class _DesktopNavPane extends StatelessWidget {
             builder: (context, selectedIndex, _) =>
                 ValueListenableBuilder<bool>(
                   valueListenable: DesktopShellState.onSettingsPage,
-                  builder: (context, inSettings, _) => Column(
-                    children: [
-                      const SizedBox(height: 6),
-                      Expanded(
-                        child: SingleChildScrollView(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Column(
-                            children: [
-                              for (
-                                var i = 0;
-                                i < DesktopAppFrame._destinations.length;
-                                i++
-                              )
-                                _FluentNavItem(
-                                  key: ValueKey('desktop-nav-tab-$i'),
-                                  icon: DesktopAppFrame._destinations[i].icon,
-                                  label: DesktopAppFrame._destinations[i].label,
-                                  selected: !inSettings && selectedIndex == i,
-                                  expanded: visualExpanded,
-                                  palette: palette,
-                                  onTap: () => onSelectTab(i),
+                  builder: (context, inSettings, _) =>
+                      ValueListenableBuilder<bool>(
+                        valueListenable:
+                            DramaFeaturePreferences.instance.enabled,
+                        builder: (context, showDrama, _) => Column(
+                          children: [
+                            const SizedBox(height: 6),
+                            Expanded(
+                              child: SingleChildScrollView(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: Column(
+                                  children: [
+                                    for (
+                                      var i = 0;
+                                      i < DesktopAppFrame._destinations.length;
+                                      i++
+                                    )
+                                      if (showDrama || i != 1)
+                                        _FluentNavItem(
+                                          key: ValueKey('desktop-nav-tab-$i'),
+                                          icon: DesktopAppFrame
+                                              ._destinations[i]
+                                              .icon,
+                                          label: DesktopAppFrame
+                                              ._destinations[i]
+                                              .label,
+                                          selected:
+                                              !inSettings && selectedIndex == i,
+                                          expanded: visualExpanded,
+                                          palette: palette,
+                                          onTap: () => onSelectTab(i),
+                                        ),
+                                  ],
                                 ),
-                            ],
-                          ),
+                              ),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                              ),
+                              child: Divider(
+                                height: 1,
+                                thickness: 1,
+                                color: palette.line,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            _FluentNavItem(
+                              key: const Key('desktop-settings'),
+                              icon: LucideIcons.settings,
+                              label: '设置',
+                              selected: inSettings,
+                              expanded: visualExpanded,
+                              palette: palette,
+                              onTap: onOpenSettings,
+                            ),
+                            const SizedBox(height: 10),
+                          ],
                         ),
                       ),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        child: Divider(
-                          height: 1,
-                          thickness: 1,
-                          color: palette.line,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      _FluentNavItem(
-                        key: const Key('desktop-settings'),
-                        icon: LucideIcons.settings,
-                        label: '设置',
-                        selected: inSettings,
-                        expanded: visualExpanded,
-                        palette: palette,
-                        onTap: onOpenSettings,
-                      ),
-                      const SizedBox(height: 10),
-                    ],
-                  ),
                 ),
           );
         },

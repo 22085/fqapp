@@ -18,6 +18,7 @@ void _applySleepTimerChoice(
   final atChapterEnd = next.endOfChapter;
   if (c._sleepAtChapterEnd != atChapterEnd) {
     c._sleepAtChapterEnd = atChapterEnd;
+    if (atChapterEnd) c._discardNextAudio();
     unawaited(AudioPreferences.instance.setSleepAtChapterEnd(atChapterEnd));
   }
 
@@ -58,47 +59,6 @@ void _startSleepTicker(_AudioPlaybackController c) {
     c._publishMoreState();
     if (next <= Duration.zero) c._sleepTimerTick?.cancel();
   });
-}
-
-/// 启动连播倒计时；归零后打开下一章。
-void _beginAdvanceCountdown(
-  _AudioPlaybackController c, {
-  int seconds = kAdvanceCountdownSeconds,
-}) {
-  _cancelAdvanceCountdown(c);
-  if (c._closed || seconds <= 0) return;
-  c._advanceRemaining = seconds;
-  c._advanceCountdown.value = seconds;
-  c._advanceTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-    if (c._closed) {
-      timer.cancel();
-      return;
-    }
-    final next = (c._advanceRemaining ?? 1) - 1;
-    if (next > 0) {
-      c._advanceRemaining = next;
-      c._advanceCountdown.value = next;
-      return;
-    }
-    timer.cancel();
-    c._advanceTimer = null;
-    c._advanceRemaining = null;
-    c._advanceCountdown.value = null;
-    if (c._closed) return;
-    if (c._index + 1 < c._chapters.length) {
-      unawaited(c._switchChapter(c._index + 1));
-    }
-  });
-}
-
-/// 中止连播倒计时（取消 / 暂停 / 选集 / 离开页面）。
-void _cancelAdvanceCountdown(_AudioPlaybackController c) {
-  c._advanceTimer?.cancel();
-  c._advanceTimer = null;
-  c._advanceRemaining = null;
-  if (c._advanceCountdown.value != null) {
-    c._advanceCountdown.value = null;
-  }
 }
 
 bool _hasPendingTrackRecovery(_AudioPlaybackController c) =>
@@ -259,13 +219,7 @@ void _onChapterFinished(
     return;
   }
   if (shouldAdvance && c._index + 1 < c._chapters.length) {
-    // 后台不能用倒计时：`Timer` 会被系统挂起，而 `_openChapter` 在后台
-    // 新建播放器会卡死（见 `_switchChapter` 注释）。直接复用播放器换章。
-    if (isIOSPlatform && !c._appActive) {
-      unawaited(c._switchChapter(c._index + 1));
-      return;
-    }
-    _beginAdvanceCountdown(c);
+    unawaited(c._switchChapter(c._index + 1, expectedGeneration: generation));
     return;
   }
   unawaited(c._pause(player, generation));
@@ -302,18 +256,18 @@ void _handleChapterCompleted(
   c._listenTime.stop();
   c._syncForeground();
   unawaited(c._persistProgress());
-  _onChapterFinished(
-    c,
-    shouldAdvance: shouldAdvance,
-    player: player,
-    generation: generation,
-  );
   // _openChapter resets completion before its source is ready.
   // The next player's playing event will publish the actual start.
   c._publishListeningSession(playing: false);
   // 官方 onPlayCompletion（d.java:92-100）收起播放/同步按钮；阅读页据此
   // 停止显示，下一章起播时由 update(playing:true) 清掉。
   ListeningSession.instance.markCompleted();
+  _onChapterFinished(
+    c,
+    shouldAdvance: shouldAdvance,
+    player: player,
+    generation: generation,
+  );
 }
 
 /// 控制器对外的只读查询与跳过配置写入。
@@ -321,9 +275,6 @@ void _handleChapterCompleted(
 /// 用 extension 而不是往类里加成员：控制器文件已经顶到行数预算，而这些
 /// 都只是对既有私有状态的薄封装。
 extension _AudioPlaybackQueries on _AudioPlaybackController {
-  /// 连播倒计时剩余秒数；null 表示当前没有在倒计时。
-  ValueNotifier<int?> get advanceCountdown => _advanceCountdown;
-
   /// 当前是否停在本轮目录的最后一章。
   bool get atLastChapter => _index + 1 >= _chapters.length;
 
