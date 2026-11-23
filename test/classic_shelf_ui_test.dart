@@ -642,7 +642,15 @@ void main() {
       (tester) async {
         await _size(tester);
         final style = _style();
-        await tester.pumpWidget(_app(style));
+        await tester.pumpWidget(
+          _app(
+            style,
+            page: LibraryPage(
+              cacheStore: MemoryChapterCache(),
+              onFindDrama: () {},
+            ),
+          ),
+        );
         await tester.pumpAndSettle();
         await tester.tap(find.text('收藏'));
         await tester.pumpAndSettle();
@@ -675,7 +683,15 @@ void main() {
       (tester) async {
         await _size(tester);
         final style = _style();
-        await tester.pumpWidget(_app(style));
+        await tester.pumpWidget(
+          _app(
+            style,
+            page: LibraryPage(
+              cacheStore: MemoryChapterCache(),
+              onFindDrama: () {},
+            ),
+          ),
+        );
         await tester.pumpAndSettle();
         await tester.tap(find.text('收藏'));
         await tester.pumpAndSettle();

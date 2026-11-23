@@ -200,8 +200,6 @@ Future<void> _loadLocalData() async {
   await Future.wait<void>([
     // Load before interactive pages mount, so a saved opt-out applies at launch.
     optional(HapticPreferences.instance.load),
-    optional(DramaFeaturePreferences.instance.load),
-    optional(AudioPreferences.instance.load),
     LibraryStore.instance.init(),
     // The 加入书架 collection is optional data: a failure here must not block
     // startup, which is why it shares the retryable bootstrap with the history.
@@ -260,6 +258,8 @@ Future<void> _loadLocalData() async {
     spFuture,
     themeStyleFuture,
   ]);
+  unawaited(optional(AudioPreferences.instance.load));
+  unawaited(optional(DramaFeaturePreferences.instance.load));
   // 多端同步的网络或安全存储故障不阻塞本机阅读。旧 WebDAV 配置由统一服务只读接管，绝不在这里启动云端覆盖流程。
   unawaited(
     optional(() async {
