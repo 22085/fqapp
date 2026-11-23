@@ -193,18 +193,37 @@ void main() {
     );
     await _pumpUntil(
       tester,
-      () => players.length == 3 && players.last.isCreated,
+      () =>
+          players.any(
+            (player) =>
+                player.isPlaying &&
+                player.calls.contains('create:https://cdn.example/1-96.m4a'),
+          ) &&
+          players.any(
+            (player) =>
+                player.isCreated &&
+                player.calls.contains('create:https://cdn.example/2-96.m4a'),
+          ),
     );
+    final current = players.singleWhere((player) => player.isPlaying);
     expect(players[1].disposed, isTrue);
-    expect(players.first.isPlaying, isTrue);
-    players.first.emitCompleted();
-    await _pumpUntil(tester, () => players.last.isPlaying);
-    expect(players.last.calls, contains('create:https://cdn.example/2-96.m4a'));
-    expect(_sourceRequests.map((url) => url.queryParameters['tone_id']), [
-      '0',
-      '0',
-      '96',
-    ]);
+    expect(players.first.disposed, isTrue);
+    expect(current.position, const Duration(seconds: 2));
+    current.emitCompleted();
+    await _pumpUntil(
+      tester,
+      () => players.any(
+        (player) =>
+            player.isPlaying &&
+            player.calls.contains('create:https://cdn.example/2-96.m4a'),
+      ),
+    );
+    expect(
+      _sourceRequests.map(
+        (url) => '${url.pathSegments.last}:${url.queryParameters['tone_id']}',
+      ),
+      unorderedEquals(['1:0', '2:0', '1:96', '2:96']),
+    );
   });
 
   testWidgets('a 5xx audio source is retried and then plays', (tester) async {

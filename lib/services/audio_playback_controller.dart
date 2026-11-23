@@ -135,6 +135,7 @@ class _AudioPlaybackController extends ChangeNotifier
   bool _switchingVersion = false;
   _NextAudioChapter? _nextAudio;
   bool _automaticTone = true;
+  int? _lateToneLookupGeneration;
   Timer? _sleepTimerTick;
 
   void _discardNextAudio() {
@@ -534,6 +535,45 @@ class _AudioPlaybackController extends ChangeNotifier
     }
   }
 
+  Future<void> _applyLateAutomaticTone(NativePlayer player) async {
+    final generation = _generation;
+    if (_lateToneLookupGeneration != generation ||
+        !_automaticTone ||
+        !_appActive ||
+        !_wantPlay ||
+        _loading ||
+        _completed ||
+        _activeIndex != _index ||
+        !player.playing ||
+        _preferredToneIds.isEmpty) {
+      return;
+    }
+    _lateToneLookupGeneration = null;
+    if (_preferredToneIds.contains(_toneId)) return;
+
+    final index = _index;
+    final itemId = _chapters[index].itemId;
+    try {
+      final source = await _loadSourceWithRetry(itemId, '0');
+      if (!_current(generation, player) ||
+          !_automaticTone ||
+          !_appActive ||
+          !_wantPlay ||
+          _completed ||
+          !_preferredToneIds.contains(source.toneId)) {
+        return;
+      }
+      _validateAudioSource(source, itemId);
+      await _openChapter(
+        index,
+        position: player.position,
+        resolvedSource: source,
+      );
+    } catch (_) {
+      // A failed source lookup leaves the current chapter playing.
+    }
+  }
+
   void _syncForeground({bool seeked = false}) {
     if (_closed || _index < 0 || _index >= _chapters.length) return;
     if (!isLinuxDesktop &&
@@ -822,6 +862,7 @@ class _AudioPlaybackController extends ChangeNotifier
     bool? completed,
     bool persistCurrent = true,
     bool refreshSource = false,
+    AudioSource? resolvedSource,
   }) async {
     IosAudioSession.cancelInterruption(_mediaOwner);
     if (_closed || index < 0 || index >= _chapters.length) return;
@@ -893,14 +934,18 @@ class _AudioPlaybackController extends ChangeNotifier
           (position == null && sameChapter && saved?['completed'] == true);
       final itemId = _chapters[index].itemId;
       final lookupTone = _automaticTone ? '0' : _toneId;
+      if (lookupTone == '0' && !_hasFixedTone && _preferredToneIds.isEmpty) {
+        _lateToneLookupGeneration = generation;
+      }
       final next = _nextAudio;
-      if (!refreshSource &&
+      if (resolvedSource == null &&
+          !refreshSource &&
           next != null &&
           next.itemId == itemId &&
           next.toneId == lookupTone) {
         claimed = next;
         _nextAudio = null;
-      } else {
+      } else if (resolvedSource == null) {
         _discardNextAudio();
       }
       final prepared = await claimed?.ready;
@@ -911,13 +956,15 @@ class _AudioPlaybackController extends ChangeNotifier
           prepared != null &&
           warmedPlayer != null &&
           warmedPlayer.lastError == null;
-      final source = reuse
-          ? prepared
-          : await _loadSourceWithRetry(
-              itemId,
-              lookupTone,
-              refresh: refreshSource,
-            );
+      final source =
+          resolvedSource ??
+          (reuse
+              ? prepared
+              : await _loadSourceWithRetry(
+                  itemId,
+                  lookupTone,
+                  refresh: refreshSource,
+                ));
       _validateAudioSource(source, itemId);
       if (!_current(generation)) return;
       _toneSwitchedForChapter =
@@ -1470,6 +1517,7 @@ class _AudioPlaybackController extends ChangeNotifier
         player.playing &&
         !player.buffering) {
       _listenTime.start();
+      unawaited(_applyLateAutomaticTone(player));
       _prefetchNextAudioChapter();
       _scheduleTrackRecovery(this);
     } else {

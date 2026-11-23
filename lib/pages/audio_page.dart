@@ -1267,7 +1267,11 @@ class _AudioPageState extends State<AudioPage> {
       return;
     }
     _popSheet(replaceContext);
-    if (toneId == '0' && c._automaticTone) return;
+    if (toneId == '0' &&
+        c._automaticTone &&
+        c._preferredToneIds.firstOrNull == c._toneId) {
+      return;
+    }
     if (toneId == c._toneId && toneId != '0') {
       c._update(() => c._automaticTone = false);
       c._discardNextAudio();
