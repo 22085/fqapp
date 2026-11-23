@@ -45,6 +45,9 @@ static STREAM_TRACE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::
 const V5_PLAYER_URL: &str =
     "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1";
 
+const ANONYMOUS_PLAYER_URL: &str =
+    "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1/";
+
 const VIDEO_TAB_PLAYER_PATH: &str = "/reading/bookapi/video_tab/multi_video_model/v1/";
 
 const VIDEO_MODEL_PLAYER_PATH: &str = "/novel/player/video_model/v1/";
@@ -351,6 +354,36 @@ fn v5_playback_body(video_id: &str) -> ApiResult<Vec<u8>> {
         .map_err(|e| ApiError::Internal(format!("gzip v5 playback body: {e}")))
 }
 
+fn anonymous_playback_body(video_id: &str) -> ApiResult<Vec<u8>> {
+    let plain = serde_json::to_vec(&json!({
+        "biz_param": {
+            "detail_page_version": 0,
+            "device_level": 1,
+            "disable_digg_stat": false,
+            "disable_video_relate_book": false,
+            "need_all_video_definition": true,
+            "need_mp4_align": false,
+            "use_os_player": false,
+            "use_server_dns": false,
+            "video_platform": 1024,
+        },
+        "dr_scene": "player",
+        "mixed_video_id_map": {
+            "1004": [video_id],
+        },
+        "video_id": video_id,
+        "content_type": 1,
+    }))
+    .map_err(|error| ApiError::Internal(format!("marshal anonymous playback body: {error}")))?;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(&plain)
+        .map_err(|error| ApiError::Internal(format!("gzip anonymous playback body: {error}")))?;
+    encoder
+        .finish()
+        .map_err(|error| ApiError::Internal(format!("gzip anonymous playback body: {error}")))
+}
+
 fn video_model_body(video_id: &str) -> ApiResult<Vec<u8>> {
     let plain = serde_json::to_vec(&json!({
         "biz_param": {
@@ -379,6 +412,7 @@ fn video_model_body(video_id: &str) -> ApiResult<Vec<u8>> {
 }
 
 struct PlaybackBodies {
+    anonymous: Vec<u8>,
     v5: Vec<u8>,
     model: Vec<u8>,
 }
@@ -386,6 +420,7 @@ struct PlaybackBodies {
 impl PlaybackBodies {
     fn build(video_id: &str) -> ApiResult<Self> {
         Ok(Self {
+            anonymous: anonymous_playback_body(video_id)?,
             v5: v5_playback_body(video_id)?,
             model: video_model_body(video_id)?,
         })
@@ -570,6 +605,36 @@ async fn attempt_playback_route_inner(
 ) -> PlaybackAttempt {
     use crate::upstream::playback_routes::Door;
     match route.door {
+        Door::AnonymousV5 => {
+            match tokio::time::timeout_at(
+                deadline,
+                ctx.up
+                    .anonymous_playback(ANONYMOUS_PLAYER_URL, &bodies.anonymous),
+            )
+            .await
+            {
+                Err(_) => PlaybackAttempt {
+                    outcome: DoorOutcome::Deadline,
+                    device_id: None,
+                    exchange: Default::default(),
+                },
+                Ok(Ok((data, _device_id))) => PlaybackAttempt {
+                    outcome: if data.is_empty() {
+                        DoorOutcome::Empty
+                    } else {
+                        DoorOutcome::Body(data)
+                    },
+                    // The anonymous identity must never become a pool pin.
+                    device_id: None,
+                    exchange: Default::default(),
+                },
+                Ok(Err(_)) => PlaybackAttempt {
+                    outcome: DoorOutcome::Failed,
+                    device_id: None,
+                    exchange: Default::default(),
+                },
+            }
+        }
         Door::V5Player => playback_post(ctx, V5_PLAYER_URL, &bodies.v5, pin, deadline).await,
         Door::VideoModel => {
             let base = format!("{}{}", route.host(), VIDEO_MODEL_PLAYER_PATH);
@@ -730,6 +795,9 @@ async fn fetch_playback_model(
         };
         recovery.skip_routes.insert(route);
         let now = playback_routes::now_ms();
+        // A speculative miss must not park the only anonymous door: it is
+        // background work and the foreground click still needs that route.
+        let skip_empty_cooldown = speculative && route.door == playback_routes::Door::AnonymousV5;
         match attempt.outcome {
             DoorOutcome::Body(raw) => {
                 return Ok(PlaybackModel {
@@ -738,6 +806,7 @@ async fn fetch_playback_model(
                     device_id: attempt.device_id,
                 });
             }
+            DoorOutcome::Empty if skip_empty_cooldown => {}
             DoorOutcome::Empty => {
                 playback_routes::with_state(|state| state.failed(route, now, true))
             }
