@@ -7,10 +7,6 @@ import 'package:fqapp/widgets/shell_dock.dart';
 import 'package:fqapp/widgets/wenku/glass_dock.dart';
 import 'package:fqapp/widgets/wenku/src/easy_glass.dart';
 
-/// 档案风格 GlassDock 的 animating 降级（评审遗留 Minor #5）：页面切换
-/// 动画期间与 staticMaterial 同走轻量预设——胶囊折射（EasyGlassSurface）
-/// 与 underlay 边缘模糊一并跳过，动画结束自动恢复；dock 自身交互与
-/// State 不受预设切换影响。
 void main() {
   setUp(() {
     einkModeNotifier.value = false;
@@ -42,7 +38,61 @@ void main() {
     ),
   );
 
-  testWidgets('档案 dock 动画期间跳过折射与边缘模糊，结束后恢复', (tester) async {
+  for (final style in AppThemeStyle.values) {
+    testWidgets(
+      'hidden drama keeps the library and profile destinations in $style',
+      (tester) async {
+        var selected = -1;
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: AppTheme.createTheme(Brightness.light, style: style),
+            home: Scaffold(
+              bottomNavigationBar: ShellDock(
+                selectedIndex: 2,
+                onSelected: (index) => selected = index,
+                overVideo: false,
+                staticMaterial: false,
+                showDrama: false,
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('短剧'), findsNothing);
+        await tester.tap(find.text('书架'));
+        expect(selected, 2);
+        await tester.tap(find.text('我的'));
+        expect(selected, 3);
+      },
+    );
+  }
+
+  testWidgets('classic dock keeps its backdrop filter during page motion', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.createTheme(
+          Brightness.light,
+          style: AppThemeStyle.classic,
+        ),
+        home: Scaffold(
+          bottomNavigationBar: ShellDock(
+            selectedIndex: 2,
+            onSelected: (_) {},
+            overVideo: false,
+            staticMaterial: false,
+            animating: true,
+            showDrama: false,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(BackdropFilter), findsOneWidget);
+  });
+
+  testWidgets('档案 dock 切页期间保持折射和边缘模糊', (tester) async {
     final animating = ValueNotifier<bool>(false);
     addTearDown(animating.dispose);
     await tester.pumpWidget(app(animating));
@@ -53,18 +103,15 @@ void main() {
     expect(find.byType(EasyGlassSurface), findsOneWidget);
     final stateBefore = tester.state(find.byType(GlassDock));
 
-    // 动画进行中：轻量预设关掉 glass/edgeBlur，两者一并消失，
-    // 但 dock 本体保留（降级的是材质，不是导航）。
     animating.value = true;
     await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('dock-underlay')), findsNothing);
-    expect(find.byType(EasyGlassSurface), findsNothing);
-    expect(find.byType(GlassDock), findsOneWidget);
+    expect(find.byKey(const ValueKey('dock-underlay')), findsOneWidget);
+    expect(find.byType(EasyGlassSurface), findsOneWidget);
     // 预设切换只换材质分支，不能把 dock 的 State 换掉（选中/拖动状态
     // 会在动画结束后丢失）。
     expect(tester.state(find.byType(GlassDock)), same(stateBefore));
 
-    // 动画结束：实时效果自动恢复。
+    // The same dock stays mounted after the transition.
     animating.value = false;
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('dock-underlay')), findsOneWidget);
@@ -103,7 +150,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // 降级材质不拦交互：动画期间点「书架」照常回调。
+    // Navigation stays interactive during the transition.
     await tester.tap(
       find.descendant(of: find.byType(GlassDock), matching: find.text('书架')),
     );

@@ -308,6 +308,7 @@ class _AudioPlaybackController extends ChangeNotifier
     AudioPreferences.instance.backgroundPlayback.addListener(
       _preferencesChanged,
     );
+    AudioPreferences.instance.defaultVoice.addListener(_defaultVoiceChanged);
     _history = AudioHistory(request.historyStore ?? LibraryStore.instance);
     final lifecycle = WidgetsBinding.instance.lifecycleState;
     _appActive = lifecycle == null || desktopInactiveStillVisible(lifecycle);
@@ -517,7 +518,16 @@ class _AudioPlaybackController extends ChangeNotifier
 
   List<String> get _preferredToneIds => _hasFixedTone
       ? const []
-      : _extras.tones.preferredListeningTones.map((tone) => tone.id).toList();
+      : _extras.tones
+            .listeningTones(AudioPreferences.instance.defaultVoice.value)
+            .map((tone) => tone.id)
+            .toList();
+
+  void _defaultVoiceChanged() {
+    if (_closed || !_automaticTone) return;
+    _discardNextAudio();
+    _syncListenClock();
+  }
 
   void _applyExtras(AudioExtras loaded) {
     final previous = _preferredToneIds;
@@ -2007,6 +2017,7 @@ class _AudioPlaybackController extends ChangeNotifier
   Future<void> _close() async {
     if (_closed) return;
     _closed = true;
+    AudioPreferences.instance.defaultVoice.removeListener(_defaultVoiceChanged);
     _discardNextAudio();
     _resetTrackRecovery(this);
     _unregisterFairMemoryFlush?.call();

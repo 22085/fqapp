@@ -1,3 +1,4 @@
+import '../services/drama_feature_preferences.dart';
 import '../services/desktop_platform.dart';
 import '../services/audio_floating_routes.dart';
 import '../services/app_log.dart';
@@ -123,7 +124,20 @@ class PlayerPage extends StatefulWidget {
   });
 
   @override
-  State<PlayerPage> createState() => _PlayerPageState();
+  // Disabled routes never construct a playback state or start loading media.
+  State<PlayerPage> createState() =>
+      // ignore: no_logic_in_create_state
+      DramaFeaturePreferences.instance.enabled.value
+      ? _PlayerPageState()
+      : _DramaDisabledPlayerState();
+}
+
+class _DramaDisabledPlayerState extends State<PlayerPage> {
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('短剧')),
+    body: const Center(child: Text('短剧功能已关闭，可在外观设置中开启。')),
+  );
 }
 
 class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {

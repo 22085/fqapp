@@ -43,6 +43,7 @@ import 'services/audio_download_store.dart';
 import 'services/audio_floating_routes.dart';
 import 'services/drama_cache_preferences.dart';
 import 'services/audio_preferences.dart';
+import 'services/drama_feature_preferences.dart';
 import 'services/player_panel_preferences.dart';
 import 'services/player_preferences.dart';
 import 'services/player_layout_preferences.dart';
@@ -199,6 +200,8 @@ Future<void> _loadLocalData() async {
   await Future.wait<void>([
     // Load before interactive pages mount, so a saved opt-out applies at launch.
     optional(HapticPreferences.instance.load),
+    optional(DramaFeaturePreferences.instance.load),
+    optional(AudioPreferences.instance.load),
     LibraryStore.instance.init(),
     // The 加入书架 collection is optional data: a failure here must not block
     // startup, which is why it shares the retryable bootstrap with the history.
@@ -264,8 +267,6 @@ Future<void> _loadLocalData() async {
       await sync.initialize();
     }),
   );
-  // 听书后台播放开关：异步读取 SharedPreferences，失败退化为默认开启。
-  unawaited(AudioPreferences.instance.load());
   // 短剧「边看边往后缓存」的开关与集数：同一条装配链里读，避免播放页
   // 起来时还没加载完、拿默认值把用户关掉的开关又打开。
   unawaited(DramaCachePreferences.instance.load());
@@ -694,6 +695,7 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
   /// 首页头部是普通 sliver（不是折叠 AppBar），把 offset 归零即等价，吸顶的
   /// 分类栏会自己重新吸住。
   void _selectTab(int index) {
+    if (index == 1 && !DramaFeaturePreferences.instance.enabled.value) return;
     if (index != _index) {
       FrameStats.mark('shell tab $index');
       // 先广播可见性：页面据此暂停/恢复播放器与定时器，不靠 TickerMode 翻转
@@ -787,7 +789,9 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
         // 切到短剧 tab。
         return LibraryPage(
           onBrowse: () => _selectTab(0),
-          onFindDrama: () => _selectTab(1),
+          onFindDrama: DramaFeaturePreferences.instance.enabled.value
+              ? () => _selectTab(1)
+              : null,
         );
       default:
         return const MinePage();
@@ -806,7 +810,9 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
     einkModeNotifier.addListener(_onEinkModeChanged);
     // 初始可见页：页面据此决定是否暂停播放器/定时器。
     shellVisibleTab.value = _index;
-    _pageMotion.addStatusListener(_onPageMotionStatus);
+    DramaFeaturePreferences.instance.enabled.addListener(
+      _onDramaFeatureChanged,
+    );
     _startBackend();
   }
 
@@ -818,15 +824,24 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
     if (mounted) setState(() {});
   }
 
-  /// 页面滑动动画结束时触发一次 rebuild：让 dock 恢复 BackdropFilter
-  /// 实时模糊（动画期间跳过了模糊以避免逐帧全屏高斯开销）。
-  void _onPageMotionStatus(AnimationStatus status) {
-    if ((status == AnimationStatus.completed ||
-            status == AnimationStatus.dismissed) &&
-        mounted) {
-      FrameStats.mark('motion end');
-      setState(() {});
-    }
+  void _onDramaFeatureChanged() {
+    if (!mounted) return;
+    final enabled = DramaFeaturePreferences.instance.enabled.value;
+    if (!enabled && desktopTab.value == 1) desktopTab.value = 0;
+    setState(() {
+      if (enabled) return;
+      _visitedTabs.remove(1);
+      _tabCache.remove(1);
+      _tabCache.remove(2);
+      if (_index == 1 || _premount == 1) {
+        ++_premountGeneration;
+        if (_index == 1) _index = 0;
+        _premount = null;
+        _pageFrom = _index.toDouble();
+        _pageMotion.value = 1;
+        shellVisibleTab.value = _index;
+      }
+    });
   }
 
   Future<void> _startBackend() async {
@@ -898,7 +913,9 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
   void dispose() {
     dramaLightPageNotifier.removeListener(_onDramaChromeChanged);
     einkModeNotifier.removeListener(_onEinkModeChanged);
-    _pageMotion.removeStatusListener(_onPageMotionStatus);
+    DramaFeaturePreferences.instance.enabled.removeListener(
+      _onDramaFeatureChanged,
+    );
     _homeScroll.dispose();
     _pageMotion.dispose();
     super.dispose();
@@ -922,10 +939,15 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
             index: index,
             children: [
               HomePage(cueLoader: ApiClient.instance.searchCue),
-              const DramaPage(),
+              if (DramaFeaturePreferences.instance.enabled.value)
+                const DramaPage()
+              else
+                const SizedBox.shrink(),
               LibraryPage(
                 onBrowse: () => desktopTab.value = 0,
-                onFindDrama: () => desktopTab.value = 1,
+                onFindDrama: DramaFeaturePreferences.instance.enabled.value
+                    ? () => desktopTab.value = 1
+                    : null,
               ),
               const MinePage(),
             ],
@@ -1025,7 +1047,7 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
         onSelected: _selectTab,
         overVideo: dramaOnVideo,
         staticMaterial: shellDockStaticMaterial(overVideo: dramaOnVideo),
-        animating: _pageMotion.isAnimating,
+        showDrama: DramaFeaturePreferences.instance.enabled.value,
       ),
     );
   }

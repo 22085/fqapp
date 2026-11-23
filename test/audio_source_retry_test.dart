@@ -91,6 +91,42 @@ void main() {
     ], reason: '回退音色的 404 也只请求一次');
   });
 
+  testWidgets('saved preferred voice is requested before automatic fallback', (
+    tester,
+  ) async {
+    await AudioPreferences.instance.setDefaultVoice(
+      DefaultListeningVoice.matureClassic,
+    );
+    _sourceResponse = (request) async {
+      final tone = request.url.queryParameters['tone_id'];
+      if (tone == '64') {
+        return _json({'code': 101000, 'message': 'NO_THIS_TONE'}, 200);
+      }
+      return _json(_playinfoPayload('1'), 200);
+    };
+    final players = <ControlledNativePlayer>[];
+    await _mount(
+      tester,
+      players: players,
+      extras: const AudioExtras(
+        tones: AudioToneSet(
+          ttsTones: [
+            AudioTone(id: '96', title: '多角色对话升级版'),
+            AudioTone(id: '64', title: '成熟大叔'),
+          ],
+        ),
+      ),
+    );
+    await _pumpUntil(
+      tester,
+      () => players.isNotEmpty && players.single.isPlaying,
+    );
+    expect(_sourceRequests.map((url) => url.queryParameters['tone_id']), [
+      '64',
+      '96',
+    ]);
+  });
+
   testWidgets('the next chapter buffers and falls back before auto-advance', (
     tester,
   ) async {

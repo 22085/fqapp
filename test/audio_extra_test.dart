@@ -3,6 +3,28 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:fqapp/models/audio_extra.dart';
 
 void main() {
+  test('a chosen default voice comes before the usual fallback order', () {
+    const tones = AudioToneSet(
+      ttsTones: [
+        AudioTone(id: '96', title: '多角色对话升级版'),
+        AudioTone(id: '74', title: '成熟大叔升级版'),
+        AudioTone(id: '64', title: '成熟大叔'),
+      ],
+    );
+    expect(
+      tones
+          .listeningTones(DefaultListeningVoice.matureClassic)
+          .map((voice) => voice.id),
+      ['64', '96', '74'],
+    );
+    expect(
+      tones
+          .listeningTones(DefaultListeningVoice.dialogueClassic)
+          .map((voice) => voice.id),
+      ['96', '74', '64'],
+    );
+  });
+
   test('ranked voices recognize short server labels and upgrade badges', () {
     const tones = AudioToneSet(
       ttsTones: [

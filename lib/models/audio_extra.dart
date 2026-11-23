@@ -12,6 +12,17 @@
 ///    return `1301008 no available speech text`.
 library;
 
+enum DefaultListeningVoice {
+  automatic('自动'),
+  dialogueUpgraded('多角色对话升级版'),
+  dialogueClassic('多角色对话经典版'),
+  matureUpgraded('成熟大叔升级版'),
+  matureClassic('成熟大叔');
+
+  const DefaultListeningVoice(this.label);
+  final String label;
+}
+
 /// A selectable reading voice.
 class AudioTone {
   const AudioTone({
@@ -113,7 +124,11 @@ class AudioToneSet {
   }
 
   /// Listening order for the supported dialogue and narrator variants.
-  List<AudioTone> get preferredListeningTones {
+  List<AudioTone> get preferredListeningTones => listeningTones();
+
+  List<AudioTone> listeningTones([
+    DefaultListeningVoice preferred = DefaultListeningVoice.automatic,
+  ]) {
     const groups = [
       {'多角色对话升级版', '多角色对话升级'},
       {'多角色对话经典版', '多角色对话经典', '多角色对话'},
@@ -135,8 +150,13 @@ class AudioToneSet {
       return title;
     }
 
+    final groupIndex = preferred.index - 1;
     return [
-      for (final names in groups)
+      for (final names in [
+        if (groupIndex >= 0) groups[groupIndex],
+        for (var i = 0; i < groups.length; i++)
+          if (i != groupIndex) groups[i],
+      ])
         for (final tone in ttsTones)
           if (tone.id.trim().isNotEmpty && names.contains(nameOf(tone))) tone,
     ];
