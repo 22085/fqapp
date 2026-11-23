@@ -1325,6 +1325,21 @@ APK 缺 `io.flutter.plugins.GeneratedPluginRegistrant`,启动即类缺失后 SIG
 (空实体/非空不可播/解码失败)尚未汇总,Windows 桌面首帧仍未验证。脱敏 trace 与截图
 保存于忽略目录 `build/validation/playback-ui/`,不落播放地址、查询、正文、签名或真实身份。
 
+2026-11-23 媒体层 DNS 失败与脱敏诊断:
+
+当前 CI APK 在现有实例 1 上复现独立失败:`tab-b` 已返回 200 且 body 非空,但
+`CryptoNative` 的 `httpSize`/`streamConnect` 连续报 `UnknownHostException`,ExoPlayer
+最终以 `Cannot determine a valid MP4 file length` 或 `MP4 payload read failed` 结束;
+点击重试仍失败。重启应用并重新取流后,同一集正常出画面,下一部剧也正常,说明这是
+瞬时媒体 CDN/DNS 失败,不是取流 200 空实体,也不是整机断网。失败细节只保存在
+`build/validation/playback-ui/`,未记录 URL、查询、签名或真实身份。
+
+为定位此类问题,`HttpRangeClient` 的失败日志改为结构化脱敏字段:
+`phase=size|range|prepare|connect|read`、`host=<host SHA-256 前 16 hex>`、
+`error=<异常类名>`、`attempt`、`status`;不记录完整 URL、查询、正文或签名。
+`HttpRangeDiagnosticsTest` 增加 DNS 失败与 403 脱敏断言。本批只增加可观测性,
+不改变重试、取流或播放行为;媒体 DNS 的恢复策略需在 host 指纹分布确认后另做。
+
 2026-11-15 在 MuMu 6.8.8 / Android 12 / 实例 0 的实际上游路径中，横屏和竖屏
 样本均显示 1080P、720P、540P、480P、360P，Rust 与 Dart 同次请求记录的档位数一致。
 下载上限 720 的文件实际为横屏 1280×720、竖屏 720×1280，重开均从离线文件出首帧；
