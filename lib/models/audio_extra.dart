@@ -120,12 +120,25 @@ class AudioToneSet {
       {'成熟大叔升级版', '成熟大叔音升级版', '成熟大叔升级', '成熟大叔音升级'},
       {'成熟大叔', '成熟大叔音'},
     ];
+    String nameOf(AudioTone tone) {
+      final title = tone.title.replaceAll(RegExp(r'[\s（）()]'), '');
+      final upgraded = const {'升级', '升级版'}.contains(tone.badge.trim());
+      if (tone.isMultiTone) {
+        if (title == '升级版' || (title == '多角色对话' && upgraded)) {
+          return '多角色对话升级版';
+        }
+        if (title == '经典版') return '多角色对话经典版';
+      }
+      if (upgraded && const {'成熟大叔', '成熟大叔音'}.contains(title)) {
+        return '成熟大叔升级版';
+      }
+      return title;
+    }
+
     return [
       for (final names in groups)
         for (final tone in ttsTones)
-          if (tone.id.trim().isNotEmpty &&
-              names.contains(tone.title.replaceAll(RegExp(r'[\s（）()]'), '')))
-            tone,
+          if (tone.id.trim().isNotEmpty && names.contains(nameOf(tone))) tone,
     ];
   }
 
