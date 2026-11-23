@@ -182,6 +182,56 @@ void main() {
       ShelfViewStore.instance.resetForTest();
     });
 
+    for (final (width, scale, columns) in [
+      (360.0, 1.0, 6),
+      (320.0, 1.0, 3),
+      (360.0, 2.0, 3),
+    ]) {
+      testWidgets(
+        'shelf filters fit $columns columns at $width dp and ${scale}x',
+        (tester) async {
+          final size = Size(width, 900);
+          await tester.binding.setSurfaceSize(size);
+          addTearDown(() => tester.binding.setSurfaceSize(null));
+          await tester.pumpWidget(
+            _app(_style(), size: size, textScaler: TextScaler.linear(scale)),
+          );
+          await tester.pumpAndSettle();
+
+          final chips = [
+            for (final kind in [
+              'all',
+              'book',
+              'manga',
+              'video',
+              'manju',
+              'audio',
+            ])
+              find.byKey(Key('library-shelf-kind-$kind')),
+          ];
+          final bounds = chips.map(tester.getRect).toList();
+          expect(
+            bounds.where((rect) => rect.top == bounds.first.top),
+            hasLength(columns),
+          );
+          for (final rect in bounds) {
+            expect(rect.left, greaterThanOrEqualTo(0));
+            expect(rect.right, lessThanOrEqualTo(width));
+            expect(rect.width, greaterThanOrEqualTo(48));
+            expect(rect.height, greaterThanOrEqualTo(48));
+          }
+          await tester.tap(chips.last);
+          await tester.pumpAndSettle();
+          expect(chips.map(tester.getRect), orderedEquals(bounds));
+          expect(
+            find.byKey(const Key('classic-shelf-active-filters')),
+            findsOneWidget,
+          );
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
     for (final initial in [0, 2]) {
       for (final swipe in [false, true]) {
         testWidgets('书架${swipe ? '滑动' : '点按'} $initial 到 1 下划线逐帧不越位', (

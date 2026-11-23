@@ -290,25 +290,51 @@ mixin _LibraryClassicChrome on _LibraryShelfViews {
   );
 
   /// 书架 tab 的媒介类型筛选(全部 / 小说 / 漫画 / 短剧 / 漫剧 / 听书)。
-  Widget _classicShelfKindFilter() => Wrap(
-    spacing: 8,
-    runSpacing: 8,
-    children: [
-      for (final (value, label) in const [
+  Widget _classicShelfKindFilter() => LayoutBuilder(
+    builder: (context, constraints) {
+      const kinds = [
         (null, '全部'),
         ('book', '小说'),
         ('manga', '漫画'),
         ('video', '短剧'),
         ('manju', '漫剧'),
         ('audio', '听书'),
-      ])
-        HomeChip(
-          key: Key('library-shelf-kind-${value ?? 'all'}'),
-          label: label,
-          selected: _shelfKindFilter == value,
-          onTap: () => setState(() => _shelfKindFilter = value),
-        ),
-    ],
+      ];
+      const gap = 6.0;
+      const padding = 9.0;
+      final labelWidth = MediaQuery.textScalerOf(context).scale(13) * 2;
+      final minimum = (labelWidth + padding * 2).clamp(
+        HomeChip.minTapTarget,
+        double.infinity,
+      );
+      final available = constraints.maxWidth;
+      final capacity = ((available + gap) / (minimum + gap)).floor().clamp(
+        1,
+        kinds.length,
+      );
+      final rows = (kinds.length / capacity).ceil();
+      final columns = (kinds.length / rows).ceil();
+      final width = ((available - gap * (columns - 1)) / columns)
+          .floorToDouble()
+          .clamp(0.0, rows == 1 ? minimum + 12 : available);
+      return Wrap(
+        spacing: gap,
+        runSpacing: gap,
+        children: [
+          for (final (value, label) in kinds)
+            SizedBox(
+              width: width,
+              child: HomeChip(
+                key: Key('library-shelf-kind-${value ?? 'all'}'),
+                label: label,
+                horizontalPadding: padding,
+                selected: _shelfKindFilter == value,
+                onTap: () => setState(() => _shelfKindFilter = value),
+              ),
+            ),
+        ],
+      );
+    },
   );
 
   /// 窄屏或大字号时让整块控件换行，保留每个入口的触控宽度。
