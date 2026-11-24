@@ -529,11 +529,15 @@ class ApiClient {
     String? toneId,
     String? mode,
     String? bookId,
+    bool transcode = false,
   }) {
     final id = Uri.encodeComponent(itemId);
     return switch (tab) {
       '漫画' => _url('/api/v1/manga/$id', {'book_id': ?bookId}),
-      '短剧' || '漫剧' => _url('/api/v1/videos/$id', {'mode': ?mode}),
+      '短剧' || '漫剧' => _url('/api/v1/videos/$id', {
+        'mode': ?mode,
+        if (transcode) 'transcode': '1',
+      }),
       _ => _url('/api/v1/chapters/$id', {'tone_id': ?toneId}),
     };
   }
@@ -544,9 +548,16 @@ class ApiClient {
     String? toneId,
     String? mode,
     PlaybackPurpose? purpose,
+    bool transcode = false,
   }) async {
     final r = await _get(
-      _contentUrl(itemId, tab: tab, toneId: toneId, mode: mode),
+      _contentUrl(
+        itemId,
+        tab: tab,
+        toneId: toneId,
+        mode: mode,
+        transcode: transcode,
+      ),
       playbackPurpose: (tab == '短剧' || tab == '漫剧') ? purpose : null,
     );
     return _decodeAsync(r);
