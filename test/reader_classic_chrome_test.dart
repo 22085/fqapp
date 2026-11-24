@@ -1173,7 +1173,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('reader-font-size-increase')));
     await tester.pumpAndSettle();
-    expect(find.text('19'), findsOneWidget);
+    // 官方档位表下一档：默认 24 → 25（不是 ±1 之外的跳变）。
+    expect(find.text('25'), findsOneWidget);
     await tester.tap(find.byTooltip('关闭排版设置'));
     await tester.pumpAndSettle();
     expect(find.byType(ReaderVideoButton), findsNothing);
