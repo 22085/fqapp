@@ -902,10 +902,23 @@ async fn fetch_resolved_playback_model(
                 });
                 return Ok(answer);
             }
-            has_codec_rejection |= matches!(answer.resolved, VideoSourceResolution::CodecRejected);
+            // A failed fallback cannot erase a usable bytevc2-only primary.
+            // Keep looking for native playback, then use that primary only for
+            // callers that explicitly declared their own transcoder.
+            let primary_transcodable = transcodes_bytevc2
+                && answer.parsed.models.iter().any(|model| {
+                    model_primary_rejected_only(model)
+                        && matches!(
+                            extract_transcodable_video_model_source(model),
+                            VideoSourceResolution::Found(_, _)
+                        )
+                });
+            let codec_rejected = matches!(answer.resolved, VideoSourceResolution::CodecRejected)
+                || primary_transcodable;
+            has_codec_rejection |= codec_rejected;
             let has_transcodable_source = transcodes_bytevc2
                 && !rejected_has_transcodable_source
-                && matches!(answer.resolved, VideoSourceResolution::CodecRejected)
+                && codec_rejected
                 && matches!(
                     transcodable_source(&answer),
                     VideoSourceResolution::Found(_, _)
@@ -2589,23 +2602,17 @@ fn transcodable_source(answer: &ResolvedPlaybackModel) -> VideoSourceResolution 
     VideoSourceResolution::NotFound
 }
 
-/// The model's own list read with the codec gate relaxed to `bytevc2`. Same
-/// seed handling as the strict extractor, so the url it yields is the one the
-/// request would otherwise have used.
+/// The model's own list read with the codec gate relaxed to `bytevc2`.
+/// URL decryption and content-key derivation use the shared entry extractor.
 fn extract_transcodable_video_model_source(model: &Map<String, Value>) -> VideoSourceResolution {
     let key_seed = model
         .get("key_seed")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .and_then(|s| audio_b64_decode(s).ok());
-    let encrypted_without_seed = video_model_encrypted(model) && key_seed.is_none();
-    let resolve = |info: &Map<String, Value>| {
-        if encrypted_without_seed {
-            None
-        } else {
-            decrypt_variant_entry(info, key_seed.as_deref())
-        }
-    };
+    // CENC encrypts the media, not necessarily its URL. Plain URLs need only
+    // the entry's spade content key; encrypted URLs still require key_seed.
+    let resolve = |info: &Map<String, Value>| decrypt_variant_entry(info, key_seed.as_deref());
     transcodable_list_source(model.get("video_list"), resolve)
 }
 
