@@ -70,6 +70,7 @@ class _AudioPlaybackController extends ChangeNotifier
   bool _autoAdvance = true;
   String? _error;
   String _toneId = '0';
+  String _requestedToneId = '0';
   String _excerpt = '';
   int _excerptGeneration = 0;
   double _rate = 1;
@@ -166,7 +167,7 @@ class _AudioPlaybackController extends ChangeNotifier
       return;
     }
     final itemId = _chapters[_index + 1].itemId;
-    final toneId = _automaticTone ? '0' : _toneId;
+    final toneId = _automaticTone ? '0' : _requestedToneId;
     final next = _NextAudioChapter(itemId, toneId);
     _nextAudio = next;
     next.ready = _prepareNextAudio(next);
@@ -382,7 +383,7 @@ class _AudioPlaybackController extends ChangeNotifier
         byId[voice.id] = voice;
       }
     }
-    final savedTone = saved?['toneId'];
+    final savedTone = saved?['requestedToneId'] ?? saved?['toneId'];
     final savedRate = saved?['rate'];
     final initialTone = request.initialToneId?.trim();
     // Downloaded audio proves the saved voice is playable even when voice
@@ -425,10 +426,10 @@ class _AudioPlaybackController extends ChangeNotifier
       if (generation == 1) {
         if (savedTone is String && byId.containsKey(savedTone)) {
           _automaticTone = saved?['automaticTone'] == true || savedTone == '0';
-          _toneId = savedTone;
+          _toneId = _requestedToneId = savedTone;
         }
         if (initialTone != null && initialTone.isNotEmpty) {
-          _toneId = initialTone;
+          _toneId = _requestedToneId = initialTone;
           _automaticTone = initialTone == '0';
         }
         if (savedRate is num && isSupportedRate(savedRate.toDouble())) {
@@ -440,7 +441,7 @@ class _AudioPlaybackController extends ChangeNotifier
         }
       }
       if (forceToneId != null && forceToneId.isNotEmpty) {
-        _toneId = forceToneId;
+        _toneId = _requestedToneId = forceToneId;
         _automaticTone = forceToneId == '0';
       }
       if (saved?['autoAdvance'] case final bool enabled) {
@@ -817,7 +818,7 @@ class _AudioPlaybackController extends ChangeNotifier
     _publishMoreState();
     try {
       final itemId = _chapters[target].itemId;
-      final lookupTone = _automaticTone ? '0' : _toneId;
+      final lookupTone = _automaticTone ? '0' : _requestedToneId;
       final source = await _loadSourceWithRetry(itemId, lookupTone);
       if (!_current(generation, player)) return;
       _validateAudioSource(source, itemId);
@@ -922,7 +923,7 @@ class _AudioPlaybackController extends ChangeNotifier
       await _settingsReady;
       if (!_current(generation)) return;
       if (toneId != null) {
-        _toneId = toneId;
+        _toneId = _requestedToneId = toneId;
         _automaticTone = toneId == '0';
       }
       _skipOutroFired = false;
@@ -953,7 +954,7 @@ class _AudioPlaybackController extends ChangeNotifier
           completed ??
           (position == null && sameChapter && saved?['completed'] == true);
       final itemId = _chapters[index].itemId;
-      final lookupTone = _automaticTone ? '0' : _toneId;
+      final lookupTone = _automaticTone ? '0' : _requestedToneId;
       if (lookupTone == '0' && !_hasFixedTone && _preferredToneIds.isEmpty) {
         _lateToneLookupGeneration = generation;
       }
@@ -1577,6 +1578,7 @@ class _AudioPlaybackController extends ChangeNotifier
           ? position.inMilliseconds / duration.inMilliseconds
           : 0.0,
       'toneId': _toneId,
+      if (!_automaticTone) 'requestedToneId': _requestedToneId,
       'automaticTone': _automaticTone,
       'rate': _rate,
       'autoAdvance': _autoAdvance,
@@ -1942,7 +1944,7 @@ class _AudioPlaybackController extends ChangeNotifier
         _cover = cover;
         _chapters = List<Chapter>.unmodifiable(chapters);
         _index = start;
-        _toneId = toneId;
+        _toneId = _requestedToneId = toneId;
         _restoredLocalVoice = null;
         _versionHasFixedTone = targetHasFixedTone;
         _extras = const AudioExtras();

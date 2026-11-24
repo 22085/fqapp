@@ -217,7 +217,7 @@ class LibraryBackup {
         throw const FormatException('旧版备份不能携带来源限定的历史进度');
       }
       final clean = _common(record);
-      for (final key in ['bookId', 'chapterId', 'toneId']) {
+      for (final key in ['bookId', 'chapterId', 'toneId', 'requestedToneId']) {
         if (record[key] != null && record[key] != '') {
           clean[key] = _id(record[key]);
         }
@@ -271,7 +271,12 @@ class LibraryBackup {
         }
         clean['positionUnit'] = 'comic-page';
       }
-      for (final key in ['autoAdvance', 'completed', 'fanqieImported']) {
+      for (final key in [
+        'autoAdvance',
+        'completed',
+        'fanqieImported',
+        'automaticTone',
+      ]) {
         if (record[key] == null) continue;
         if (record[key] is! bool) throw FormatException('备份字段 $key 无效');
         clean[key] = record[key];
@@ -307,7 +312,7 @@ class LibraryBackup {
     );
   }
 
-  Uint8List encode() {
+  Map<String, dynamic> toJson() {
     final version = _versionFor(history, aiData);
     final payload = <String, dynamic>{
       'format': _format,
@@ -325,7 +330,11 @@ class LibraryBackup {
     // the unknown top-level key, so the version number does not change.
     if (groups.isNotEmpty) payload['groups'] = groups;
     if (aiData != null) payload['ai'] = aiData;
-    final bytes = Uint8List.fromList(utf8.encode(jsonEncode(payload)));
+    return payload;
+  }
+
+  Uint8List encode() {
+    final bytes = Uint8List.fromList(utf8.encode(jsonEncode(toJson())));
     if (bytes.length > maxBytes) throw const FormatException('备份数据超过 16 MB');
     return bytes;
   }
