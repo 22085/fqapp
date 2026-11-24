@@ -90,12 +90,18 @@ void main() {
 
   ExcludeSemantics excludeOf(WidgetTester tester, GlobalKey key) =>
       tester.widget<ExcludeSemantics>(
-        find.byKey(const ValueKey('dock-auto-hide-exclude')),
+        find.descendant(
+          of: find.byType(DockAutoHideSlide),
+          matching: find.byType(ExcludeSemantics),
+        ),
       );
 
   IgnorePointer ignoreOf(WidgetTester tester, GlobalKey key) =>
       tester.widget<IgnorePointer>(
-        find.byKey(const ValueKey('dock-auto-hide-ignore')),
+        find.descendant(
+          of: find.byType(DockAutoHideSlide),
+          matching: find.byType(IgnorePointer),
+        ),
       );
   testWidgets('dragging the list up hides the dock, dragging down reveals it', (
     tester,
@@ -357,6 +363,62 @@ void main() {
       // 上层还有路由时，secondaryAnimation 停在 1，_onChange 不应触发 reveal。
       expect(hide.hidden, isTrue);
       reveal.detach();
+    });
+  });
+
+  group('instance-scoped keys (#386)', () {
+    testWidgets('两个 DockAutoHideSlide 不撞 key', (tester) async {
+      final first = DockAutoHide();
+      final second = DockAutoHide();
+      addTearDown(first.dispose);
+      addTearDown(second.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                DockAutoHideSlide(
+                  hide: first,
+                  child: const SizedBox(height: 40, child: Text('dock A')),
+                ),
+                DockAutoHideSlide(
+                  hide: second,
+                  child: const SizedBox(height: 40, child: Text('dock B')),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      expect(tester.takeException(), isNull);
+
+      // 两层的 Key 必须不同（固定 ValueKey 时代这里是同一个 key，第二个
+      // 实例会把第一份的屏蔽状态带过来）。
+      final excludes = tester
+          .widgetList<ExcludeSemantics>(
+            find.descendant(
+              of: find.byType(DockAutoHideSlide),
+              matching: find.byType(ExcludeSemantics),
+            ),
+          )
+          .toList();
+      expect(excludes.length, 2);
+      expect(excludes[0].key, isNot(excludes[1].key));
+
+      // 只收第二份：第一份的语义/命中屏蔽层不得跟着变。
+      second.value = true;
+      await tester.pumpAndSettle();
+      final hidden = tester
+          .widgetList<ExcludeSemantics>(
+            find.descendant(
+              of: find.byType(DockAutoHideSlide),
+              matching: find.byType(ExcludeSemantics),
+            ),
+          )
+          .where((w) => w.excluding)
+          .toList();
+      expect(hidden.length, 1);
+      expect(hidden.single.key, excludes[1].key);
     });
   });
 }

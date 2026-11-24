@@ -1,8 +1,9 @@
-// RootShell 集成守卫:底栏已常驻,墨水屏切换仍要重建壳层,且不再有滚动自动
-// 隐藏的包装层(旧实现的 _onEinkModeChanged 需要 reveal + setState)。
+// RootShell 集成守卫：墨水屏整层禁用底栏自动收起，并且切进墨水屏时把可能
+// 已经收起的底栏零时长露出（500ms 平移在局部刷新屏上会留明显残影）。
 //
-// 判断可见性用真实几何:底栏必须与可视区相交且位置在拖动/eink 切换前后不动,
-// 光靠 findsOneWidget 抓不到滑出屏外的情况。
+// 这套接线在 331c58e0（PR #429 整合）里整段丢失过，随后本用例被改写成
+// 「底栏常驻」守卫。现在恢复原契约，并用真实几何判断可见性：只看
+// findsOneWidget 抓不到已经滑到屏外的底栏。
 import 'package:flutter/foundation.dart'
     show debugDefaultTargetPlatformOverride;
 import 'package:material_ui/material_ui.dart';
@@ -46,7 +47,7 @@ void main() {
     searchLoader: (query, {int page = 1}) async => const [],
   );
 
-  testWidgets('eink toggle keeps the dock visible (no auto-hide wrapper)', (
+  testWidgets('eink disables auto-hide and reveals without a 500ms slide', (
     tester,
   ) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
@@ -69,13 +70,13 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // 底栏已常驻:不再有滚动自动隐藏的包装层。
-    expect(
-      find.ancestor(
-        of: find.byType(ShellDock),
-        matching: find.byType(DockAutoHideSlide),
-      ),
-      findsNothing,
+    final shellSlide = find.ancestor(
+      of: find.byType(ShellDock),
+      matching: find.byType(DockAutoHideSlide),
+    );
+    expect(shellSlide, findsOneWidget);
+    AnimatedSlide slideWidget() => tester.widget<AnimatedSlide>(
+      find.descendant(of: shellSlide, matching: find.byType(AnimatedSlide)),
     );
 
     const surface = Rect.fromLTWH(0, 0, 400, 800);
@@ -88,33 +89,44 @@ void main() {
         greaterThan(rect.height * 0.9),
         reason: '$when:底栏必须几乎整块落在可视区内',
       );
-      expect(rect.top, lessThan(surface.bottom), reason: '$when:底栏不能滑出下边界');
-      expect(rect.bottom, greaterThan(surface.top), reason: '$when:底栏不能滑出上边界');
     }
 
     expectDockVisible('初始');
-    final resting = dockRect();
 
-    // 首页 feed 上滚一把:底栏不会被收起,位置也不动。
+    // 正常模式：滚一把就把底栏收起来（自动隐藏确实生效）。
     await tester.dragFrom(const Offset(200, 300), const Offset(0, -200));
     await tester.pumpAndSettle();
-    expectDockVisible('滚动后');
-    expect(dockRect().top, closeTo(resting.top, 0.5), reason: '滚动不应移动底栏');
-    expect(dockRect().bottom, closeTo(resting.bottom, 0.5), reason: '滚动不应移动底栏');
+    expect(slideWidget().offset, const Offset(0, 1));
 
-    // 墨水屏开与关:监听仍收发重建,底栏始终可见且不位移,不能抛异常。
+    // 切进墨水屏：第一帧就露出，且过渡时长为零（不跑 500ms 残影）。
     einkModeNotifier.value = true;
     await tester.pump();
-    expectDockVisible('eink 开');
-    expect(dockRect().top, closeTo(resting.top, 0.5), reason: 'eink 下底栏不应移动');
-    einkModeNotifier.value = false;
-    await tester.pump();
-    expectDockVisible('eink 关');
     expect(
-      dockRect().bottom,
-      closeTo(resting.bottom, 0.5),
-      reason: '退出 eink 后底栏不应移动',
+      slideWidget().offset,
+      Offset.zero,
+      reason: '进入墨水屏必须立刻露出（_onEinkModeChanged 的 reveal）',
     );
+    expect(
+      slideWidget().duration,
+      Duration.zero,
+      reason: '墨水屏下 reveal 过渡必须零时长',
+    );
+    expectDockVisible('eink 开');
+
+    // 墨水屏下再滚：disabledProbe 整层短路，底栏不动。
+    final resting = dockRect();
+    await tester.dragFrom(const Offset(200, 300), const Offset(0, -200));
+    await tester.pumpAndSettle();
+    expect(slideWidget().offset, Offset.zero);
+    expect(dockRect().top, closeTo(resting.top, 0.5), reason: 'eink 下底栏不应移动');
+    expectDockVisible('eink 滚动后');
+
+    // 退出墨水屏：自动隐藏恢复。
+    einkModeNotifier.value = false;
+    await tester.pumpAndSettle();
+    await tester.dragFrom(const Offset(200, 300), const Offset(0, -200));
+    await tester.pumpAndSettle();
+    expect(slideWidget().offset, const Offset(0, 1), reason: '退出墨水屏后应恢复滚动收起');
 
     expect(tester.takeException(), isNull);
     // _verifyInvariants 先于 tearDown 检查 debug 变量,必须在这里复位。
