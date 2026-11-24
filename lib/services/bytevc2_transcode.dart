@@ -35,12 +35,17 @@ class Bytevc2TranscodeService {
   static const Duration _connectTimeout = Duration(seconds: 20);
   static const Duration _readTimeout = Duration(minutes: 3);
 
-  Future<bool>? _available;
+  bool? _available;
 
   /// Whether this install carries a usable transcoder. The answer cannot change
   /// while the process lives, so it is resolved once. A platform error (the
   /// channel is absent in tests, or on desktop) means "not available".
-  Future<bool> available() => _available ??= _invokeBool('available');
+  ///
+  /// The resolved *value* is cached, never the future: a future resolved inside
+  /// one zone does not deliver to a caller in another (each widget test runs in
+  /// its own fake-async zone), so caching it would hang every later caller.
+  Future<bool> available() async =>
+      _available ??= await _invokeBool('available');
 
   Future<bool> _invokeBool(String method) async {
     try {
