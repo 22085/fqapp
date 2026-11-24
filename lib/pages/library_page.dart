@@ -625,7 +625,9 @@ class _LibraryPageState extends State<LibraryPage>
               padding: EdgeInsets.fromLTRB(24, topInset, 24, 0),
               child: _editing ? _editBar(context) : _tabSegments(context),
             ),
-            const SizedBox(height: 8),
+            // 一级 tab 与内容区间距 8 → 6（issue #478）：dense 胶囊已经矮了
+            // 6dp，再收紧夹缝让顶部整块回到“切换器”的体积。
+            const SizedBox(height: 6),
           ],
           Expanded(
             child: TabSwipeArea(

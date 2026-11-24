@@ -55,7 +55,9 @@ class _ClassicTabButton extends StatelessWidget {
       child: SizedBox(
         width: width,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+          // 上下 2 → 1、标签与下划线间距 5 → 4（issue #478）：只削掉浮量，
+          // 下划线仍占固定 3dp，滑动时的高度基准不变。
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -72,7 +74,7 @@ class _ClassicTabButton extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(height: 5),
+              const SizedBox(height: 4),
               // The underline is drawn once for the whole row now, so it can
               // slide between tabs instead of each tab fading its own in.
               SizedBox(width: 26, height: 3),

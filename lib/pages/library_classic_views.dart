@@ -1,9 +1,12 @@
 part of 'library_page.dart';
 
-// Keep these in sync with ClassicShellDock's 64dp capsule, 8dp bottom gap,
+// Keep these in sync with ClassicShellDock's 56dp capsule, 8dp bottom gap,
 // and the shared 24dp breathing room. RootShell only uses that dock outside
 // Windows, where the standalone desktop shell has no bottom bar.
-const double _classicRootDockHeight = 64;
+// The capsule shrank 64 → 56 for issue #478 (narrower top/bottom bars, more
+// room for the shelf grid); the clearance shrinks with it so the empty state
+// keeps the same breathing room above the dock.
+const double _classicRootDockHeight = 56;
 const double _classicRootDockBottomGap = 8;
 const double _classicRootDockBreathingRoom = 24;
 
@@ -190,7 +193,7 @@ mixin _LibraryClassicViews on _LibraryClassicChrome {
     );
   }
 
-  /// The classic root shell has a 64dp dock plus an 8dp gap and safe-area inset.
+  /// The classic root shell has a 56dp dock plus an 8dp gap and safe-area inset.
   /// Only Windows uses the standalone desktop tabs without [ShellDock]; other
   /// platforms retain the root dock. Edit mode also has its own bottom bar.
   double get _classicEmptyBottomClearance {
