@@ -123,7 +123,7 @@ class Bytevc2TranscodePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "25",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-movflags", "+faststart",
-            "-y", output,
+            "-f", "mp4", "-y", output,
         )
         return args
     }
@@ -132,26 +132,64 @@ class Bytevc2TranscodePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         command.redirectErrorStream(true)
         val process = command.start()
         val output = StringBuilder()
+        val logReader = Thread({
+            try {
+                process.inputStream.bufferedReader().use { reader ->
+                    val buffer = CharArray(1024)
+                    while (true) {
+                        val count = reader.read(buffer)
+                        if (count < 0) break
+                        synchronized(output) {
+                            val kept = minOf(count, MAX_LOG_CHARS - output.length)
+                            if (kept > 0) output.append(buffer, 0, kept)
+                        }
+                    }
+                }
+            } catch (_: IOException) {
+                // Killing the process or closing its pipe can interrupt a read.
+            }
+        }, "bytevc2-transcode-log").apply {
+            isDaemon = true
+            start()
+        }
+        var interrupted = false
         try {
-            process.inputStream.bufferedReader().useLines { lines ->
-                lines.forEach { line ->
-                    if (output.length < MAX_LOG_CHARS) output.appendLine(line)
+            if (!process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
+                val log = synchronized(output) { output.toString().trim() }
+                throw IllegalStateException("bytevc2 transcode timed out: $log")
+            }
+            logReader.join(CLEANUP_TIMEOUT_MS)
+            val exit = process.exitValue()
+            if (exit != 0) {
+                val log = synchronized(output) { output.toString().trim() }
+                throw IllegalStateException("bytevc2 transcode failed (exit $exit): $log")
+            }
+            return exit
+        } catch (error: InterruptedException) {
+            interrupted = true
+            throw error
+        } finally {
+            process.destroyForcibly()
+            try {
+                process.waitFor(CLEANUP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                interrupted = true
+            }
+            for (stream in listOf(process.inputStream, process.outputStream, process.errorStream)) {
+                try {
+                    stream.close()
+                } catch (_: IOException) {
+                    // Cleanup must preserve the transcode's original outcome.
                 }
             }
-            if (!process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
-                process.destroyForcibly()
-                throw IllegalStateException("bytevc2 transcode timed out: ${output.toString().trim()}")
+            logReader.interrupt()
+            try {
+                logReader.join(CLEANUP_TIMEOUT_MS)
+            } catch (_: InterruptedException) {
+                interrupted = true
             }
-        } finally {
-            process.destroy()
+            if (interrupted) Thread.currentThread().interrupt()
         }
-        val exit = process.exitValue()
-        if (exit != 0) {
-            throw IllegalStateException(
-                "bytevc2 transcode failed (exit $exit): ${output.toString().trim()}",
-            )
-        }
-        return exit
     }
 
     private fun executable(): File? {
@@ -165,6 +203,7 @@ class Bytevc2TranscodePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         const val CHANNEL = "fqapp/bytevc2transcode"
         const val BINARY = "libbvc2transcode.so"
         const val MAX_LOG_CHARS = 4096
+        const val CLEANUP_TIMEOUT_MS = 1000L
         const val DEFAULT_TIMEOUT_MS = 10 * 60 * 1000L
     }
 }

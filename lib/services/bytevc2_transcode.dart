@@ -76,7 +76,13 @@ class Bytevc2TranscodeService {
     }
     final path = await service.transcode(episode.itemId, source);
     final url = Platform.isWindows ? Uri.file(path).toString() : 'file://$path';
-    return EpisodeSource(url);
+    return EpisodeSource(
+      url,
+      '',
+      const [],
+      source.vertical,
+      source.sourceTraceId,
+    );
   }
 
   /// Transcodes [source] into `bytevc2/<itemId>.h264.mp4` and returns its path.

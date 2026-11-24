@@ -857,6 +857,7 @@ async fn fetch_resolved_playback_model(
     let request_id = crate::upstream::playback_trace::current().map_or(0, |trace| trace.request_id);
     let mut retry_deadline = None;
     let mut rejected = None;
+    let mut rejected_has_transcodable_source = false;
     let mut has_codec_rejection = false;
     loop {
         let deadline = retry_deadline.unwrap_or(fetch_deadline).min(work_deadline);
@@ -902,8 +903,16 @@ async fn fetch_resolved_playback_model(
                 return Ok(answer);
             }
             has_codec_rejection |= matches!(answer.resolved, VideoSourceResolution::CodecRejected);
-            if rejected.is_none() {
+            let has_transcodable_source = transcodes_bytevc2
+                && !rejected_has_transcodable_source
+                && matches!(answer.resolved, VideoSourceResolution::CodecRejected)
+                && matches!(
+                    transcodable_source(&answer),
+                    VideoSourceResolution::Found(_, _)
+                );
+            if rejected.is_none() || has_transcodable_source {
                 rejected = Some(answer);
+                rejected_has_transcodable_source = has_transcodable_source;
             }
             if speculative {
                 break;
