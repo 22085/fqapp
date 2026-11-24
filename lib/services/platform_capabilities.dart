@@ -11,4 +11,5 @@ bool get supportsVideoPlayback =>
     !kIsWeb &&
     (defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS ||
-        isWindowsDesktop);
+        isWindowsDesktop ||
+        isMacOSDesktop);

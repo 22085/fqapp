@@ -115,7 +115,9 @@ Future<void> _prepareRuntime() async {
     ], await rootBundle.loadString('assets/licenses/sync_storage.txt'));
   });
   if (isLinuxDesktop) await LinuxPlatform.install();
-  if (isWindowsDesktop) await DesktopPlatform.instance.initialize();
+  if (isWindowsDesktop || isMacOSDesktop) {
+    await DesktopPlatform.instance.initialize();
+  }
   // iOS 没有原生播放器通道也没有窗口管理器:把 fqapp/native_player 接到
   // 进程内的 media_kit,文件通路接到 Dart 侧实现(见 ios_platform.dart)。
   if (isIOSPlatform) await IosPlatform.install();
@@ -140,7 +142,7 @@ Future<void> _prepareRuntime() async {
   // Rust 核心日志的读取入口：日志页「Rust」视图读 runtime_dir/rust.log。
   // 核心只在 Android 落盘（桌面/测试构建不装 logger），读不到时页面给空态。
   RustLogSource.reader = BackendService.instance.readRustLog;
-  if (isWindowsDesktop || isLinuxDesktop) {
+  if (isMediaDesktop) {
     DesktopPlatform.instance.beforeClose = LinuxPlatform.beforeClose =
         () async {
           try {
@@ -261,6 +263,9 @@ Future<void> _loadLocalData() async {
   ]);
   unawaited(optional(AudioPreferences.instance.load));
   unawaited(optional(DramaFeaturePreferences.instance.load));
+  // Until the saved profile loads, retain history so a startup write cannot
+  // turn old cloud records into deletions.
+  LibraryStore.instance.keepHistoryForSync = true;
   // 多端同步的网络或安全存储故障不阻塞本机阅读。旧 WebDAV 配置由统一服务只读接管，绝不在这里启动云端覆盖流程。
   unawaited(
     optional(() async {
