@@ -460,6 +460,34 @@ async fn stream_decrypted_file(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn occupied_ports_are_skipped_in_order() {
+        use std::net::{Ipv4Addr, SocketAddr};
+        use tokio::net::TcpListener;
+
+        for _ in 0..64 {
+            let first = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let port = first.local_addr().unwrap().port();
+            let Some(expected) = port.checked_add(2) else {
+                continue;
+            };
+            let Ok(_second) = TcpListener::bind((Ipv4Addr::LOCALHOST, port + 1)).await else {
+                continue;
+            };
+            let Ok(third) = TcpListener::bind((Ipv4Addr::LOCALHOST, expected)).await else {
+                continue;
+            };
+            drop(third);
+
+            let bound = super::bind_with_fallback(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+                .await
+                .unwrap();
+            assert_eq!(bound.local_addr().unwrap().port(), expected);
+            return;
+        }
+        panic!("could not reserve three consecutive ports for the test");
+    }
+
     use super::*;
     use axum::body::Bytes;
     use futures::stream;
