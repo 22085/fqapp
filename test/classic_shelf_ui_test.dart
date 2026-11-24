@@ -25,8 +25,8 @@ import 'package:fqapp/services/shelf_store.dart';
 import 'package:fqapp/services/shelf_view_store.dart';
 import 'package:fqapp/widgets/bookshelf_card.dart';
 import 'package:fqapp/widgets/tab_swipe_area.dart';
-import 'package:fqapp/widgets/home/home_design.dart';
 import 'package:fqapp/widgets/home/home_chip.dart';
+import 'package:fqapp/widgets/home/home_design.dart';
 import 'package:fqapp/widgets/shelf/shelf_collection_view.dart';
 import 'package:fqapp/widgets/shelf/shelf_design.dart';
 import 'package:fqapp/widgets/wenku/archive_shelf.dart';
@@ -1245,6 +1245,45 @@ void main() {
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
     });
+
+    testWidgets('下滑收起一级 tab 行，上滑与切 tab 露出', (tester) async {
+      await _size(tester);
+      await tester.runAsync(() async {
+        for (var index = 0; index < 12; index++) {
+          await ShelfStore.instance.add(_bookAt(index));
+        }
+      });
+      await tester.pumpWidget(_app(_style()));
+      await tester.pumpAndSettle();
+
+      final slot = find.byKey(const Key('classic-tab-row-slot'));
+      expect(tester.getSize(slot).height, greaterThan(30), reason: '初始应完整展开');
+
+      // 下滑（reverse）收起：收起是高度归零，不是只平移，宫格真的多出一行。
+      await tester.drag(find.byType(GridView).first, const Offset(0, -240));
+      await tester.pumpAndSettle();
+      expect(tester.getSize(slot).height, 0);
+
+      // 上滑（forward）露出。
+      await tester.drag(find.byType(GridView).first, const Offset(0, 240));
+      await tester.pumpAndSettle();
+      expect(tester.getSize(slot).height, greaterThan(30));
+
+      // 收起状态下横滑切 tab：换页是“回到入口”的动作，必须把条子带回来。
+      await tester.drag(find.byType(GridView).first, const Offset(0, -240));
+      await tester.pumpAndSettle();
+      expect(tester.getSize(slot).height, 0);
+      final gesture = await tester.startGesture(const Offset(200, 500));
+      for (var frame = 0; frame < 24; frame++) {
+        await gesture.moveBy(const Offset(-10, 0));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(tester.getSize(slot).height, greaterThan(30));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
   });
 }
 
@@ -1290,6 +1329,17 @@ MediaItem _item() => MediaItem(
   title: '测试书籍',
   cover: '',
   author: '测试作者',
+  badge: '',
+  ep: '20',
+  kind: 'book',
+);
+
+/// 多本书用：宫格要能真滚起来才能触发收起。
+MediaItem _bookAt(int index) => MediaItem(
+  id: '$index',
+  title: '测试书籍$index',
+  cover: '',
+  author: '作者$index',
   badge: '',
   ep: '20',
   kind: 'book',
