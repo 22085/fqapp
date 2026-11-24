@@ -24,8 +24,22 @@ Future<LocalSyncCapture> prepareLocalSyncCapture(
   LibraryBackup backup,
   SyncSnapshot baseline,
   Map<String, dynamic>? pending,
-) => Isolate.run(() {
-  final current = SyncSnapshot.fromBackup(backup);
+) => Isolate.run(
+  () =>
+      _diffLocalSyncCapture(SyncSnapshot.fromBackup(backup), baseline, pending),
+);
+
+Future<LocalSyncCapture> diffLocalSyncCapture(
+  SyncSnapshot current,
+  SyncSnapshot baseline,
+  Map<String, dynamic>? pending,
+) => Isolate.run(() => _diffLocalSyncCapture(current, baseline, pending));
+
+LocalSyncCapture _diffLocalSyncCapture(
+  SyncSnapshot current,
+  SyncSnapshot baseline,
+  Map<String, dynamic>? pending,
+) {
   final previous = Map<String, Map<String, dynamic>>.of(baseline.values);
   if (pending != null) {
     for (final key in {...previous.keys, ...pending.keys}) {
@@ -47,7 +61,7 @@ Future<LocalSyncCapture> prepareLocalSyncCapture(
           key: current.values[key],
     },
   );
-});
+}
 
 /// At most one queued scan and one dirty flag, regardless of event volume.
 /// A follow-up goes to the back of the owner's serial queue so configuration,

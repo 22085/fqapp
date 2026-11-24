@@ -196,7 +196,10 @@ class _MultiDeviceSyncPageState extends State<MultiDeviceSyncPage> {
               const SizedBox(height: 16),
               const Text('请确认 HTTPS 地址和目录，然后切换到多端同步。'),
             ],
-            if (expanded || store.enabled || showWebDavReview) ...[
+            if (expanded ||
+                store.enabled ||
+                showWebDavReview ||
+                configured) ...[
               const SizedBox(height: 16),
               SettingsGroupCard(
                 children: [
@@ -226,7 +229,7 @@ class _MultiDeviceSyncPageState extends State<MultiDeviceSyncPage> {
                   ),
                 ],
               ),
-              if (configured && store.enabled) ...[
+              if (configured && !needsReview) ...[
                 const SizedBox(height: 16),
                 SettingsGroupCard(
                   children: [
