@@ -100,7 +100,10 @@ async fn bind_with_fallback(
             }
             Err(error) if addr.port() != 0 && is_port_in_use(&error) => {
                 let next = addr.port().checked_add(1).ok_or_else(|| {
-                    format!("listen {requested}: all ports through {} are occupied", addr.port())
+                    format!(
+                        "listen {requested}: all ports through {} are occupied",
+                        addr.port()
+                    )
                 })?;
                 addr.set_port(next);
             }
