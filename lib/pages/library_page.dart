@@ -347,7 +347,7 @@ mixin _LibraryPageStateBase on State<LibraryPage>, WidgetsBindingObserver {
     _historyChanges = LibraryStore.instance.historyListenable
       ..addListener(_storeChanged);
     _readTimeChanges = LibraryStore.instance.readTimeListenable
-      ..addListener(_storeChanged);
+      ..addListener(_readTimeChanged);
     _shelfChanges = ShelfStore.instance.listenable..addListener(_storeChanged);
     _viewChanges = ShelfViewStore.instance..addListener(_storeChanged);
     _classicLayout = ClassicShelfLayout.instance..addListener(_storeChanged);
@@ -395,6 +395,12 @@ mixin _LibraryPageStateBase on State<LibraryPage>, WidgetsBindingObserver {
   /// them dirty and the snapshot is reloaded on the next visit.
   void _storeChanged() {
     if (_visible) _load();
+  }
+
+  void _readTimeChanged() {
+    if (!_visible) return;
+    final minutes = _todayReadMinutes();
+    if (_todayMinutes != minutes) setState(() => _todayMinutes = minutes);
   }
 
   Future<void> _loadViewPreferences() async {
@@ -589,7 +595,7 @@ mixin _LibraryPageStateBase on State<LibraryPage>, WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     shellVisibleTab.removeListener(_onShellVisibility);
     _historyChanges.removeListener(_storeChanged);
-    _readTimeChanges.removeListener(_storeChanged);
+    _readTimeChanges.removeListener(_readTimeChanged);
     _shelfChanges.removeListener(_storeChanged);
     _viewChanges.removeListener(_storeChanged);
     _classicLayout.removeListener(_storeChanged);

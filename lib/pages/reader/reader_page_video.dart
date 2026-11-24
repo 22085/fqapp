@@ -8,7 +8,8 @@ extension _ReaderPageVideo on _ReaderPageState {
   }
 
   Future<void> _loadVideoMatch() async {
-    if (!supportsVideoPlayback ||
+    if (!DramaFeaturePreferences.instance.enabled.value ||
+        !supportsVideoPlayback ||
         widget.localOnly ||
         widget.chapters.isEmpty ||
         !_preferencesReady ||
@@ -41,7 +42,8 @@ extension _ReaderPageVideo on _ReaderPageState {
 
   Future<void> _openReaderVideo() async {
     final match = _videoMatch;
-    if (!supportsVideoPlayback ||
+    if (!DramaFeaturePreferences.instance.enabled.value ||
+        !supportsVideoPlayback ||
         _openingVideo ||
         match == null ||
         !match.available ||
@@ -77,6 +79,7 @@ extension _ReaderPageVideo on _ReaderPageState {
       }
       if (!mounted ||
           request.isCancelled ||
+          !DramaFeaturePreferences.instance.enabled.value ||
           !_controlsVisible ||
           chapterId != _chapter.itemId) {
         return;
@@ -106,6 +109,7 @@ extension _ReaderPageVideo on _ReaderPageState {
       await _persistProgress();
       if (!mounted ||
           request.isCancelled ||
+          !DramaFeaturePreferences.instance.enabled.value ||
           !_controlsVisible ||
           !_preferences.showVideoButton ||
           ModalRoute.of(context)?.isCurrent != true ||
