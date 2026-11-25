@@ -3,10 +3,7 @@ fn main() {
     // The encrypted-media C implementation (the same sources `CryptoDataSource`
     // links) is needed on iOS and macOS too: `desktop_media` exports the
     // `sp_stream_*` entry points and the build fails without it.
-    if !matches!(
-        target_os.as_str(),
-        "windows" | "linux" | "ios" | "macos"
-    ) {
+    if !matches!(target_os.as_str(), "windows" | "linux" | "ios" | "macos") {
         return;
     }
     let sources = [
