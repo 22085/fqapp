@@ -29,7 +29,11 @@ import 'linux_platform.dart';
 bool get isMediaDesktop =>
     !kIsWeb &&
     (defaultTargetPlatform == TargetPlatform.windows ||
-        defaultTargetPlatform == TargetPlatform.linux);
+        defaultTargetPlatform == TargetPlatform.linux ||
+        isMacOSDesktop);
+
+bool get isMacOSDesktop =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
 
 bool get isWindowsDesktop =>
     !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
@@ -138,7 +142,7 @@ class DesktopPlatform with WindowListener {
   void _emit(String name, dynamic event) => _events[name]?.add(event);
 
   Future<void> initialize() async {
-    if (!isWindowsDesktop) return;
+    if (!isWindowsDesktop && !isMacOSDesktop) return;
     MediaKit.ensureInitialized();
     await windowManager.ensureInitialized();
     PlatformChannels.invoke = invoke;
@@ -156,7 +160,9 @@ class DesktopPlatform with WindowListener {
         ),
         center: true,
         title: '什锦铺',
-        titleBarStyle: TitleBarStyle.hidden,
+        titleBarStyle: isMacOSDesktop
+            ? TitleBarStyle.normal
+            : TitleBarStyle.hidden,
       ),
       () async {
         await windowManager.show();
@@ -167,6 +173,7 @@ class DesktopPlatform with WindowListener {
       },
     );
     initializeSpeech();
+    if (isMacOSDesktop) return;
     // Optional system media integration must not prevent reading or startup.
     try {
       await SMTCWindows.initialize();
@@ -463,6 +470,10 @@ class DesktopPlatform with WindowListener {
       case 'fqapp/system_tts':
         return _speech(method, args);
       case 'fqapp/fanqie_account':
+        if (isMacOSDesktop &&
+            const {'login', 'cancelLogin', 'clearSession'}.contains(method)) {
+          return const MethodChannel('fqapp/macos').invokeMethod(method);
+        }
         if (method == 'login') {
           final context = navigatorKey.currentContext;
           if (context == null) {
@@ -556,7 +567,13 @@ class DesktopPlatform with WindowListener {
         await _tts.stop();
         return null;
       case 'settings':
-        await Process.run('explorer.exe', ['ms-settings:speech']);
+        if (isMacOSDesktop) {
+          await Process.run('open', [
+            'x-apple.systempreferences:com.apple.Accessibility-Settings.extension',
+          ]);
+        } else {
+          await Process.run('explorer.exe', ['ms-settings:speech']);
+        }
         return null;
     }
     throw MissingPluginException(method);

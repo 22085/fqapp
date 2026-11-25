@@ -33,6 +33,8 @@ import 'package:fqapp/services/webdav_client.dart';
 import 'support/secure_key_storage_mock.dart';
 import 'package:fqapp/widgets/reader/reader_theme.dart';
 
+class _RealDavHttp extends HttpOverrides {}
+
 const config = WebDavConfig(
   directory: 'https://dav.example.com/books/',
   username: 'reader',
@@ -345,6 +347,73 @@ void main() {
     },
   );
 
+  test('WebDAV device snapshots exchange changes without strong ETags', () async {
+    const first = '11111111111111111111111111111111';
+    const second = '22222222222222222222222222222222';
+    final files = <String, Uint8List>{
+      'fqapp-sync.json': Uint8List.fromList([1, 2, 3]),
+    };
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final requests = server.listen((request) async {
+      final response = request.response;
+      final name = request.uri.pathSegments.last;
+      if (request.method == 'PROPFIND') {
+        await request.drain<void>();
+        response.statusCode = 207;
+        response.write(
+          '<d:multistatus xmlns:d="DAV:">'
+          '${files.keys.map((file) => '<d:response><d:href>/books/$file</d:href></d:response>').join()}'
+          '</d:multistatus>',
+        );
+      } else if (request.method == 'PUT') {
+        final data = BytesBuilder();
+        await for (final bytes in request) {
+          data.add(bytes);
+        }
+        files[name] = data.takeBytes();
+        response.statusCode = 201;
+      } else if (request.method == 'GET' && files.containsKey(name)) {
+        response.headers.set('etag', 'W/"weak"');
+        response.add(files[name]!);
+      } else {
+        response.statusCode = 404;
+      }
+      await response.close();
+    });
+    final url = 'http://127.0.0.1:${server.port}/books/';
+    WebDavSyncTransport connect() => HttpOverrides.runWithHttpOverrides(
+      () => WebDavSyncTransport(url, 'reader', 'password'),
+      _RealDavHttp(),
+    );
+    final device1 = connect();
+    final device2 = connect();
+    try {
+      final exchange1 = SyncExchange(device1);
+      final exchange2 = SyncExchange(device2);
+      final record = SyncDocument()
+        ..change(
+          'h|book|one',
+          {'id': 'one', 'kind': 'book'},
+          actor: first,
+          wall: 1,
+        );
+      await exchange1.publish(SyncSlot(first, 1, record));
+      final updated = (await exchange2.readAll(prepare: false))[first]!.document
+        ..change('h|book|one', null, actor: second, wall: 2);
+      await exchange2.publish(SyncSlot(second, 1, updated));
+      final slots = await exchange1.readAll(prepare: false);
+      expect(slots.keys, unorderedEquals([first, second]));
+      final merged = slots[first]!.document..merge(slots[second]!.document);
+      expect(merged.visible, isEmpty);
+      expect(files['fqapp-sync.json'], [1, 2, 3]);
+    } finally {
+      device1.close();
+      device2.close();
+      await server.close(force: true);
+      await requests.cancel();
+    }
+  });
+
   group('unified WebDAV exchange', () {
     late Directory directory;
     late Map<String, String> secureKeys;
@@ -571,6 +640,7 @@ void main() {
           expect(secureKeys, nativeBefore);
           expect(ShelfStore.instance.contains('book', 'kept-local'), isTrue);
           await _expectSyncSkipsUnchangedRecords(service, dav);
+          await _expectManualSyncPreservesHistory(service, dav);
           final afterConfigure = Map<String, String>.of(flutterSecureValues);
 
           await service.shutdown();
@@ -1268,6 +1338,44 @@ void main() {
       },
     );
   });
+}
+
+Future<void> _expectManualSyncPreservesHistory(
+  MultiDeviceSyncService service,
+  _TestDav dav,
+) async {
+  await http.runWithClient(() async {
+    await service.setAutoSync(false);
+    expect(service.enabled, isFalse);
+    for (var index = 1; index <= 100; index++) {
+      await LibraryStore.instance.addHistory({
+        'id': 'retained-$index',
+        'kind': 'book',
+        'time': index,
+      });
+    }
+    await service.sync();
+    expect(service.status, '同步完成');
+    expect(
+      WebDavSyncDocument.decode(dav.public.bytes!).backup.history,
+      hasLength(100),
+    );
+
+    await LibraryStore.instance.addHistory({
+      'id': 'retained-101',
+      'kind': 'book',
+      'time': 101,
+    });
+    await LibraryStore.instance.removeHistoryEntry('retained-2', 'book');
+    await service.sync();
+    expect(service.status, '同步完成');
+    final ids = WebDavSyncDocument.decode(
+      dav.public.bytes!,
+    ).backup.history.map((row) => row['id']);
+    expect(ids, hasLength(100));
+    expect(ids, containsAll(['retained-1', 'retained-101']));
+    expect(ids, isNot(contains('retained-2')));
+  }, dav.client);
 }
 
 Future<void> _expectSyncSkipsUnchangedRecords(

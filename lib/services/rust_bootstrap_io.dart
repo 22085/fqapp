@@ -20,7 +20,7 @@ Future<void> initRustRuntime() {
       externalLibrary: ExternalLibrary.process(iKnowHowToUseIt: true),
     );
   }
-  if (Platform.isLinux) {
+  if (Platform.isLinux || Platform.isMacOS) {
     return RustLib.init(
       externalLibrary: ExternalLibrary.open(desktopCoreLibraryPath()),
     );

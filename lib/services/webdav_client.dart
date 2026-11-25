@@ -134,7 +134,7 @@ class WebDavClient {
         etag.startsWith('W/') ||
         !etag.startsWith('"') ||
         !etag.endsWith('"')) {
-      throw const WebDavException('服务器未提供强 ETag，无法安全进行多设备同步');
+      throw const WebDavException('服务器未提供强 ETag，请选择 WebDAV 兼容模式');
     }
     return WebDavRemote(response.bodyBytes, etag);
   }

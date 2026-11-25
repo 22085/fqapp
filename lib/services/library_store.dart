@@ -145,6 +145,9 @@ class LibraryStore implements ReaderStore {
   /// whether local history is over the trim threshold.
   int? _localHistoryCount;
 
+  // A missing record in a configured device profile becomes a cloud deletion.
+  bool keepHistoryForSync = false;
+
   /// Full snapshot builds, so the regression test can assert that adding a
   /// record while imported history keeps the box above 100 does not rebuild.
   @visibleForTesting
@@ -590,7 +593,7 @@ class LibraryStore implements ReaderStore {
     }
     await _histBox.put(id, record);
     _noteHistoryWrite(existing, record);
-    await _trimHistory(id, record);
+    if (!keepHistoryForSync) await _trimHistory(id, record);
   }
 
   @override

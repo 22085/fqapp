@@ -42,7 +42,8 @@ class _SetupSession implements SyncSetupSession {
   @override
   final Map<String, String> config;
   String get provider => config['provider']!;
-  bool get cloud => !{'webdav', 'ftp', 'ftps', 'smb'}.contains(provider);
+  bool get cloud =>
+      !isWebDavProvider(provider) && !{'ftp', 'ftps', 'smb'}.contains(provider);
   @override
   late SyncFolder root;
   WebDavSyncTransport? dav;
@@ -67,7 +68,7 @@ class _SetupSession implements SyncSetupSession {
     config.remove('folderParent');
     if (!cloud) {
       final address = Uri.tryParse(config['endpoint'] ?? '');
-      if (provider == 'webdav' && address?.scheme != 'https') {
+      if (isWebDavProvider(provider) && address?.scheme != 'https') {
         throw const SyncFailure('WebDAV 同步目录需要 HTTPS');
       }
       if (address == null ||
@@ -75,7 +76,7 @@ class _SetupSession implements SyncSetupSession {
           address.userInfo.isNotEmpty ||
           address.hasQuery ||
           address.hasFragment ||
-          !(provider == 'webdav' ? {'https'} : {provider}).contains(
+          !(isWebDavProvider(provider) ? {'https'} : {provider}).contains(
             address.scheme,
           )) {
         throw const SyncFailure('请输入完整的服务器地址');
@@ -84,7 +85,7 @@ class _SetupSession implements SyncSetupSession {
         path: address.path.endsWith('/') ? address.path : '${address.path}/',
       );
       root = SyncFolder('$uri', '服务器目录', path: uri.path);
-      if (provider == 'webdav') {
+      if (isWebDavProvider(provider)) {
         dav = WebDavSyncTransport(
           '$uri',
           config['username'] ?? '',

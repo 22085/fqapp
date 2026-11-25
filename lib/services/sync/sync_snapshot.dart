@@ -13,7 +13,7 @@ class SyncSnapshot {
       record['source'] == null || record['source'] == ShelfIdentity.fanqie;
 
   factory SyncSnapshot.fromBackup(LibraryBackup backup) {
-    final raw = jsonDecode(utf8.decode(backup.encode())) as Map;
+    final raw = backup.toJson();
     final values = <String, Map<String, dynamic>>{};
     for (final item in raw['shelf'] as List) {
       final v = Map<String, dynamic>.from(item as Map);

@@ -12,6 +12,9 @@ typedef _FreeNative = Void Function(Pointer<Utf8>);
 typedef _Free = void Function(Pointer<Utf8>);
 
 String desktopCoreLibraryPath() {
+  if (Platform.isMacOS) {
+    return "${File(Platform.resolvedExecutable).parent.parent.path}/Frameworks/libfqapi_core.dylib";
+  }
   if (Platform.isLinux) {
     return '${File(Platform.resolvedExecutable).parent.path}/lib/libfqapi_core.so';
   }
