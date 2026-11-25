@@ -2079,29 +2079,33 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                           height: 44,
                           child: Row(
                             children: [
-                              const Text(
-                                '详细统计信息',
-                                style: TextStyle(
-                                  fontSize: 14,
+                              const SizedBox.square(
+                                dimension: 24,
+                                child: Icon(
+                                  Icons.query_stats_rounded,
+                                  size: 22,
                                   color: Color(0xFF1B1B1B),
                                 ),
                               ),
-                              const Spacer(),
-                              Text(
-                                _statisticsVisible ? '已开启' : '已关闭',
-                                key: const ValueKey(
-                                  'player-more-statistics-value',
-                                ),
-                                style: const TextStyle(
-                                  fontSize: 14,
-                                  color: Color(0xFF777777),
+                              const SizedBox(width: 8),
+                              const Expanded(
+                                child: Text(
+                                  '详细统计信息',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: Color(0xFF1B1B1B),
+                                  ),
                                 ),
                               ),
-                              const SizedBox(width: 4),
-                              const Icon(
-                                Icons.chevron_right,
-                                size: 18,
-                                color: Color(0xFF777777),
+                              Switch(
+                                key: const ValueKey(
+                                  'player-more-statistics-switch',
+                                ),
+                                value: _statisticsVisible,
+                                onChanged: (value) {
+                                  setState(() => _statisticsVisible = value);
+                                  Navigator.pop(sheetContext);
+                                },
                               ),
                             ],
                           ),

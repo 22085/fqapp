@@ -300,9 +300,17 @@ class PlayletMorePanelSide extends StatelessWidget {
         PlayerSidePanelRow(
           rowKey: 'player-more-statistics',
           label: '详细统计信息',
-          value: statisticsEnabled ? '已开启' : '已关闭',
-          onTap: onToggleStatistics,
-          chevron: false,
+          leading: const SizedBox.square(
+            dimension: 24,
+            child: Icon(
+              Icons.query_stats_rounded,
+              size: 22,
+              color: Colors.white,
+            ),
+          ),
+          switchValue: statisticsEnabled,
+          onToggle: onToggleStatistics,
+          switchKey: 'player-more-statistics-switch',
         ),
     ];
     return SafeArea(

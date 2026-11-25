@@ -161,10 +161,20 @@ class _PlayletMorePanelState extends State<PlayletMorePanel> {
                         widget.onOpenDanmakuSettings!,
                       ),
                     if (widget.onToggleStatistics != null)
-                      _actionRow('statistics', '详细统计信息', null, () {
-                        widget.onToggleStatistics!();
-                        Navigator.pop(context);
-                      }, value: widget.statisticsEnabled ? '已开启' : '已关闭'),
+                      _switchRow(
+                        'statistics',
+                        '详细统计信息',
+                        widget.statisticsEnabled,
+                        () {
+                          widget.onToggleStatistics!();
+                          Navigator.pop(context);
+                        },
+                        leading: const Icon(
+                          Icons.query_stats_rounded,
+                          size: 22,
+                          color: Colors.white,
+                        ),
+                      ),
                     // aae.xml 底部整行「取消」按钮（@string/biu，16sp 居中、
                     // 上下 16dip），点击仅关闭面板。
                     Semantics(
@@ -232,59 +242,64 @@ class _PlayletMorePanelState extends State<PlayletMorePanel> {
     ),
   );
 
-  Widget _switchRow(String id, String label, bool value, VoidCallback onTap) =>
-      Semantics(
-        key: ValueKey('player-more-$id-row'),
-        label: label,
-        toggled: value,
-        onTap: onTap,
-        excludeSemantics: true,
-        child: InkWell(
-          onTap: onTap,
-          excludeFromSemantics: true,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: 52),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 10, 16, 10),
-              child: Row(
-                children: [
-                  _PanelIcon(id),
-                  const SizedBox(width: 6),
-                  Expanded(child: Text(label, style: _labelStyle)),
-                  const SizedBox(width: 12),
-                  AnimatedContainer(
-                    key: ValueKey('player-more-$id-switch'),
-                    duration: const Duration(milliseconds: 300),
-                    width: 31,
-                    height: 18,
-                    padding: const EdgeInsets.all(2),
+  Widget _switchRow(
+    String id,
+    String label,
+    bool value,
+    VoidCallback onTap, {
+    Widget? leading,
+  }) => Semantics(
+    key: ValueKey('player-more-$id-row'),
+    label: label,
+    toggled: value,
+    onTap: onTap,
+    excludeSemantics: true,
+    child: InkWell(
+      onTap: onTap,
+      excludeFromSemantics: true,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 52),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 16, 10),
+          child: Row(
+            children: [
+              SizedBox(width: 24, height: 24, child: leading ?? _PanelIcon(id)),
+              const SizedBox(width: 6),
+              Expanded(child: Text(label, style: _labelStyle)),
+              const SizedBox(width: 12),
+              AnimatedContainer(
+                key: ValueKey('player-more-$id-switch'),
+                duration: const Duration(milliseconds: 300),
+                width: 31,
+                height: 18,
+                padding: const EdgeInsets.all(2),
+                decoration: BoxDecoration(
+                  color: value
+                      ? const Color(0xFFFA6725)
+                      : const Color(0x33FFFFFF),
+                  borderRadius: BorderRadius.circular(9),
+                ),
+                child: AnimatedAlign(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut,
+                  alignment: value
+                      ? Alignment.centerRight
+                      : Alignment.centerLeft,
+                  child: const DecoratedBox(
                     decoration: BoxDecoration(
-                      color: value
-                          ? const Color(0xFFFA6725)
-                          : const Color(0x33FFFFFF),
-                      borderRadius: BorderRadius.circular(9),
+                      color: Colors.white,
+                      shape: BoxShape.circle,
                     ),
-                    child: AnimatedAlign(
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeInOut,
-                      alignment: value
-                          ? Alignment.centerRight
-                          : Alignment.centerLeft,
-                      child: const DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          shape: BoxShape.circle,
-                        ),
-                        child: SizedBox.square(dimension: 14),
-                      ),
-                    ),
+                    child: SizedBox.square(dimension: 14),
                   ),
-                ],
+                ),
               ),
-            ),
+            ],
           ),
         ),
-      );
+      ),
+    ),
+  );
 }
 
 const _labelStyle = TextStyle(fontSize: 14, color: Colors.white);
