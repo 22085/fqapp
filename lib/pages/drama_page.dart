@@ -2,6 +2,7 @@ import '../widgets/video_player_chrome.dart';
 import '../services/desktop_platform.dart';
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
@@ -52,6 +53,7 @@ import '../widgets/player/playlet_more_panel.dart';
 import '../widgets/player/playlet_more_panel_light.dart';
 import '../widgets/player/playlet_option_sheet.dart';
 import '../widgets/player/playlet_quick_catalog_sheet.dart';
+import '../widgets/player/player_statistics_overlay.dart';
 import '../widgets/player/player_toast.dart';
 import '../widgets/player/player_video_layout.dart';
 import '../widgets/tab_swipe_area.dart';
@@ -388,9 +390,13 @@ class _DramaPageState extends ConsumerState<DramaPage>
   }
 
   final Map<int, PageController> _feedControllers = {};
+  final Map<String, ScrollController> _gridControllers = {};
+  final Map<String, int> _gridAutoFillForCount = {};
   final Map<int, int> _screenIndices = {};
   PageController _pagesFor(int tab) =>
       _feedControllers.putIfAbsent(tab, PageController.new);
+  ScrollController _gridControllerFor(String gridKey) =>
+      _gridControllers.putIfAbsent(gridKey, ScrollController.new);
   PageController get _pages => _pagesFor(_current.tabIndex);
   bool _channelScrolling = false;
 
@@ -471,6 +477,10 @@ class _DramaPageState extends ConsumerState<DramaPage>
   /// `_clearScreen` 同语义：不落盘，退出走面板的「退出清屏」行）。清屏
   /// 只作用于在屏卡：渐变遮罩、信息层、进度条与静音药丸整批隐藏。
   bool _feedClearScreen = false;
+
+  /// Feed 详细统计浮层按会话保存；换剧、换集或重建播放器时保留开关，
+  /// 但浮层内部会在播放器/集身份变化时立即清空上一份数据。
+  bool _feedStatisticsVisible = false;
 
   /// 面板「字体大小」行级联打开的字号弹层（官方 `jm3.t0.m`：先关面板
   /// 再开弹层，`_modalOpen` 计账在弹层方法内部）。
@@ -641,6 +651,9 @@ class _DramaPageState extends ConsumerState<DramaPage>
     _channelScrollingWatchdog?.cancel();
     _pullDistance.dispose();
     for (final controller in _feedControllers.values) {
+      controller.dispose();
+    }
+    for (final controller in _gridControllers.values) {
       controller.dispose();
     }
     _channelProgress.dispose();
@@ -817,6 +830,11 @@ class _DramaPageState extends ConsumerState<DramaPage>
     final enabled = shown == null || shown == widget.shellIndex;
     if (enabled == _tickerEnabled) return;
     _tickerEnabled = enabled;
+    if (_feedStatisticsVisible) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _feedStatisticsVisible) setState(() {});
+      });
+    }
     if (enabled) {
       _resumeInline();
     } else {
@@ -1008,8 +1026,10 @@ class _DramaPageState extends ConsumerState<DramaPage>
     return false;
   }
 
-  Future<void> _refresh() =>
-      ref.read(dramaProvider.notifier).load(manualRefresh: true);
+  Future<void> _refresh() {
+    _gridAutoFillForCount.clear();
+    return ref.read(dramaProvider.notifier).load(manualRefresh: true);
+  }
 
   /// 官方单击语义：**暂停 / 继续当前这条视频**，不跳任何界面。
   ///
@@ -1091,6 +1111,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
     // 全页播放器正在接管（_openPlayer 已销毁 inline 播放器）时不开面板。
     if (_feedPanelOpen || _openingId != null) return;
     _feedPanelOpen = true;
+    if (_feedStatisticsVisible) setState(() {});
     final dark = PlayerStyleConfig.instance.morePanelDarkStyle;
     // 浅色支面板的内容会随夜间皮肤翻白（`PlayletMorePanelLight`），底色也
     // 得一起翻：否则深色主题下是 #FAFAFA 底配白字。
@@ -1137,6 +1158,10 @@ class _DramaPageState extends ConsumerState<DramaPage>
               // 官方 `jm3.t0`：行尾当前档 + 点击级联打开字号弹层。
               fontScaleLabel: ShortSeriesFontScale.label,
               onOpenFontSettings: () => _pendingFeedFontScale = true,
+              statisticsEnabled: _feedStatisticsVisible,
+              onToggleStatistics: () => setState(
+                () => _feedStatisticsVisible = !_feedStatisticsVisible,
+              ),
               // 官方 `jm3.d0.y`/`jm3.u`：行点击随面板关闭直接打开听书页/
               // 选集下载弹窗（与全页 chrome 同款直推；集目录不在场——
               // 未起播/单集搜索回落——时整行不出现）。
@@ -1164,6 +1189,10 @@ class _DramaPageState extends ConsumerState<DramaPage>
             onToggleDanmaku: () => unawaited(_toggleFeedDanmaku()),
             // 官方 `jm3.e`：弹幕设置入口在弹幕开关之后（与全页同门）。
             onOpenDanmakuSettings: () => _pendingFeedDanmakuSettings = true,
+            statisticsEnabled: _feedStatisticsVisible,
+            onToggleStatistics: () => setState(
+              () => _feedStatisticsVisible = !_feedStatisticsVisible,
+            ),
             clearScreen: _feedClearScreen,
             onToggleClearScreen: () =>
                 setState(() => _feedClearScreen = !_feedClearScreen),
@@ -1318,7 +1347,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
     if (item == null) return;
     final episodes = _inline.episodes;
     if (episodes.isEmpty) return;
-    _modalOpen = true;
+    setState(() => _modalOpen = true);
     try {
       await DramaDownloadSheet.show(
         context,
@@ -1836,22 +1865,33 @@ class _DramaPageState extends ConsumerState<DramaPage>
       columns = dramaDesktopColumns(context);
     }
     final bottomInset = _effectiveBottomInset(context);
+    if (active &&
+        !state.isLoading &&
+        !state.isLoadMore &&
+        state.hasMore &&
+        state.error == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _maybeAutoFillGrid(gridKey, items.length);
+      });
+    }
     return NotificationListener<ScrollNotification>(
       onNotification: (notification) =>
           active ? _onGridScroll(notification) : false,
       child: GridView.builder(
         key: Key(gridKey),
+        controller: _gridControllerFor(gridKey),
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: EdgeInsets.fromLTRB(
-          12,
+          wide && isWindowsDesktop ? 20 : 12,
           // 频道条底边到第一行海报的距离：只留 12 时条带和封面几乎贴在一起，
           // 与首页「标签条 → 内容」的 16 对齐。
           MediaQuery.paddingOf(context).top + _topChromeHeight + 16,
-          12,
-          bottomInset + 20,
+          wide && isWindowsDesktop ? 20 : 12,
+          isWindowsDesktop ? 24 : bottomInset + 20,
         ),
         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: columns,
-          crossAxisSpacing: 8,
+          crossAxisSpacing: wide && isWindowsDesktop ? 12 : 8,
           mainAxisSpacing: 16,
           // 海报约 5:7 + 片名 + 「分类·集数」；两列格片名可占两行。
           childAspectRatio: wide
@@ -1874,6 +1914,26 @@ class _DramaPageState extends ConsumerState<DramaPage>
     );
   }
 
+  void _maybeAutoFillGrid(String gridKey, int itemCount) {
+    if (!mounted || !_tickerEnabled) return;
+    if (_gridShape(_current)?.gridKey != gridKey) return;
+    final state = ref.read(dramaProvider);
+    if (state.isLoading ||
+        state.isLoadMore ||
+        !state.hasMore ||
+        state.error != null) {
+      return;
+    }
+    final controller = _gridControllers[gridKey];
+    if (controller == null || !controller.hasClients) return;
+    final position = controller.position;
+    if (!position.hasContentDimensions) return;
+    if (position.extentAfter >= 600) return;
+    if (_gridAutoFillForCount[gridKey] == itemCount) return;
+    _gridAutoFillForCount[gridKey] = itemCount;
+    unawaited(ref.read(dramaProvider.notifier).loadMore());
+  }
+
   /// 瀑布格的滚动：保留下拉刷新（同一套手势与提示），把 feed 的
   /// 竖滑换页/内联同步换成触底翻页。
   bool _onGridScroll(ScrollNotification notification) {
@@ -1883,11 +1943,14 @@ class _DramaPageState extends ConsumerState<DramaPage>
           .clamp(0, kDramaPullRefreshTrigger);
       return false;
     }
-    if (notification is ScrollUpdateNotification &&
-        _pullDistance.value > 0 &&
-        (notification.scrollDelta ?? 0) > 0) {
-      _pullDistance.value = (_pullDistance.value - notification.scrollDelta!)
-          .clamp(0, kDramaPullRefreshTrigger);
+    if (notification is ScrollUpdateNotification) {
+      if (_pullDistance.value > 0 && (notification.scrollDelta ?? 0) > 0) {
+        _pullDistance.value = (_pullDistance.value - notification.scrollDelta!)
+            .clamp(0, kDramaPullRefreshTrigger);
+      }
+      if (notification.metrics.extentAfter < 600) {
+        ref.read(dramaProvider.notifier).loadMore();
+      }
     }
     if (notification is ScrollEndNotification) {
       final shouldRefresh = _pullDistance.value >= kDramaPullRefreshTrigger;
@@ -1993,6 +2056,33 @@ class _DramaPageState extends ConsumerState<DramaPage>
             video: onScreen
                 ? _InlineVideoLayer(item: item, playback: _inline)
                 : null,
+            statisticsOverlayBuilder: onScreen && _feedStatisticsVisible
+                ? (displaySize) {
+                    final index = _inline.activeEpisodeIndex ?? 0;
+                    final episodes = _inline.episodes;
+                    final episodeLabel = index >= 0 && index < episodes.length
+                        ? episodes[index].title
+                        : '';
+                    return PlayerStatisticsOverlay(
+                      key: ValueKey<Object>((
+                        item.id,
+                        _inline.activeVid.value,
+                        _inline.player?.hashCode,
+                        index,
+                      )),
+                      player: _inline.player,
+                      position: _inline.position,
+                      duration: _inline.duration.value,
+                      playbackRate: _inline.rate.value,
+                      currentIndex: index,
+                      episodeLabel: episodeLabel,
+                      active: _tickerEnabled && !_modalOpen && !_feedPanelOpen,
+                      displaySize: displaySize,
+                      onClose: () =>
+                          setState(() => _feedStatisticsVisible = false),
+                    );
+                  }
+                : null,
             // 弹幕与视频同裁剪（12dp 圆角内），清屏态整层不出现（与播放
             // 页 chrome 的 `!_clearScreen` 同门）。
             danmakuOverlay: onScreen
@@ -2018,7 +2108,7 @@ class _DramaPageState extends ConsumerState<DramaPage>
             // 右侧横屏钮是另一条路：官方 `nk3.c.g` → `zf3.c.w` →
             // `transformToLandActivity`，起独立横屏页。
             onLandscape: () => _openPlayer(item, openFullScreen: true),
-            onQuickCatalog: () => _openQuickCatalog(item),
+            onQuickCatalog: () => unawaited(_openQuickCatalog(item)),
             // 标题行「剧名 >」= 官方进剧集详情页的入口（ql3/v0.a1）。
             onOpenSeriesDetail: () => _openSeriesDetail(item),
             onTogglePlay: _togglePlay,
@@ -2166,25 +2256,55 @@ class _DramaPageState extends ConsumerState<DramaPage>
                 ),
               ),
               if (!DesktopPlatform.fullscreen.value)
-                SizedBox(
-                  height: 44,
+                Container(
+                  height: 46,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF141416),
+                    border: Border(
+                      top: BorderSide(
+                        color: Colors.white.withValues(alpha: 0.08),
+                      ),
+                    ),
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       TextButton.icon(
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          disabledForegroundColor: Colors.white38,
+                        ),
                         onPressed: _screenIndex > 0
                             ? () => _desktopNextDrama(items, -1)
                             : null,
                         icon: const Icon(Icons.keyboard_arrow_up),
                         label: const Text('上一条（Page Up）'),
                       ),
-                      const SizedBox(width: 24),
-                      Text(
-                        '${_screenIndex + 1} / ${items.length}',
-                        style: const TextStyle(color: Colors.white60),
+                      const SizedBox(width: 20),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF232328),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          '${_screenIndex + 1} / ${items.length}',
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12.5,
+                          ),
+                        ),
                       ),
-                      const SizedBox(width: 24),
+                      const SizedBox(width: 20),
                       TextButton.icon(
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          disabledForegroundColor: Colors.white38,
+                        ),
                         onPressed: _screenIndex + 1 < items.length
                             ? () => _desktopNextDrama(items, 1)
                             : null,
@@ -2345,37 +2465,47 @@ class _DramaPageState extends ConsumerState<DramaPage>
     );
   }
 
-  void _openQuickCatalog(MediaItem item) {
+  Future<void> _openQuickCatalog(MediaItem item) async {
     if (!isVideoKind(item.kind)) {
       if (mounted) _openDetail(item);
       return;
     }
     if (_modalOpen || _openingId != null) return;
-    PlayletQuickCatalogSheet.show(
-      context,
-      item: item,
-      directoryLoader: widget.directoryLoader,
-      historyStore: widget.historyStore,
-      onEpisodeSelected: (index, episodes) {
-        unawaited(
-          _openPlayer(item, startEpisodeIndex: index, loadedEpisodes: episodes),
-        );
-      },
-      onFullscreen: () => unawaited(_openPlayer(item)),
-      seriesLoader: widget.seriesDetailLoader,
-      onRelatedSeriesSelected: (entry) => _openSeriesDetail(
-        MediaItem(
-          id: entry.id,
-          seriesId: entry.id,
-          title: entry.title,
-          cover: entry.cover,
-          kind: entry.kind,
-          author: '',
-          badge: '',
-          ep: entry.episodeCount > 0 ? '共 ${entry.episodeCount} 集' : '',
+    setState(() => _modalOpen = true);
+    try {
+      await PlayletQuickCatalogSheet.show(
+        context,
+        item: item,
+        directoryLoader: widget.directoryLoader,
+        historyStore: widget.historyStore,
+        onEpisodeSelected: (index, episodes) {
+          unawaited(
+            _openPlayer(
+              item,
+              startEpisodeIndex: index,
+              loadedEpisodes: episodes,
+            ),
+          );
+        },
+        onFullscreen: () => unawaited(_openPlayer(item)),
+        seriesLoader: widget.seriesDetailLoader,
+        onRelatedSeriesSelected: (entry) => _openSeriesDetail(
+          MediaItem(
+            id: entry.id,
+            seriesId: entry.id,
+            title: entry.title,
+            cover: entry.cover,
+            kind: entry.kind,
+            author: '',
+            badge: '',
+            ep: entry.episodeCount > 0 ? '共 ${entry.episodeCount} 集' : '',
+          ),
         ),
-      ),
-    );
+      );
+    } finally {
+      _modalOpen = false;
+      if (mounted) setState(() {});
+    }
   }
 
   void _openSearch() {
@@ -2936,6 +3066,7 @@ class _DramaFeedCard extends StatelessWidget {
   final MediaItem item;
   final bool opening;
   final Widget? video;
+  final Widget Function(Size displaySize)? statisticsOverlayBuilder;
 
   /// 弹幕层，与视频一起裁在 12dp 圆角内；清屏/未上屏时由宿主不传或整层
   /// 自隐藏。层自身 IgnorePointer，不抢手势。
@@ -2965,6 +3096,7 @@ class _DramaFeedCard extends StatelessWidget {
     required this.item,
     required this.opening,
     this.video,
+    this.statisticsOverlayBuilder,
     this.danmakuOverlay,
     this.errorOverlay,
     this.playback,
@@ -3139,6 +3271,51 @@ class _DramaFeedCard extends StatelessWidget {
                     ),
                   ],
                 ),
+              ),
+            ),
+          ),
+        if (statisticsOverlayBuilder != null && playback != null)
+          Positioned.fill(
+            child: LayoutBuilder(
+              builder: (context, constraints) => ListenableBuilder(
+                listenable: Listenable.merge([
+                  playback!.videoSize,
+                  playback!.duration,
+                  playback!.rate,
+                ]),
+                builder: (context, _) {
+                  final window = constraints.biggest;
+                  final wide = isWindowsDesktop || window.width >= 840;
+                  final layout = PlayerVideoLayout.calculate(
+                    window: window,
+                    insets: EdgeInsets.zero,
+                    videoSize: playback!.videoSize.value,
+                    fullScreen: true,
+                    fit: wide ? VideoFit.contain : VideoFit.fillFrame,
+                  );
+                  final insets = MediaQuery.paddingOf(context);
+                  final top = insets.top + _feedDanmakuTopMargin;
+                  final viewport = Rect.fromLTRB(
+                    insets.left,
+                    top,
+                    window.width - insets.right,
+                    math.max(top, window.height - bottomInset - 160),
+                  );
+                  if (viewport.isEmpty) return const SizedBox.shrink();
+                  return Stack(
+                    children: [
+                      Positioned.fromRect(
+                        rect: PlayerStatisticsOverlay.placement(
+                          viewport: viewport,
+                          video: layout.video,
+                        ),
+                        child: statisticsOverlayBuilder!(
+                          layout.video.intersect(layout.viewport).size,
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
           ),
@@ -4298,7 +4475,9 @@ class _InlineVideoLayer extends StatelessWidget {
                     rect: layout.video,
                     child: RotatedBox(
                       quarterTurns: playback.rotation.value,
-                      child: isWindowsDesktop
+                      // iOS 与桌面一样由进程内的 media_kit 出画,没有
+                      // Texture 可画;Android 才走原生纹理。
+                      child: isWindowsDesktop || isIOSPlatform
                           ? DesktopPlatform.instance.videoSurface(
                               textureId,
                               key: ValueKey('drama_inline_${item.id}'),
@@ -4968,14 +5147,16 @@ class _LocalListState extends State<_LocalList> {
                   key: Key('drama_${widget.channel.label}_grid'),
                   // 官方 staggered 网格间距（`j0`）：左右 12dp、行/列间距 8dp。
                   padding: EdgeInsets.fromLTRB(
-                    12,
+                    desktopGrid && isWindowsDesktop ? 20 : 12,
                     8,
-                    12,
-                    MediaQuery.paddingOf(context).bottom + 72.0 + 20,
+                    desktopGrid && isWindowsDesktop ? 20 : 12,
+                    isWindowsDesktop
+                        ? 24.0
+                        : MediaQuery.paddingOf(context).bottom + 72.0 + 20,
                   ),
                   gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: columns,
-                    crossAxisSpacing: 8,
+                    crossAxisSpacing: desktopGrid && isWindowsDesktop ? 12 : 8,
                     mainAxisSpacing: desktopGrid ? 16 : 8,
                     // 官方封面 10:14 + 粗体两行标题 + 进度行。
                     childAspectRatio: desktopGrid ? .58 : 0.47,

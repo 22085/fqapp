@@ -53,6 +53,8 @@ class MainActivity : FlutterActivity() {
         flutterEngine.plugins.add(AiRequestPlugin())
         // 应用内自更新：检查 fqapp.sshdog.com/update.json，下载并安装 APK。
         flutterEngine.plugins.add(AppUpdatePlugin())
+        // issue #466:bytevc2 分集转码(内置补丁 ffmpeg)的执行桥。
+        flutterEngine.plugins.add(Bytevc2TranscodePlugin())
 
         hapticsChannel =
             MethodChannel(

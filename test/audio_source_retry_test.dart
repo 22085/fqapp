@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -14,6 +16,7 @@ import 'package:fqapp/pages/audio_page.dart';
 import 'package:fqapp/services/api_client.dart';
 import 'package:fqapp/services/audio_preferences.dart';
 import 'package:fqapp/services/listening_session.dart';
+import 'package:fqapp/services/native_player.dart';
 
 import 'support/controlled_player.dart';
 
@@ -37,6 +40,21 @@ Future<http.Response> _handle(http.Request request) {
     return _sourceResponse(request);
   }
   return Future.value(_json({'code': 0, 'data': <String, Object>{}}, 200));
+}
+
+void _mockIosAudioSessionEvents() {
+  final messenger =
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+  messenger.setMockMethodCallHandler(
+    const MethodChannel('fqapp/audio_session/events'),
+    (_) async => null,
+  );
+  addTearDown(
+    () => messenger.setMockMethodCallHandler(
+      const MethodChannel('fqapp/audio_session/events'),
+      null,
+    ),
+  );
 }
 
 void main() {
@@ -89,6 +107,339 @@ void main() {
     ], reason: '回退音色的 404 也只请求一次');
   });
 
+  testWidgets('saved preferred voice is requested before automatic fallback', (
+    tester,
+  ) async {
+    await AudioPreferences.instance.setDefaultVoice(
+      DefaultListeningVoice.matureClassic,
+    );
+    _sourceResponse = (request) async {
+      final tone = request.url.queryParameters['tone_id'];
+      if (tone == '64') {
+        return _json({'code': 101000, 'message': 'NO_THIS_TONE'}, 200);
+      }
+      return _json(_playinfoPayload('1'), 200);
+    };
+    final players = <ControlledNativePlayer>[];
+    await _mount(
+      tester,
+      players: players,
+      extras: const AudioExtras(
+        tones: AudioToneSet(
+          ttsTones: [
+            AudioTone(id: '96', title: '多角色对话升级版'),
+            AudioTone(id: '64', title: '成熟大叔'),
+          ],
+        ),
+      ),
+    );
+    await _pumpUntil(
+      tester,
+      () => players.isNotEmpty && players.single.isPlaying,
+    );
+    expect(_sourceRequests.map((url) => url.queryParameters['tone_id']), [
+      '64',
+      '96',
+    ]);
+  });
+
+  testWidgets('a chapter fallback does not replace the selected voice', (
+    tester,
+  ) async {
+    final players = <ControlledNativePlayer>[];
+    _sourceResponse = (request) async {
+      final item = request.url.pathSegments.last;
+      final tone = request.url.queryParameters['tone_id'];
+      if (item == '1' && tone == '96') {
+        return _json({'code': 101000, 'message': 'NO_THIS_TONE'}, 200);
+      }
+      return _json(
+        _playinfoPayload(item, url: 'https://cdn.example/$item-$tone.m4a'),
+        200,
+      );
+    };
+    await _mount(
+      tester,
+      players: players,
+      initialToneId: '96',
+      chapters: [
+        Chapter(itemId: '1', title: '第1章', volumeName: ''),
+        Chapter(itemId: '2', title: '第2章', volumeName: ''),
+      ],
+      extras: const AudioExtras(
+        tones: AudioToneSet(
+          ttsTones: [
+            AudioTone(id: '64', title: '成熟大叔音'),
+            AudioTone(id: '96', title: '多角色对话升级版'),
+          ],
+        ),
+      ),
+    );
+    await _pumpUntil(
+      tester,
+      () => players.isNotEmpty && players.first.isPlaying,
+    );
+    players.first.emitPosition(const Duration(seconds: 2));
+    await _pumpUntil(
+      tester,
+      () => players.length == 2 && players.last.isCreated,
+    );
+    players.first.emitCompleted();
+    await _pumpUntil(tester, () => players.last.isPlaying);
+    expect(
+      _sourceRequests.map(
+        (url) => (url.pathSegments.last, url.queryParameters['tone_id']),
+      ),
+      [('1', '96'), ('1', '64'), ('2', '96')],
+    );
+  });
+
+  testWidgets('the next chapter buffers and falls back before auto-advance', (
+    tester,
+  ) async {
+    final players = <ControlledNativePlayer>[];
+    _sourceResponse = (request) async {
+      final item = request.url.pathSegments.last;
+      final tone = request.url.queryParameters['tone_id'];
+      if (item == '2' && tone != '64') {
+        return _json({'code': 101000, 'message': 'NO_THIS_TONE'}, 200);
+      }
+      return _json(
+        _playinfoPayload(item, url: 'https://cdn.example/$item-$tone.m4a'),
+        200,
+      );
+    };
+    await _mount(
+      tester,
+      players: players,
+      chapters: [
+        Chapter(itemId: '1', title: '第1章', volumeName: ''),
+        Chapter(itemId: '2', title: '第2章', volumeName: ''),
+      ],
+      extras: const AudioExtras(
+        tones: AudioToneSet(
+          ttsTones: [
+            AudioTone(id: '64', title: '成熟大叔音'),
+            AudioTone(id: '74', title: '成熟大叔音升级版'),
+            AudioTone(id: '57', title: '多角色对话'),
+            AudioTone(id: '96', title: '多角色对话升级版'),
+          ],
+        ),
+      ),
+    );
+    await _pumpUntil(
+      tester,
+      () => players.isNotEmpty && players.first.isPlaying,
+    );
+    players.first.emitPosition(const Duration(seconds: 2));
+    await _pumpUntil(
+      tester,
+      () => players.length == 2 && players.last.isCreated,
+    );
+    expect(players.first.isPlaying, isTrue);
+    expect(players.last.isPlaying, isFalse);
+    expect(_sourceRequests.map((url) => url.queryParameters['tone_id']), [
+      '96',
+      '96',
+      '57',
+      '74',
+      '64',
+    ]);
+    players.first.emitCompleted();
+    await tester.pump();
+    await _pumpUntil(tester, () => players.last.isPlaying);
+    expect(players, hasLength(2));
+    expect(players.first.disposed, isTrue);
+    expect(players.last.calls.where((call) => call.startsWith('create:')), [
+      'create:https://cdn.example/2-64.m4a',
+    ]);
+    expect(_sourceRequests, hasLength(5));
+  });
+
+  testWidgets('iOS background defers next-chapter prefetch until foreground', (
+    tester,
+  ) async {
+    _mockIosAudioSessionEvents();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    addTearDown(
+      () => tester.binding.handleAppLifecycleStateChanged(
+        AppLifecycleState.resumed,
+      ),
+    );
+    final players = <ControlledNativePlayer>[];
+    _sourceResponse = (request) async {
+      final item = request.url.pathSegments.last;
+      final tone = request.url.queryParameters['tone_id'];
+      return _json(
+        _playinfoPayload(item, url: 'https://cdn.example/$item-$tone.m4a'),
+        200,
+      );
+    };
+    await _mount(
+      tester,
+      players: players,
+      chapters: [
+        Chapter(itemId: '1', title: '第1章', volumeName: ''),
+        Chapter(itemId: '2', title: '第2章', volumeName: ''),
+      ],
+    );
+    await _pumpUntil(
+      tester,
+      () => players.isNotEmpty && players.first.isPlaying,
+    );
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await _flush(tester);
+    players.first.emitPosition(const Duration(seconds: 2));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    }
+    expect(players.first.isPlaying, isTrue);
+    expect(_sourceRequests, isNotEmpty);
+    expect(players, hasLength(1), reason: 'iOS 后台不能新建 media_kit 播放器');
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await _flush(tester);
+    players.first.emitPosition(const Duration(seconds: 3));
+    await _pumpUntil(
+      tester,
+      () => players.length == 2 && players.last.isCreated,
+    );
+  }, variant: TargetPlatformVariant({TargetPlatform.iOS}));
+
+  testWidgets('iOS background during prefetch source wait allocates nothing', (
+    tester,
+  ) async {
+    _mockIosAudioSessionEvents();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    addTearDown(
+      () => tester.binding.handleAppLifecycleStateChanged(
+        AppLifecycleState.resumed,
+      ),
+    );
+    final players = <ControlledNativePlayer>[];
+    final nextSource = Completer<http.Response>();
+    _sourceResponse = (request) async {
+      final item = request.url.pathSegments.last;
+      final tone = request.url.queryParameters['tone_id'];
+      if (item == '2') return nextSource.future;
+      return _json(
+        _playinfoPayload(item, url: 'https://cdn.example/$item-$tone.m4a'),
+        200,
+      );
+    };
+    await _mount(
+      tester,
+      players: players,
+      chapters: [
+        Chapter(itemId: '1', title: '第1章', volumeName: ''),
+        Chapter(itemId: '2', title: '第2章', volumeName: ''),
+      ],
+    );
+    await _pumpUntil(
+      tester,
+      () => players.isNotEmpty && players.first.isPlaying,
+    );
+    players.first.emitPosition(const Duration(seconds: 2));
+    await _pumpUntil(
+      tester,
+      () => _sourceRequests.any((url) => url.pathSegments.last == '2'),
+    );
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await _flush(tester);
+    nextSource.complete(
+      _json(_playinfoPayload('2', url: 'https://cdn.example/2-0.m4a'), 200),
+    );
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    }
+    expect(players, hasLength(1), reason: '退到后台后不再新建播放器');
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await _flush(tester);
+    players.first.emitPosition(const Duration(seconds: 3));
+    await _pumpUntil(
+      tester,
+      () => players.length == 2 && players.last.isCreated,
+    );
+  }, variant: TargetPlatformVariant({TargetPlatform.iOS}));
+
+  testWidgets('late voice metadata replaces the prebuffered default tone', (
+    tester,
+  ) async {
+    final players = <ControlledNativePlayer>[];
+    final extras = Completer<AudioExtras>();
+    _sourceResponse = (request) async {
+      final item = request.url.pathSegments.last;
+      final tone = request.url.queryParameters['tone_id'];
+      return _json(
+        _playinfoPayload(item, url: 'https://cdn.example/$item-$tone.m4a'),
+        200,
+      );
+    };
+    await _mount(
+      tester,
+      players: players,
+      extrasLoader: (_) => extras.future,
+      chapters: [
+        Chapter(itemId: '1', title: '第1章', volumeName: ''),
+        Chapter(itemId: '2', title: '第2章', volumeName: ''),
+      ],
+    );
+    await _pumpUntil(
+      tester,
+      () => players.isNotEmpty && players.first.isPlaying,
+    );
+    players.first.emitPosition(const Duration(seconds: 2));
+    await _pumpUntil(
+      tester,
+      () => players.length == 2 && players.last.isCreated,
+    );
+    extras.complete(
+      const AudioExtras(
+        tones: AudioToneSet(
+          ttsTones: [AudioTone(id: '96', title: '多角色对话升级版')],
+        ),
+      ),
+    );
+    await _pumpUntil(
+      tester,
+      () =>
+          players.any(
+            (player) =>
+                player.isPlaying &&
+                player.calls.contains('create:https://cdn.example/1-96.m4a'),
+          ) &&
+          players.any(
+            (player) =>
+                player.isCreated &&
+                player.calls.contains('create:https://cdn.example/2-96.m4a'),
+          ),
+    );
+    final current = players.singleWhere((player) => player.isPlaying);
+    expect(players[1].disposed, isTrue);
+    expect(players.first.disposed, isTrue);
+    expect(current.position, const Duration(seconds: 2));
+    current.emitCompleted();
+    await _pumpUntil(
+      tester,
+      () => players.any(
+        (player) =>
+            player.isPlaying &&
+            player.calls.contains('create:https://cdn.example/2-96.m4a'),
+      ),
+    );
+    expect(
+      _sourceRequests.map(
+        (url) => '${url.pathSegments.last}:${url.queryParameters['tone_id']}',
+      ),
+      unorderedEquals(['1:0', '2:0', '1:96', '2:96']),
+    );
+  });
+
   testWidgets('a 5xx audio source is retried and then plays', (tester) async {
     final sourceAttempts = <String, int>{};
     final timePointAttempts = <String, int>{};
@@ -100,7 +451,13 @@ void main() {
       if (itemId == '1' && attempt == 1) {
         return _json({'error': '服务暂不可用'}, 503);
       }
-      return _json(_playinfoPayload(itemId), 200);
+      return _json(
+        _playinfoPayload(
+          itemId,
+          url: 'https://cdn.example/$itemId-$attempt.m4a',
+        ),
+        200,
+      );
     };
 
     final players = <ControlledNativePlayer>[];
@@ -171,6 +528,50 @@ void main() {
     expect(ListeningSession.instance.subtitles?.cues.single.text, '恢复后的服务端字幕');
     expect(ListeningSession.instance.followArmed, isFalse);
 
+    // CDN failure after a successful model fetch must not reuse that model
+    // on a manual retry. Preserve the listener's position and selected voice.
+    players.single.emitPosition(const Duration(seconds: 23));
+    players.single.errors.add(
+      const NativePlaybackException(
+        'Playback failed',
+        errorCode: 2004,
+        httpStatusCode: 403,
+      ),
+    );
+    await _flush(tester);
+    expect(find.text('播放出错，请稍后重试'), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const ValueKey('audio-retry')));
+    await tester.tap(find.byKey(const ValueKey('audio-retry')));
+    await _pumpUntil(
+      tester,
+      () =>
+          players.length == 2 &&
+          players.last.isPlaying &&
+          timePointAttempts['1'] == 5 &&
+          subtitleAttempts['1'] == 5,
+      settleMs: 700,
+    );
+    expect(sourceAttempts['1'], 3, reason: '手动重试重新获取模型');
+    expect(players.last.calls, contains('create:https://cdn.example/1-3.m4a'));
+    expect(players.last.position, const Duration(seconds: 23));
+    expect(
+      _sourceRequests
+          .where((uri) => uri.pathSegments.last == '1')
+          .map((uri) => uri.queryParameters['tone_id']),
+      ['0', '0', '0'],
+    );
+
+    // 用户关闭跟随后，已成功的轨道不应再排恢复请求或重新打开跟随。
+    ListeningSession.instance.setFollowArmed(false);
+    await tester.pump(const Duration(seconds: 30));
+    await _flush(tester);
+
+    expect(timePointAttempts['1'], 5, reason: '重试后取得有效时间轴，不再重复恢复');
+    expect(subtitleAttempts['1'], 5, reason: '重试后取得有效字幕，不再重复恢复');
+    expect(ListeningSession.instance.novelChapterId, 'novel-1');
+    expect(ListeningSession.instance.subtitles?.cues.single.text, '恢复后的服务端字幕');
+    expect(ListeningSession.instance.followArmed, isFalse);
+
     // 第 2 章再次耗尽后立刻换章；旧章的恢复 timer/request 必须一起失效。
     await tester.ensureVisible(find.byTooltip('下一章'));
     await tester.tap(find.byTooltip('下一章'));
@@ -225,11 +626,14 @@ void main() {
   });
 }
 
-Map<String, dynamic> _playinfoPayload(String itemId) => {
+Map<String, dynamic> _playinfoPayload(
+  String itemId, {
+  String url = 'https://cdn.example/1.m4a',
+}) => {
   'code': 0,
   'data': [
     {
-      'main_url': 'https://cdn.example/1.m4a',
+      'main_url': url,
       'item_id': itemId,
       'indate': 86400,
       'video_model': jsonEncode({
@@ -237,7 +641,7 @@ Map<String, dynamic> _playinfoPayload(String itemId) => {
         'media_type': 'audio',
         'video_duration': 42.0,
         'video_list': [
-          {'main_url': 'https://cdn.example/1.m4a'},
+          {'main_url': url},
         ],
       }),
     },
@@ -247,16 +651,20 @@ Map<String, dynamic> _playinfoPayload(String itemId) => {
 Widget _app(
   List<ControlledNativePlayer> players, {
   List<Chapter>? chapters,
+  String? initialToneId,
+  AudioExtras extras = const AudioExtras(),
+  AudioExtrasLoader? extrasLoader,
   SubtitleLoader? subtitleLoader,
   TimePointLoader? timePointLoader,
 }) => MaterialApp(
   home: AudioPage(
     bookId: 'book',
+    initialToneId: initialToneId,
     title: '测试听书',
     chapters: chapters ?? [Chapter(itemId: '1', title: '第1章', volumeName: '')],
     historyStore: ControlledReaderStore(),
     voicesLoader: () async => const [AudioVoice(id: '1', label: '音色一')],
-    extrasLoader: (_) async => const AudioExtras(),
+    extrasLoader: extrasLoader ?? (_) async => extras,
     subtitleLoader: subtitleLoader ?? (_, _) async => SubtitleTrack.empty,
     timePointLoader: timePointLoader ?? (_, _) async => AudioTimeTrack.empty,
     excerptLoader: (_) async => null,
@@ -273,6 +681,9 @@ Future<void> _mount(
   WidgetTester tester, {
   List<ControlledNativePlayer>? players,
   List<Chapter>? chapters,
+  String? initialToneId,
+  AudioExtras extras = const AudioExtras(),
+  AudioExtrasLoader? extrasLoader,
   SubtitleLoader? subtitleLoader,
   TimePointLoader? timePointLoader,
 }) async {
@@ -286,6 +697,9 @@ Future<void> _mount(
     _app(
       players ?? [],
       chapters: chapters,
+      initialToneId: initialToneId,
+      extras: extras,
+      extrasLoader: extrasLoader,
       subtitleLoader: subtitleLoader,
       timePointLoader: timePointLoader,
     ),

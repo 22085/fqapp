@@ -18,6 +18,7 @@ class ClassicShellDock extends StatefulWidget {
     required this.onSelected,
     required this.overVideo,
     this.animating = false,
+    this.showDrama = true,
   });
 
   final int selectedIndex;
@@ -26,9 +27,8 @@ class ClassicShellDock extends StatefulWidget {
   /// 短剧 tab 背后是全屏视频流：dock 按深色外观绘制并跳过实时模糊。
   final bool overVideo;
 
-  /// 页面切换动画进行中：跳过 BackdropFilter 实时模糊，避免每帧
-  /// 对滑动中的页面做全屏高斯模糊（动画结束后自动恢复）。
   final bool animating;
+  final bool showDrama;
 
   @override
   State<ClassicShellDock> createState() => _ClassicShellDockState();
@@ -37,11 +37,16 @@ class ClassicShellDock extends StatefulWidget {
 class _ClassicShellDockState extends State<ClassicShellDock> {
   /// 同心圆角规则：dock 外轮廓是 [_dockHeight] 高的全胶囊，选中背景从 dock
   /// 内壁四周内缩 [_innerInset]，圆角取 `外圆角 − 内缩间距`（内层背景高
-  /// 64 − 8 = 56 = 2 × 28），两层圆弧圆心同在 dock 中线上、四周间距均匀。
+  /// 56 − 8 = 48 = 2 × 24），两层圆弧圆心同在 dock 中线上、四周间距均匀。
+  ///
+  /// 高度取 56 而不是更早的 64（issue #478）：图标 20 + 间距 2 + 标签
+  /// ≈ 16 共 38dp，减高后内层仍有 48dp，装得下且与档案主题的
+  /// `DockLayout.height`（54）基本齐平，两套主题的底部占位不再差 10dp。
+  /// 少掉的 8dp 全部还给内容区（[ShelfTokens.contentBottomInset]）。
   /// 两层都画成 [RoundedSuperellipseBorder]（M3 连续曲率 squircle，对齐
   /// PiliPlus 的 FloatingNavigationBar）：普通圆弧在胶囊两端有曲率突变，
   /// 连续曲率的过渡更软，高亮块与外轮廓的弧度看起来是同一套。
-  static const _dockHeight = 64.0;
+  static const _dockHeight = 56.0;
   static const _dockRadius = _dockHeight / 2;
   static const _innerInset = 4.0;
   static const _innerRadius = _dockRadius - _innerInset;
@@ -74,12 +79,15 @@ class _ClassicShellDockState extends State<ClassicShellDock> {
   static const _itemIdealWidth = 90.0;
   static const _dockMaxWidth = _itemIdealWidth * 4 + _innerInset * 2;
 
-  static const _items = [
+  static const _allItems = [
     (LucideIcons.house, '首页'),
     (LucideIcons.clapperboard, '短剧'),
     (LucideIcons.library_big, '书架'),
     (LucideIcons.circle_user_round, '我的'),
   ];
+
+  List<(IconData, String)> get _items =>
+      widget.showDrama ? _allItems : [_allItems[0], _allItems[2], _allItems[3]];
 
   /// 背景块的连续项序号（欠阻尼弹簧驱动，松手回弹带过冲）。
   final ValueNotifier<double> _selection = ValueNotifier(0);
@@ -432,9 +440,8 @@ class _ClassicShellDockState extends State<ClassicShellDock> {
                   borderRadius: borderRadius,
                   child:
                       eink ||
-                          widget.selectedIndex == 1 ||
-                          oled ||
-                          widget.animating
+                          (widget.showDrama && widget.selectedIndex == 1) ||
+                          oled
                       ? bar
                       : BackdropFilter(
                           filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
@@ -523,7 +530,10 @@ class _ClassicDockDestination extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(icon, size: 22, color: iconColor),
+                // 图标 22 → 20（issue #478）：胶囊从 64 收到 56 后，内层只剩
+                // 48dp，图标缩回 20 才能让内容块（20 + 2 + 16）上下各留 5dp
+                // 呼吸，而不是贴着选中背景的 4dp 内缩边。
+                Icon(icon, size: 20, color: iconColor),
                 const SizedBox(height: 2),
                 Text(
                   label,

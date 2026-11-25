@@ -2,9 +2,13 @@ import 'platform_channel.dart';
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/services.dart';
 
 import 'app_log.dart';
+import 'desktop_platform.dart' show isIOSPlatform;
+import 'ios_audio_session.dart';
 import 'audio_preferences.dart';
 import 'linux_platform.dart' show isLinuxDesktop;
 import 'player_preferences.dart';
@@ -58,6 +62,42 @@ class NativePlaybackException implements Exception {
   String toString() => 'NativePlaybackException: $message';
 }
 
+/// A point-in-time view of native playback metrics.
+///
+/// Missing or unusable values stay null; geometry can come from the existing
+/// texture events when native statistics are unavailable.
+class NativePlaybackStatistics {
+  final int? videoWidth;
+  final int? videoHeight;
+  final num? frameRate;
+  final String? videoCodec;
+  final String? videoMimeType;
+  final String? audioCodec;
+  final String? audioMimeType;
+  final int? videoBitrate;
+  final int? audioBitrate;
+  final int? bufferedDurationMs;
+  final int? estimatedBandwidthBps;
+  final int? renderedFrames;
+  final int? droppedFrames;
+
+  const NativePlaybackStatistics({
+    this.videoWidth,
+    this.videoHeight,
+    this.frameRate,
+    this.videoCodec,
+    this.videoMimeType,
+    this.audioCodec,
+    this.audioMimeType,
+    this.videoBitrate,
+    this.audioBitrate,
+    this.bufferedDurationMs,
+    this.estimatedBandwidthBps,
+    this.renderedFrames,
+    this.droppedFrames,
+  });
+}
+
 /// Flutter-side wrapper of the native ExoPlayer host.
 class NativePlayer {
   NativePlayer({this.audioOnly = false});
@@ -84,7 +124,7 @@ class NativePlayer {
   static int _remoteGeneration = 0;
   static String allocateRemoteOwner() => 'media-${++_remoteGeneration}';
   static String? _remoteOwner;
-  static String? _remoteEpisode;
+  static String? _remoteChapterId;
   static int _foregroundGeneration = 0;
   static bool ownsRemoteOwner(String owner) => _remoteOwner == owner;
   static final _remoteHandlers =
@@ -97,6 +137,44 @@ class NativePlayer {
           Future<double> Function(String, double)? setting,
         })
       >{};
+  final String _defaultIosMediaOwner = allocateRemoteOwner();
+  late String iosMediaOwner = _defaultIosMediaOwner;
+  void Function(String, int?)? iosMediaAction;
+
+  void _claimIosMediaSession() {
+    if (!isIOSPlatform) return;
+    if (_remoteHandlers.containsKey(iosMediaOwner)) {
+      claimRemoteOwner(iosMediaOwner);
+    } else {
+      IosAudioSession.claim(
+        owner: iosMediaOwner,
+        onAction: iosMediaAction ?? _handleIosMediaAction,
+      );
+    }
+  }
+
+  void _handleIosMediaAction(String action, int? positionMs) {
+    if (_disposed || !IosAudioSession.owns(iosMediaOwner)) return;
+    switch (action) {
+      case 'interruptionResume':
+      case 'play':
+        unawaited(play());
+      case 'interruptionPause':
+        unawaited(pauseForInterruption());
+      case 'pause':
+        unawaited(pause());
+      case 'playPause':
+        unawaited(playWhenReady ? pause() : play());
+      case 'seek':
+        if (positionMs != null) {
+          unawaited(seek(Duration(milliseconds: positionMs)));
+        }
+      case 'stop':
+        unawaited(pause());
+        unawaited(IosAudioSession.stop(owner: iosMediaOwner));
+    }
+  }
+
   static void claimRemoteOwner(String owner) {
     final handler = _remoteHandlers[owner];
     if (handler == null) return;
@@ -104,6 +182,16 @@ class NativePlayer {
     _onRemoteAction = handler.action;
     _onRemoteSeek = handler.seek;
     _onBecomingNoisy = handler.noisy;
+    IosAudioSession.claim(
+      owner: owner,
+      onAction: (action, positionMs) {
+        if (action == 'seek') {
+          if (positionMs != null) handler.seek?.call(positionMs);
+        } else {
+          handler.action?.call(action);
+        }
+      },
+    );
   }
 
   static VoidCallback? _onBecomingNoisy;
@@ -174,7 +262,10 @@ class NativePlayer {
   }
 
   static void clearRemoteCommandHandler({String? owner}) {
-    if (owner != null) _remoteHandlers.remove(owner);
+    if (owner != null) {
+      _remoteHandlers.remove(owner);
+      unawaited(IosAudioSession.stop(owner: owner));
+    }
     if (owner != null && owner != _remoteOwner) return;
     _remoteOwner = null;
     _onRemoteSeek = null;
@@ -241,14 +332,13 @@ class NativePlayer {
             : raw is String
             ? raw
             : null;
-        if (isLinuxDesktop && (raw is! Map || raw['owner'] != _remoteOwner)) {
-          return null;
-        }
-        if (action == 'seekTo' &&
-            raw is Map &&
-            raw['episode'] != null &&
-            raw['episode'] != _remoteEpisode) {
-          return null;
+        if (isLinuxDesktop) {
+          if (raw is! Map || raw['owner'] != _remoteOwner) return null;
+          final chapterId = raw['chapterId'];
+          if (action == 'seekTo' &&
+              (chapterId is! String || chapterId != _remoteChapterId)) {
+            return null;
+          }
         }
         if (action == 'seekTo' && raw is Map && raw['positionMs'] is int) {
           _onRemoteSeek?.call(raw['positionMs'] as int);
@@ -348,6 +438,10 @@ class NativePlayer {
   int _videoHeight = 0;
   int _videoRotationCorrection = 0;
   Object? _lastError;
+  String? _decoderName;
+  int _statisticsGeneration = 0;
+  int _geometryGeneration = -1;
+  bool _statisticsCurrent = false;
 
   Duration get position => _position;
   Duration get duration => _duration;
@@ -360,6 +454,7 @@ class NativePlayer {
   bool get firstFrameRendered => _firstFrameRendered;
   int get videoWidth => _videoWidth;
   int get videoHeight => _videoHeight;
+  String? get decoderName => _decoderName;
 
   /// Clockwise rotation not applied by the native texture backend.
   int get videoRotationCorrection => _videoRotationCorrection;
@@ -393,11 +488,20 @@ class NativePlayer {
 
   final _createdCompleter = Completer<int>();
 
+  /// 原地换源（后台切章）的等待者：`reopen` 的回包只说明请求已受理，
+  /// 必须等 native 发回 `reopened` 才算真的打开（此时 duration 还是上一章
+  /// 的残留值，用它判断会提前起播、连到已关闭的本地代理端口）。
+  ({Completer<void> completer, int statisticsGeneration})? _reopenCompleter;
+  Future<void> _reopenQueue = Future<void>.value();
+  int _reopenRequest = 0;
+  static const _reopenTimeout = Duration(seconds: 15);
+
   /// 起播位置（毫秒）：> 0 才下发；原生在 prepare() 前应用，不是装载后再 seek。
   Future<int> create(String cdnUrl, String keyHex, {int? startMs}) {
     if (_disposed) {
       return Future<int>.error(StateError('NativePlayer is disposed'));
     }
+    if (_createFuture == null) _resetPlaybackStatistics();
     return _createFuture ??= _create(cdnUrl, keyHex, startMs);
   }
 
@@ -475,19 +579,43 @@ class NativePlayer {
   }
 
   Future<void> play() => _setPlayWhenReady(true);
-  Future<void> pause() => _setPlayWhenReady(false);
+  Future<void> pause() {
+    IosAudioSession.cancelInterruption(iosMediaOwner);
+    return _setPlayWhenReady(false);
+  }
+
+  Future<void> pauseForInterruption() => _setPlayWhenReady(false);
 
   Future<void> _setPlayWhenReady(bool value) async {
     if (_disposed) return;
     final generation = ++_playWhenReadyGeneration;
     final previous = _playWhenReady;
+    if (value) _claimIosMediaSession();
+    final iosSession = IosAudioSession.generation;
     _updatePlayWhenReady(value);
     try {
       if (value) {
         await beforePlay?.call(this);
         if (_disposed || generation != _playWhenReadyGeneration) return;
+        if (isIOSPlatform) {
+          final prepared = await IosAudioSession.prepare(
+            owner: iosMediaOwner,
+            mode: audioOnly ? 'audio' : 'video',
+          );
+          if (_disposed || generation != _playWhenReadyGeneration) return;
+          if (!prepared) {
+            _updatePlayWhenReady(false);
+            return;
+          }
+        }
       }
       await _invoke(value ? 'play' : 'pause');
+      if (!_disposed && generation == _playWhenReadyGeneration) {
+        await IosAudioSession.setPlaying(owner: iosMediaOwner, playing: value);
+      }
+      if (!value && !_instances.values.any((player) => player.playWhenReady)) {
+        await IosAudioSession.releaseIfIdle(session: iosSession);
+      }
     } catch (_) {
       if (!_disposed && generation == _playWhenReadyGeneration) {
         _updatePlayWhenReady(previous);
@@ -500,6 +628,42 @@ class NativePlayer {
     if (_playWhenReady == value) return;
     _playWhenReady = value;
     _playWhenReadyCtrl.add(value);
+  }
+
+  /// 复用同一个 native 播放器打开新的音源（iOS 后台切章专用）。
+  Future<void> reopen(String cdnUrl, String keyHex) {
+    final operation = _reopenQueue.then((_) => _reopen(cdnUrl, keyHex));
+    _reopenQueue = operation.then<void>((_) {}).catchError((Object _) {});
+    return operation;
+  }
+
+  Future<void> _reopen(String cdnUrl, String keyHex) async {
+    if (_disposed) throw StateError('NativePlayer was disposed');
+    // Invalidate when this queued operation takes ownership, not when queued.
+    _resetPlaybackStatistics();
+    _lastError = null;
+    _position = Duration.zero;
+    _duration = Duration.zero;
+    _completed = false;
+    final completer = Completer<void>();
+    completer.future.ignore();
+    // Late acknowledgements must carry both this request id and source epoch.
+    final statisticsGeneration = _statisticsGeneration;
+    final request = ++_reopenRequest;
+    _reopenCompleter = (
+      completer: completer,
+      statisticsGeneration: statisticsGeneration,
+    );
+    try {
+      await _invoke('reopen', {
+        'requestId': request,
+        'cdnUrl': cdnUrl,
+        'keyHex': keyHex,
+      });
+      await completer.future.timeout(_reopenTimeout);
+    } finally {
+      if (_reopenCompleter?.completer == completer) _reopenCompleter = null;
+    }
   }
 
   Future<void> seek(Duration position) async {
@@ -549,6 +713,7 @@ class NativePlayer {
   static Future<void> startListenForeground({
     required String title,
     required String episode,
+    required String chapterId,
     String coverUrl = '',
     bool playing = true,
     bool hasPrev = true,
@@ -563,9 +728,15 @@ class NativePlayer {
     double minimumRate = 0.5,
     double maximumRate = 3,
   }) async {
-    if (isLinuxDesktop && (owner == null || owner != _remoteOwner)) return;
+    if ((isLinuxDesktop || isIOSPlatform) &&
+        (owner == null || owner != _remoteOwner)) {
+      return;
+    }
+    if (isIOSPlatform && !IosAudioSession.hasOwner && owner != null) {
+      claimRemoteOwner(owner);
+    }
     final generation = ++_foregroundGeneration;
-    _remoteEpisode = episode;
+    _remoteChapterId = chapterId;
     try {
       Map? settings;
       if (isLinuxDesktop && (linuxPlayerId != null || linuxTts)) {
@@ -581,8 +752,10 @@ class NativePlayer {
       // pending 10s timer that breaks widget tests under FakeAsync when
       // the fire-and-forget call is still in flight at test end.
       await _channel.invokeMethod<void>('startListenForeground', {
+        if (isIOSPlatform) 'owner': owner,
         if (isLinuxDesktop) ...{
           'owner': owner,
+          'chapterId': chapterId,
           'transportV2': true,
           'seekSupported': _onRemoteSeek != null,
           'seeked': seeked,
@@ -612,7 +785,9 @@ class NativePlayer {
       // Same as startListenForeground: no .timeout(), see above.
       await _channel.invokeMethod<void>(
         'stopListenForeground',
-        isLinuxDesktop && owner != null ? {'owner': owner} : null,
+        (isLinuxDesktop || isIOSPlatform) && owner != null
+            ? {'owner': owner}
+            : null,
       );
     } on PlatformException catch (error) {
       if (isLinuxDesktop) AppLog.w('media', 'Linux 媒体会话不可用: ${error.code}');
@@ -796,11 +971,26 @@ class NativePlayer {
   Future<void> dispose() => _disposeFuture ??= _dispose();
 
   Future<void> _dispose() async {
+    final iosSession = IosAudioSession.generation;
+    if (iosMediaOwner == _defaultIosMediaOwner) {
+      unawaited(IosAudioSession.stop(owner: iosMediaOwner));
+    }
     _disposed = true;
+    _resetPlaybackStatistics();
+    final reopen = _reopenCompleter;
+    _reopenCompleter = null;
+    if (reopen != null && !reopen.completer.isCompleted) {
+      reopen.completer.completeError(
+        StateError('NativePlayer disposed during reopen'),
+      );
+    }
     if (_createFuture != null && !_createdCompleter.isCompleted) {
       _createdCompleter.completeError(StateError('NativePlayer disposed'));
     }
     await _releaseNative();
+    if (!_instances.values.any((player) => player.playWhenReady)) {
+      await IosAudioSession.releaseIfIdle(session: iosSession);
+    }
     await Future.wait<void>([
       _positionCtrl.close(),
       _durationCtrl.close(),
@@ -816,6 +1006,7 @@ class NativePlayer {
   }
 
   Future<void> _releaseNative() {
+    _resetPlaybackStatistics();
     final playerId = _playerId;
     if (playerId == null) return Future<void>.value();
     return _nativeRelease ??= _disposeNative(playerId);
@@ -857,6 +1048,7 @@ class NativePlayer {
         final value = event['value'];
         if (value is num) {
           _textureId = value.toInt();
+          _statisticsCurrent = true;
           if (!_createdCompleter.isCompleted) {
             _createdCompleter.complete(value.toInt());
           }
@@ -881,7 +1073,21 @@ class NativePlayer {
           }
           if (!_textureIdCtrl.isClosed) _textureIdCtrl.add(_textureId!);
         }
+      case 'reopened':
+        if (event['requestId'] != _reopenRequest) return;
+        final pending = _reopenCompleter;
+        if (pending == null ||
+            pending.statisticsGeneration != _statisticsGeneration) {
+          return;
+        }
+        _reopenCompleter = null;
+        _statisticsCurrent = true;
+        if (!pending.completer.isCompleted) pending.completer.complete();
       case 'error':
+        if (event['requestId'] != null &&
+            event['requestId'] != _reopenRequest) {
+          return;
+        }
         final error = NativePlaybackException.fromEvent(event['value']);
         final value = event['value'];
         AppLog.d(
@@ -898,8 +1104,20 @@ class NativePlayer {
         if (!_createdCompleter.isCompleted) {
           _createdCompleter.completeError(error);
         }
+        final pendingReopen = _reopenCompleter;
+        _reopenCompleter = null;
+        if (pendingReopen != null && !pendingReopen.completer.isCompleted) {
+          pendingReopen.completer.completeError(error);
+        }
         if (!_errorCtrl.isClosed) _errorCtrl.add(error);
       case 'decoderInitialized':
+        final decoder = event['value'];
+        final name = decoder is Map ? decoder['name'] : null;
+        if (_statisticsCurrent &&
+            name is String &&
+            _decoderToken.hasMatch(name)) {
+          _decoderName = name;
+        }
         AppLog.d(
           'player-decoder',
           jsonEncode({
@@ -956,6 +1174,9 @@ class NativePlayer {
               rotation is num && const [90, 180, 270].contains(rotation)
               ? rotation.toInt()
               : 0;
+          if (_statisticsCurrent) {
+            _geometryGeneration = _statisticsGeneration;
+          }
           // 诊断：issue #11 竖版源在换档后被塞进横向盒子导致拉伸。这里把
           // 原生上报的原始字段全量抛出，用来区分「尺寸本身是编码尺寸」还是
           // 「布局/旋转约定不一致」。
@@ -970,4 +1191,93 @@ class NativePlayer {
         }
     }
   }
+
+  /// Reads native metrics without making a statistics failure a playback
+  /// failure. Android is the only platform with the native statistics method;
+  /// elsewhere the existing video-size events provide the available snapshot.
+  Future<NativePlaybackStatistics> readStatistics() async {
+    final generation = _statisticsGeneration;
+    final playerId = _playerId;
+    if (defaultTargetPlatform != TargetPlatform.android ||
+        _disposed ||
+        !_statisticsCurrent ||
+        playerId == null) {
+      return _geometryStatistics();
+    }
+
+    try {
+      final value = await _channel
+          .invokeMethod<Object?>('getStatistics', {'id': playerId})
+          .timeout(_methodTimeout);
+      if (_disposed || generation != _statisticsGeneration) {
+        return _geometryStatistics();
+      }
+      return _statisticsFromMap(value, _geometryStatistics());
+    } catch (_) {
+      return _geometryStatistics();
+    }
+  }
+
+  void _resetPlaybackStatistics() {
+    ++_statisticsGeneration;
+    _geometryGeneration = -1;
+    _decoderName = null;
+    _statisticsCurrent = false;
+  }
+
+  NativePlaybackStatistics _geometryStatistics() {
+    if (_disposed ||
+        !_statisticsCurrent ||
+        _geometryGeneration != _statisticsGeneration) {
+      return const NativePlaybackStatistics();
+    }
+    return NativePlaybackStatistics(
+      videoWidth: _positiveInt(_videoWidth),
+      videoHeight: _positiveInt(_videoHeight),
+    );
+  }
+
+  NativePlaybackStatistics _statisticsFromMap(
+    Object? value,
+    NativePlaybackStatistics geometry,
+  ) {
+    if (value is! Map) return geometry;
+
+    int? positiveInt(String key) => _positiveInt(value[key]);
+    int? nonNegativeInt(String key) => _nonNegativeInt(value[key]);
+    num? positiveNumber(String key) {
+      final raw = value[key];
+      if (raw is! num || !raw.isFinite || raw <= 0) return null;
+      return raw;
+    }
+
+    String? label(String key) {
+      final raw = value[key];
+      if (raw is! String) return null;
+      final trimmed = raw.trim();
+      return trimmed.isEmpty ? null : trimmed;
+    }
+
+    return NativePlaybackStatistics(
+      videoWidth: positiveInt('videoWidth') ?? geometry.videoWidth,
+      videoHeight: positiveInt('videoHeight') ?? geometry.videoHeight,
+      frameRate: positiveNumber('frameRate'),
+      videoCodec: label('videoCodec'),
+      videoMimeType: label('videoMimeType'),
+      audioCodec: label('audioCodec'),
+      audioMimeType: label('audioMimeType'),
+      videoBitrate: positiveInt('videoBitrate'),
+      audioBitrate: positiveInt('audioBitrate'),
+      bufferedDurationMs: nonNegativeInt('bufferedDurationMs'),
+      estimatedBandwidthBps: positiveInt('estimatedBandwidthBps'),
+      renderedFrames: nonNegativeInt('renderedFrames'),
+      droppedFrames: nonNegativeInt('droppedFrames'),
+    );
+  }
 }
+
+int? _positiveInt(Object? value) =>
+    value is num && value.isFinite && value > 0 ? value.toInt() : null;
+
+int? _nonNegativeInt(Object? value) =>
+    value is num && value.isFinite && value >= 0 ? value.toInt() : null;

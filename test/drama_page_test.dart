@@ -1254,6 +1254,8 @@ void main() {
     // 显式钉住 Android：接线守卫需要 disabledProbe 返回 false，
     // 若 CI 将来复用本文件跑桌面平台则 disabledProbe 会短路、拖拽不翻转。
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    // 失败时也要复原，否则后续用例全部倒在 debug 变量不变量检查上。
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
     await tester.binding.setSurfaceSize(const Size(400, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     addTearDown(() => dramaLightPageNotifier.value = false);
@@ -1281,28 +1283,30 @@ void main() {
     // The destination is lazy: nothing of the 短剧 feed is built before a tap.
     expect(find.byType(DramaPage), findsNothing);
 
-    // 底栏自动隐藏的壳层接线守卫：在首页 feed 上真滚一把，body 的
-    // UserScrollNotification 监听 → 控制器 → DockAutoHideSlide 三段任一被拆
-    // 掉，dock 都会停在原位（其它断言测不到这件事）。
-    final Finder shellSlide = find.ancestor(
+    // 底栏仍由 DockAutoHideSlide 包裹（滚动自动隐藏），且切 tab 时必须
+    // 无条件露出：收起状态下用户够不到底栏，换页是最明确的前往意图。
+    final shellSlide = find.ancestor(
       of: find.byType(ShellDock),
       matching: find.byType(DockAutoHideSlide),
     );
-    Offset dockOffset() => tester
-        .widget<AnimatedSlide>(
-          find.descendant(of: shellSlide, matching: find.byType(AnimatedSlide)),
-        )
-        .offset;
-    expect(dockOffset(), Offset.zero);
+    expect(shellSlide, findsOneWidget);
+    AnimatedSlide slideWidget() => tester.widget<AnimatedSlide>(
+      find.descendant(of: shellSlide, matching: find.byType(AnimatedSlide)),
+    );
+    final dockBefore = tester.getRect(find.byType(ShellDock));
     await tester.dragFrom(const Offset(200, 300), const Offset(0, -200));
-    await tester.pump();
-    expect(dockOffset(), const Offset(0, 1));
-    await tester.dragFrom(const Offset(200, 300), const Offset(0, 200));
     await tester.pumpAndSettle();
-    expect(dockOffset(), Offset.zero);
+    expect(slideWidget().offset, const Offset(0, 1), reason: '下滑必须收起底栏');
+    expect(dockBefore.height, greaterThan(0));
+
+    // 上滑回位：底栏必须重新可点（收起状态下它本来就在屏外）。
+    await tester.dragFrom(const Offset(200, 400), const Offset(0, 200));
+    await tester.pumpAndSettle();
+    expect(slideWidget().offset, Offset.zero, reason: '上滑必须露出底栏');
 
     await tester.tap(navLabel('短剧'));
     await tester.pumpAndSettle();
+    expect(slideWidget().offset, Offset.zero, reason: '切 tab 后底栏必须保持可见');
     expect(find.byType(DramaPage), findsOneWidget);
     expect(find.byKey(const Key('drama_feed')), findsOneWidget);
     // 用户已移除右侧追剧入口。

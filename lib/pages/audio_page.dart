@@ -4,6 +4,7 @@ import '../widgets/desktop_chapter_sidebar.dart';
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_lucide/flutter_lucide.dart';
 
@@ -14,11 +15,13 @@ import '../models/book_detail.dart';
 import '../models/chapter_media.dart';
 import '../models/media_item.dart';
 import '../services/api_client.dart';
+import '../services/app_log.dart';
 import '../services/app_theme.dart';
 import '../services/audio_download_store.dart';
 import '../services/audio_history.dart';
 import '../services/audio_floating_routes.dart';
 import '../services/audio_page_theme.dart';
+import '../services/ios_audio_session.dart';
 import '../services/audio_play_error.dart';
 import '../services/audio_playback_choice.dart';
 import '../services/audio_subtitle_synth.dart';
@@ -26,6 +29,7 @@ import '../services/audio_time_point_lookup.dart';
 import '../services/audio_preferences.dart';
 import '../services/backend_transport.dart';
 import '../services/book_updates.dart';
+import '../services/boss_key_service.dart';
 import '../services/chapter_cache_store.dart';
 import '../services/chapter_text_formatter.dart';
 import '../services/fair_memory.dart';
@@ -40,7 +44,6 @@ import '../services/transient_retry.dart';
 import '../services/system_tts.dart';
 import '../widgets/audio/audio_offline_section.dart';
 import '../widgets/audio/audio_floating_player.dart';
-import '../widgets/audio/audio_advance_banner.dart';
 import '../widgets/audio/audio_control_rows.dart';
 import '../widgets/audio/audio_quick_rows.dart';
 import '../widgets/audio/audio_real_expanded.dart';
@@ -227,10 +230,14 @@ typedef _RoutePlayback = ({
   bool autoplay,
 });
 
-Future<AudioExtras> _defaultAudioExtras(String bookId) async {
+Future<AudioExtras> _defaultAudioExtras(
+  String bookId, {
+  ValueChanged<AudioToneSet>? onTones,
+}) async {
   final tones = await ApiClient.instance
       .bookTones(bookId)
       .catchError((Object _) => const AudioToneSet());
+  onTones?.call(tones);
   final related = await ApiClient.instance
       .relatedWorks(bookId)
       .catchError((Object _) => const <RelatedWork>[]);
@@ -804,55 +811,70 @@ class _AudioPageState extends State<AudioPage> {
               ),
               SizedBox(
                 width: MediaQuery.sizeOf(context).width >= 1200 ? 360 : 280,
-                child: DefaultTabController(
-                  length: 2,
-                  child: Column(
-                    children: [
-                      const TabBar(
-                        tabs: [
-                          Tab(text: '章节目录'),
-                          Tab(text: '同步字幕'),
-                        ],
-                      ),
-                      Expanded(
-                        child: TabBarView(
-                          children: [
-                            DesktopChapterSidebar(
-                              chapters: c._chapters,
-                              currentIndex: c._index,
-                              onSelected: (index) =>
-                                  unawaited(c._openChapter(index)),
-                            ),
-                            ValueListenableBuilder<Duration>(
-                              valueListenable: c._position,
-                              builder: (context, position, _) {
-                                final track = c._subtitles;
-                                if (track.isEmpty) {
-                                  // 官方两种空态都走 `setStatusText`，文案统一。
-                                  return const Center(
-                                    child: Text(
-                                      '本章暂无同步字幕',
-                                      key: Key('audio-subtitle-page-empty'),
-                                    ),
-                                  );
-                                }
-                                // 高亮与自动滚动都在 `AudioSubtitleList`
-                                // 里：跟着朗读进度滚到当前句并标出它。
-                                return AudioSubtitleList(
-                                  track: track,
-                                  active: track.indexAt(position),
-                                  onSeek: c._ready
-                                      ? (startMs) => c._seekTo(
-                                          Duration(milliseconds: startMs),
-                                        )
-                                      : null,
-                                );
-                              },
-                            ),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: palette.surface,
+                    border: Border(left: BorderSide(color: palette.line)),
+                  ),
+                  child: DefaultTabController(
+                    length: 2,
+                    child: Column(
+                      children: [
+                        TabBar(
+                          labelColor: palette.ink,
+                          unselectedLabelColor: palette.muted,
+                          indicatorColor: palette.eink
+                              ? palette.ink
+                              : HomePalette.accent,
+                          dividerColor: palette.line,
+                          tabs: const [
+                            Tab(text: '章节目录'),
+                            Tab(text: '同步字幕'),
                           ],
                         ),
-                      ),
-                    ],
+                        Expanded(
+                          child: TabBarView(
+                            children: [
+                              DesktopChapterSidebar(
+                                width: double.infinity,
+                                showBorder: false,
+                                backgroundColor: palette.surface,
+                                chapters: c._chapters,
+                                currentIndex: c._index,
+                                onSelected: (index) =>
+                                    unawaited(c._openChapter(index)),
+                              ),
+                              ValueListenableBuilder<Duration>(
+                                valueListenable: c._position,
+                                builder: (context, position, _) {
+                                  final track = c._subtitles;
+                                  if (track.isEmpty) {
+                                    // 官方两种空态都走 `setStatusText`，文案统一。
+                                    return const Center(
+                                      child: Text(
+                                        '本章暂无同步字幕',
+                                        key: Key('audio-subtitle-page-empty'),
+                                      ),
+                                    );
+                                  }
+                                  // 高亮与自动滚动都在 `AudioSubtitleList`
+                                  // 里：跟着朗读进度滚到当前句并标出它。
+                                  return AudioSubtitleList(
+                                    track: track,
+                                    active: track.indexAt(position),
+                                    onSeek: c._ready
+                                        ? (startMs) => c._seekTo(
+                                            Duration(milliseconds: startMs),
+                                          )
+                                        : null,
+                                  );
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -1180,7 +1202,12 @@ class _AudioPageState extends State<AudioPage> {
           const SizedBox(height: 6),
           FilledButton.icon(
             key: const ValueKey('audio-retry'),
-            onPressed: () => c._openChapter(c._index, restoreHistory: true),
+            onPressed: () => c._openChapter(
+              c._index,
+              restoreHistory: true,
+              toneId: c._toneId,
+              refreshSource: true,
+            ),
             style: FilledButton.styleFrom(backgroundColor: HomePalette.accent),
             icon: const Icon(LucideIcons.refresh_cw, size: 16),
             label: const Text('重试'),
@@ -1222,7 +1249,9 @@ class _AudioPageState extends State<AudioPage> {
     String toneId, {
     BuildContext? replaceContext,
   }) async {
-    if (c._switchingVersion || !c._selectableTone(toneId)) return;
+    if (c._switchingVersion || !c._selectableTone(toneId)) {
+      return;
+    }
     final novel = c._extras.tones.relatedNovel;
     if (c._ttsBookId != c._bookId && novel != null) {
       await _switchBookVersion(
@@ -1235,7 +1264,13 @@ class _AudioPageState extends State<AudioPage> {
       return;
     }
     _popSheet(replaceContext);
-    if (toneId == c._toneId) return;
+    if (toneId == c._toneId) {
+      c._update(() => c._automaticTone = false);
+      c._discardNextAudio();
+      c._syncListenClock();
+      await c._persistProgress();
+      return;
+    }
     await c._openChapter(
       c._index,
       position: c._player?.position ?? c._position.value,
@@ -1550,20 +1585,14 @@ class _AudioPageState extends State<AudioPage> {
                               ? null
                               : (enabled) {
                                   if (!mounted || c._loading) return;
-                                  c._update(() => c._autoAdvance = enabled);
-                                  c._publishMoreState();
-                                  unawaited(c._persistProgress());
+                                  c._setAutoAdvance(enabled);
                                 },
                         ),
                         onTap: snapshot.loading
                             ? null
                             : () {
                                 if (!mounted || c._loading) return;
-                                c._update(
-                                  () => c._autoAdvance = !snapshot.autoAdvance,
-                                );
-                                c._publishMoreState();
-                                unawaited(c._persistProgress());
+                                c._setAutoAdvance(!snapshot.autoAdvance);
                               },
                       ),
                       Divider(

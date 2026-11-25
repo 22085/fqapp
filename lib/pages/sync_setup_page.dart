@@ -49,7 +49,8 @@ class _SyncSetupPageState extends State<SyncSetupPage> {
   int step = 0;
   String? error;
   String get provider => widget.provider;
-  bool get cloud => !{'webdav', 'ftp', 'ftps', 'smb'}.contains(provider);
+  bool get cloud =>
+      !isWebDavProvider(provider) && !{'ftp', 'ftps', 'smb'}.contains(provider);
   String get title => SyncProvider.byId(provider).title;
   WebDavSyncSettings? get webDavSettings => switch (widget.store) {
     final WebDavSyncSettings settings when provider == 'webdav' => settings,
@@ -307,7 +308,7 @@ class _SyncSetupPageState extends State<SyncSetupPage> {
                     field(
                       address,
                       '服务器地址',
-                      hint: provider == 'webdav'
+                      hint: isWebDavProvider(provider)
                           ? 'https://example.com/dav/'
                           : provider == 'smb'
                           ? 'smb://NAS/共享名/'
@@ -474,6 +475,8 @@ class _SyncSetupPageState extends State<SyncSetupPage> {
                     ],
                   ),
                   const SizedBox(height: 20),
+                  if (provider == 'webdav-compat')
+                    const Text('所有设备请选择兼容模式及同一目录。旧版 WebDAV 备份请先通过备份与导入恢复到本机。'),
                   const Text('多端同步仅包含番茄收藏、阅读播放记录和已看剧集；不上传正文、视频和登录凭据。'),
                   const SizedBox(height: 20),
                   if (preview case final summary?) ...[

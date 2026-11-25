@@ -1,3 +1,4 @@
+import '../services/drama_feature_preferences.dart';
 import '../services/desktop_platform.dart';
 import '../services/audio_floating_routes.dart';
 import '../services/app_log.dart';
@@ -22,6 +23,7 @@ import '../services/ad_config.dart';
 import '../services/ad_service.dart';
 import 'listen_mode_page.dart';
 import '../services/episode_source_cache.dart';
+import '../services/bytevc2_transcode.dart';
 import '../services/fair_memory.dart';
 import '../services/drama_cache_preferences.dart';
 import '../services/drama_download_store.dart';
@@ -125,7 +127,20 @@ class PlayerPage extends StatefulWidget {
   });
 
   @override
-  State<PlayerPage> createState() => _PlayerPageState();
+  // Disabled routes never construct a playback state or start loading media.
+  State<PlayerPage> createState() =>
+      // ignore: no_logic_in_create_state
+      DramaFeaturePreferences.instance.enabled.value
+      ? _PlayerPageState()
+      : _DramaDisabledPlayerState();
+}
+
+class _DramaDisabledPlayerState extends State<PlayerPage> {
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('短剧')),
+    body: const Center(child: Text('短剧功能已关闭，可在外观设置中开启。')),
+  );
 }
 
 class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
@@ -267,14 +282,21 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
     _diagnostics = widget.loadDiagnostics ?? PlayerLoadDiagnostics();
     _sources = EpisodeSourceCache(
-      loader: (episode) async => EpisodeSource.fromResponse(
-        await (widget.contentLoader?.call(episode) ??
-            ApiClient.instance.content(
-              episode.itemId,
-              tab: '短剧',
-              mode: 'stream',
-            )),
-      ),
+      loader: (episode, {required bool prefetch}) async =>
+          EpisodeSource.fromResponse(
+            await (widget.contentLoader?.call(episode) ??
+                ApiClient.instance.content(
+                  episode.itemId,
+                  tab: '短剧',
+                  mode: 'stream',
+                  // 装了内置转码器就声明自己吃 bytevc2:核心才会把这一档的
+                  // 地址给出来(#466),否则仍是原来的拒绝结论。
+                  transcode: await Bytevc2TranscodeService.instance.available(),
+                  purpose: prefetch
+                      ? PlaybackPurpose.prefetch
+                      : PlaybackPurpose.foreground,
+                )),
+          ),
     );
     if (widget.eps.isEmpty) {
       _error = PlaybackIssue.empty;
@@ -675,14 +697,24 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     PlayerPanelPreferences.setDefaultMute(enabled);
     // 官方默认静音是「起播时的音量」，切换时立刻作用到当前播放器，
     // 与官方「开启时默认静音/关闭默认静音」的即时反馈一致。
+    final level = enabled ? 0.0 : PlayerPanelPreferences.takeUnmuteLevel();
     final player = _player;
     if (player != null) {
       unawaited(
-        player.setVolume(enabled ? 0 : 1).catchError((Object _) {
+        player.setVolume(level).catchError((Object _) {
           // 音量设置失败不影响播放，也不该冒泡到 onError。
         }),
       );
     }
+  }
+
+  /// 桌面音量条/快捷键：档位记进 [PlayerPanelPreferences]，换集后的新播放器
+  /// 沿用这一档；拖到 0 等同开启静音，拖离 0 等同解除静音。
+  Future<void> _setPlaybackVolume(double value) async {
+    PlayerPanelPreferences.selectVolume(value);
+    final mute = PlayerPanelPreferences.defaultMute;
+    if (mute != _defaultMute && mounted) setState(() => _defaultMute = mute);
+    await _player?.setVolume(value.clamp(0.0, 1.0).toDouble());
   }
 
   /// 官方开关落盘（`video_danmaku_switch_sp`）。开关状态就绪后才允许
@@ -1426,7 +1458,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       // 官方「默认静音」是**起播音量**（`tm3/b.java:17-20` 的静态标志），每次新建
       // 播放器都要重新套一遍。音量失败不能拖垮播放：官方音量只是表现层。
       try {
-        await player.setVolume(_defaultMute ? 0 : 1);
+        await player.setVolume(
+          _defaultMute ? 0 : PlayerPanelPreferences.volumeLevel,
+        );
       } catch (_) {
         // 忽略：默认音量不成立时保持播放器的默认音量。
       }
@@ -1499,9 +1533,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       },
     );
     _sources.invalidate(widget.eps[_index].itemId);
-    if (_retrySilently(
-      backoff: error is ApiException && (error.statusCode ?? 0) >= 500,
-    )) {
+    final issue = PlaybackIssue.fromError(error);
+    // 编码不受支持是确定结论：静默重试只会再拿到同一种编码，直接给出原因。
+    if (issue.retryable &&
+        _retrySilently(
+          backoff: error is ApiException && (error.statusCode ?? 0) >= 500,
+        )) {
       return;
     }
     _prefetchTimer?.cancel();
@@ -1516,7 +1553,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       unawaited(NativePlayer.updateFloating(owner: owner, playing: false));
     }
     setState(() {
-      _error = PlaybackIssue.fromError(error);
+      _error = issue;
       _initVideo = false;
       _playing = false;
     });
@@ -1562,7 +1599,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _renditionQualityHeight = variant.qualityHeight > 0
         ? variant.qualityHeight
         : null;
-    final release = _teardownPlayer();
+    late final Future<void> release;
+    setState(() {
+      release = _teardownPlayer();
+    });
     NativePlayer? candidate;
     try {
       await release;
@@ -1595,7 +1635,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       await fresh.setRate(rate);
       if (!_current(generation, fresh)) return;
       try {
-        await fresh.setVolume(_defaultMute ? 0 : 1);
+        await fresh.setVolume(
+          _defaultMute ? 0 : PlayerPanelPreferences.volumeLevel,
+        );
       } catch (_) {}
       if (!_current(generation, fresh)) return;
       if (resumeMs > 0) {
@@ -1851,12 +1893,23 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           widget.shortSeries && (_seriesDetail?.hasRelatedSeries ?? false)
           ? () => unawaited(_openRelatedSeries())
           : null,
+      loadSample: () {
+        final sample = _diagnostics.latestSample;
+        if (sample == null ||
+            widget.eps.isEmpty ||
+            sample.attempt != _loadGeneration ||
+            sample.episode != _index + 1) {
+          return null;
+        }
+        return sample;
+      },
       seriesCover: _seriesCover,
       episodeLabel: _episodeLabel,
       fillScreen: _fillScreen,
       onFillScreenChanged: widget.shortSeries ? _setFillScreen : null,
       defaultMute: _defaultMute,
       onDefaultMuteChanged: widget.shortSeries ? _setDefaultMute : null,
+      onPlaybackVolumeChanged: _setPlaybackVolume,
       danmaku: _danmaku.entries,
       danmakuEnabled: _danmakuEnabled,
       onToggleDanmaku: widget.shortSeries ? _toggleDanmaku : null,
@@ -1970,7 +2023,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   Future<EpisodeSource?> _resolveSource(Chapter episode) async {
     final offline = await _offlineSource(episode);
     if (offline != null) return offline;
-    return _sources.request(episode).future;
+    return Bytevc2TranscodeService.playable(
+      episode,
+      await _sources.request(episode).future,
+    );
   }
 
   /// 听视频（官方 `jm3.d0.y()` 的听书模式页语义）：视频页暂停，推入独立
@@ -2038,7 +2094,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         if (texture != null)
           RotatedBox(
             quarterTurns: _player!.videoRotationCorrection ~/ 90,
-            child: isWindowsDesktop
+            // iOS 与桌面一样由进程内的 media_kit 出画,没有 Texture 可画。
+            child: isWindowsDesktop || isIOSPlatform
                 ? DesktopPlatform.instance.videoSurface(
                     texture,
                     key: const ValueKey('player-texture'),
@@ -2052,7 +2109,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           PlayerErrorFeedback(
             key: const ValueKey('player-error'),
             issue: _error!,
-            onRetry: widget.eps.isEmpty ? null : retry,
+            onRetry: widget.eps.isEmpty || !_error!.retryable ? null : retry,
           ),
         if (_error == null && (waiting || _player!.buffering))
           PlayerLoadingFeedback(

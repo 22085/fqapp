@@ -35,11 +35,118 @@ mixin _LibraryShelfChrome on _LibraryPageActions {
     ],
   );
 
+  Widget _desktopArchiveHeader(BuildContext context) {
+    final palette = HomePalette.of(context);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(24, 12, 24, 10),
+      decoration: BoxDecoration(
+        color: palette.canvas,
+        border: Border(bottom: BorderSide(color: palette.line)),
+      ),
+      child: _editing
+          ? _editBar(context)
+          : LayoutBuilder(
+              builder: (context, constraints) {
+                final showLabels = constraints.maxWidth >= 720;
+                return Row(
+                  children: [
+                    Text(
+                      '书架',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        color: palette.ink,
+                      ),
+                    ),
+                    const SizedBox(width: 20),
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 320),
+                          child: _tabSegments(context),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    _desktopShelfAction(
+                      key: const Key('library-import-button'),
+                      icon: CupertinoIcons.arrow_down_doc,
+                      label: '导入图书',
+                      showLabel: showLabels,
+                      palette: palette,
+                      onPressed: _importLocalBook,
+                    ),
+                    const SizedBox(width: 8),
+                    GlassMenuAnchor(
+                      child: Builder(
+                        builder: (anchor) => _desktopShelfAction(
+                          key: const Key('library-more-button'),
+                          icon: CupertinoIcons.ellipsis,
+                          label: '更多',
+                          showLabel: showLabels,
+                          palette: palette,
+                          onPressed: () => _openMoreMenu(anchor),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+    );
+  }
+
+  Widget _desktopShelfAction({
+    required Key key,
+    required IconData icon,
+    required String label,
+    required bool showLabel,
+    required HomePalette palette,
+    required VoidCallback onPressed,
+  }) {
+    final button = OutlinedButton(
+      key: key,
+      onPressed: onPressed,
+      style: OutlinedButton.styleFrom(
+        foregroundColor: palette.ink,
+        backgroundColor: palette.surface,
+        side: BorderSide(color: palette.line),
+        padding: EdgeInsets.symmetric(horizontal: showLabel ? 12 : 8),
+        minimumSize: const Size(34, 34),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: palette.ink),
+          if (showLabel) ...[
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                color: palette.ink,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+    return Tooltip(message: label, child: button);
+  }
+
   /// 一级 tab：上游 `WenkuControls.segments` 三段（书架 / 浏览历史 / 收藏）。
+  ///
+  /// dense（issue #478）：这一行只是切换器，不是阅读内容；矮 6dp 换给宫格，
+  /// 与经典主题下的一级 tab 行同一套紧凑口径。
   Widget _tabSegments(BuildContext context) => WenkuControls.segments<int>(
     context,
     key: const Key('library-tabs'),
     groupValue: _tab,
+    dense: true,
     children: const {0: Text('书架'), 1: Text('浏览历史'), 2: Text('收藏')},
     onValueChanged: (value) {
       if (value != null) _selectTab(value);
@@ -68,7 +175,9 @@ mixin _LibraryShelfChrome on _LibraryPageActions {
               filterKey: const Key('shelf-filter'),
               viewKey: const Key('shelf-view'),
             ),
-            const SizedBox(height: 10),
+            // 竖向间距链 10 → 8（issue #478）：工具条与筛选行本来就是
+            // 同一组控件，收紧后整块顶部更紧凑，宫格多出 4dp。
+            const SizedBox(height: 8),
             _CollectionTypeFilter(
               selected: _collectionFilter,
               onChanged: (value) => setState(() => _collectionFilter = value),
@@ -98,10 +207,19 @@ mixin _LibraryShelfChrome on _LibraryPageActions {
       );
       // 浏览历史不筛来源，不需要缓存扫描状态。
       if (_tab != 0) return toolbar;
+      final kindFilter = _ShelfKindFilter(
+        selected: _shelfKindFilter,
+        onChanged: (value) => setState(() => _shelfKindFilter = value),
+      );
       if (!narrow) {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [toolbar, _cacheStatus()],
+          children: [
+            toolbar,
+            const SizedBox(height: 8),
+            kindFilter,
+            _cacheStatus(),
+          ],
         );
       }
       return Column(
@@ -111,8 +229,10 @@ mixin _LibraryShelfChrome on _LibraryPageActions {
             alignment: Alignment.centerLeft,
             child: ShelfTodayReadingPill(minutes: _todayMinutes),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           toolbar,
+          const SizedBox(height: 8),
+          kindFilter,
           _cacheStatus(),
         ],
       );

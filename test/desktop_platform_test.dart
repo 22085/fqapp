@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:fqapp/services/app_log.dart';
 import 'package:fqapp/services/desktop_platform.dart';
 import 'package:fqapp/services/book_txt_export.dart';
 import 'package:fqapp/services/desktop_media.dart';
@@ -128,6 +129,25 @@ void main() {
         isA<PlatformException>().having((e) => e.code, 'code', 'player_closed'),
       ),
     );
+  });
+  // 续播：create 下发的 startPositionMs 必须落到 Media.start（mpv 起播前的
+  // start 属性），否则桌面端从 0 播，进度条和弹幕锚点却停在存档位置。
+  test('desktop player media carries the create resume position', () {
+    final resumed = desktopPlaybackMedia('https://cdn.test/v.mp4', 83250);
+    expect(resumed.uri, 'https://cdn.test/v.mp4');
+    expect(resumed.start, const Duration(milliseconds: 83250));
+    // The CENC proxy URL takes the same start; mpv then reads from a Range.
+    expect(
+      desktopPlaybackMedia('http://127.0.0.1:4100/m/abc', 1500.0).start,
+      const Duration(milliseconds: 1500),
+    );
+    for (final none in <Object?>[null, 0, -20, '83250']) {
+      expect(
+        desktopPlaybackMedia('https://cdn.test/v.mp4', none).start,
+        isNull,
+        reason: '$none must start from the beginning',
+      );
+    }
   });
   test(
     'Linux forwards TTS errors and still rejects Android-only channels',
@@ -354,6 +374,65 @@ void main() {
       await destroyed.future;
     },
   );
+
+  test('Linux close destroys the window once after cleanup fails', () async {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    const windowChannel = MethodChannel('window_manager');
+    var destroyCalls = 0;
+    messenger.setMockMethodCallHandler(windowChannel, (call) async {
+      if (call.method == 'destroy') destroyCalls++;
+      return null;
+    });
+    final logCount = AppLog.instance.entries.length;
+    LinuxPlatform.beforeClose = () async => throw StateError('flush failed');
+    addTearDown(() {
+      LinuxPlatform.beforeClose = null;
+      messenger.setMockMethodCallHandler(windowChannel, null);
+    });
+
+    final platform = LinuxPlatform();
+    platform.onWindowClose();
+    platform.onWindowClose();
+    await Future<void>.delayed(Duration.zero);
+    platform.onWindowClose();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(destroyCalls, 1);
+    expect(
+      AppLog.instance.entries
+          .skip(logCount)
+          .where(
+            (entry) =>
+                entry.tag == 'exit' && entry.message.contains('flush failed'),
+          ),
+      hasLength(1),
+    );
+  });
+
+  test('Linux close retries when window destruction fails', () async {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    const windowChannel = MethodChannel('window_manager');
+    var destroyCalls = 0;
+    messenger.setMockMethodCallHandler(windowChannel, (call) async {
+      if (call.method == 'destroy') {
+        destroyCalls++;
+        if (destroyCalls == 1) throw PlatformException(code: 'destroy_failed');
+      }
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(windowChannel, null));
+
+    final platform = LinuxPlatform();
+    platform.onWindowClose();
+    await Future<void>.delayed(Duration.zero);
+    expect(destroyCalls, 1);
+
+    platform.onWindowClose();
+    await Future<void>.delayed(Duration.zero);
+    expect(destroyCalls, 2);
+  });
 
   // These saves exercise Linux libc and /proc, not just the platform override.
   test('Linux backup selection saves bytes, reads and cancels', () async {
@@ -782,5 +861,33 @@ void main() {
       await tester.tap(find.text('第 3 章'));
       expect(selected, 3);
     },
+  );
+
+  // 回归：Windows 短剧 feed 起播第一集时窗口只有静态封面，media_kit 的
+  // VideoController 等的 post-frame 回调没人请求帧，Player.open 一直挂起。
+  testWidgets(
+    'desktop player requests the frame media_kit waits for on an idle window',
+    (tester) async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(tester.binding.hasScheduledFrame, isFalse);
+
+      var controllerInitialized = false;
+      // Same deferral media_kit_video's VideoController constructor uses.
+      tester.binding.addPostFrameCallback((_) => controllerInitialized = true);
+      expect(
+        tester.binding.hasScheduledFrame,
+        isFalse,
+        reason: 'addPostFrameCallback alone never requests a frame',
+      );
+
+      requestVideoControllerFrame();
+      expect(tester.binding.hasScheduledFrame, isTrue);
+      await tester.pump();
+      expect(controllerInitialized, isTrue);
+    },
+    variant: TargetPlatformVariant({
+      TargetPlatform.windows,
+      TargetPlatform.linux,
+    }),
   );
 }

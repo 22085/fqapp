@@ -1,5 +1,6 @@
 import 'services/audio_downloader.dart';
 import 'widgets/desktop_app_frame.dart';
+import 'widgets/desktop_shell_scope.dart';
 import 'services/native_player.dart';
 import 'services/desktop_platform.dart';
 import 'services/platform_capabilities.dart';
@@ -18,6 +19,7 @@ import 'package:hive_ce_flutter/hive_flutter.dart';
 import 'dart:async';
 
 import 'services/linux_platform.dart';
+import 'services/ios_platform.dart';
 
 import 'pages/home_page.dart';
 import 'pages/api_service_page.dart';
@@ -44,9 +46,13 @@ import 'services/audio_download_store.dart';
 import 'services/audio_floating_routes.dart';
 import 'services/drama_cache_preferences.dart';
 import 'services/audio_preferences.dart';
+import 'services/drama_feature_preferences.dart';
+import 'services/player_panel_preferences.dart';
 import 'services/player_preferences.dart';
 import 'services/player_layout_preferences.dart';
 import 'services/backend_service.dart';
+import 'services/boss_key_preferences.dart';
+import 'services/boss_key_service.dart';
 import 'services/network_proxy_preferences.dart';
 import 'services/digg_store.dart';
 import 'services/drama_channel_preferences.dart';
@@ -113,7 +119,12 @@ Future<void> _prepareRuntime() async {
     ], await rootBundle.loadString('assets/licenses/sync_storage.txt'));
   });
   if (isLinuxDesktop) await LinuxPlatform.install();
-  if (isWindowsDesktop) await DesktopPlatform.instance.initialize();
+  if (isWindowsDesktop || isMacOSDesktop) {
+    await DesktopPlatform.instance.initialize();
+  }
+  // iOS 没有原生播放器通道也没有窗口管理器:把 fqapp/native_player 接到
+  // 进程内的 media_kit,文件通路接到 Dart 侧实现(见 ios_platform.dart)。
+  if (isIOSPlatform) await IosPlatform.install();
   // 应用内日志：接管 debugPrint 与 FlutterError.onError，未处理异步异常由
   // [main] 的 runZonedGuarded 捕获；文件持久化异步开启，失败只退回内存模式。
   AppLog.instance.install();
@@ -139,25 +150,33 @@ Future<void> _prepareRuntime() async {
   // Rust 核心日志的读取入口：日志页「Rust」视图读 runtime_dir/rust.log。
   // 核心只在 Android 落盘（桌面/测试构建不装 logger），读不到时页面给空态。
   RustLogSource.reader = BackendService.instance.readRustLog;
-  if (isWindowsDesktop || isLinuxDesktop) {
+  if (isMediaDesktop) {
     DesktopPlatform.instance.beforeClose = LinuxPlatform.beforeClose =
         () async {
-          DramaDownloader.instance.pauseAll();
-          AudioDownloader.instance.pauseAll();
-          await FairMemoryService.instance.flushForExit();
           try {
-            if (isMediaDesktop) await NativePlayer.pauseOthers();
-          } catch (error, stack) {
-            // 退出路径继续往下走，但失败要留痕：否则「关闭后还有声音」无从查起。
-            AppLog.w('exit', '退出前暂停播放器失败', error: error, stack: stack);
+            try {
+              await BossKeyService.instance.shutdown();
+            } catch (error, stack) {
+              AppLog.w('exit', '退出前注销老板键失败', error: error, stack: stack);
+            }
+            DramaDownloader.instance.pauseAll();
+            AudioDownloader.instance.pauseAll();
+            await FairMemoryService.instance.flushForExit();
+            try {
+              if (isMediaDesktop) await NativePlayer.pauseOthers();
+            } catch (error, stack) {
+              // 退出路径继续往下走，但失败要留痕：否则「关闭后还有声音」无从查起。
+              AppLog.w('exit', '退出前暂停播放器失败', error: error, stack: stack);
+            }
+            try {
+              await BackendService.instance.stop();
+            } catch (error, stack) {
+              AppLog.w('exit', '退出前停止后端失败', error: error, stack: stack);
+            }
+            await MultiDeviceSyncService.instance.shutdown();
+          } finally {
+            await Hive.close();
           }
-          try {
-            await BackendService.instance.stop();
-          } catch (error, stack) {
-            AppLog.w('exit', '退出前停止后端失败', error: error, stack: stack);
-          }
-          await MultiDeviceSyncService.instance.shutdown();
-          await Hive.close();
         };
   }
 }
@@ -234,6 +253,8 @@ Future<void> _loadLocalData() async {
     // 解码器偏好必须先进内存：`NativePlayer.create` 在起播路径上直接读它，
     // 不能在那里再 await 读盘（见 DecoderPreferenceCache 的说明）。
     optional(DecoderPreferenceCache.load),
+    // 播放器独立音量同理：起播与解除静音直接读内存里的档位。
+    optional(PlayerPanelPreferences.loadVolumeLevel),
     // 离线缓存的记录箱启动即打开：播放器的离线命中只在 box 就绪时才查
     // （避免运行中途首次 openBox 失败产生游离异步错误）。可选数据，失败
     // 只退化为「本会话不查离线」。
@@ -243,10 +264,16 @@ Future<void> _loadLocalData() async {
     // AI 设置/缓存/反馈箱：失败只让 AI 功能退化，不能拖住阅读。
     optional(AiReadingController.instance.init),
     // 主题样式与 SharedPreferences 一并并行：两者都是启动链上的必要项，
-    // 但都不该排在并行段之后串行等。
-    spFuture.then<void>((_) {}),
+    // 不该排在并行段之后串行等。prefs 读失败即启动失败(失败页 + 重试);
+    // 样式 store 是可选外观偏好,内部吞错,读失败只回落默认外观(#421)。
+    spFuture,
     themeStyleFuture,
   ]);
+  unawaited(optional(AudioPreferences.instance.load));
+  unawaited(optional(DramaFeaturePreferences.instance.load));
+  // Until the saved profile loads, retain history so a startup write cannot
+  // turn old cloud records into deletions.
+  LibraryStore.instance.keepHistoryForSync = true;
   // 多端同步的网络或安全存储故障不阻塞本机阅读。旧 WebDAV 配置由统一服务只读接管，绝不在这里启动云端覆盖流程。
   unawaited(
     optional(() async {
@@ -254,13 +281,20 @@ Future<void> _loadLocalData() async {
       await sync.initialize();
     }),
   );
-  // 听书后台播放开关：异步读取 SharedPreferences，失败退化为默认开启。
-  unawaited(AudioPreferences.instance.load());
   // 短剧「边看边往后缓存」的开关与集数：同一条装配链里读，避免播放页
   // 起来时还没加载完、拿默认值把用户关掉的开关又打开。
   unawaited(DramaCachePreferences.instance.load());
   // 短剧切后台悬浮窗开关（#24）：异步读取，失败退化为默认关闭。
   unawaited(PlayerPreferences.loadFloatingWindow());
+  // 桌面端老板键偏好与全局热键监听：可选能力，失败只退化为未启用。
+  if (isMediaDesktop) {
+    unawaited(
+      optional(() async {
+        await BossKeyPreferences.instance.load();
+        await BossKeyService.instance.initialize();
+      }),
+    );
+  }
   // 离线缓存的网络门（官方 onNetChangeCheck）：断网/只剩计费链路时
   // 自动暂停下载队列，半成品保留。监听失败只退化为「无自动暂停」。
   try {
@@ -331,13 +365,16 @@ class FqApp extends StatefulWidget {
 class _FqAppState extends State<FqApp> {
   AppThemeStyleStore get _styleStore =>
       widget.styleStore ?? AppThemeStyleStore.instance;
-  // Official tabbar + 18dp applies on every page. Our floating dock is 64
-  // high with an 8px gap; the desktop shell has no bottom bar.
+  // Official tabbar + 18dp applies on every page. Our bottom chrome is a
+  // floating dock: 56 high with an 8dp gap in the classic style, 54 high with
+  // a 12dp gap in the archive style (issue #478). 72 keeps the floating audio
+  // pill clear of both; the desktop shell has no bottom bar.
   final _audioRoutes = AudioFloatingRoutes(
     defaultBottomInset: isWindowsDesktop ? 0 : 72,
   );
   // 全路由插屏观察者：只构造一次，内部计时从启动开始算。
   final _adRouteObserver = AdRouteObserver();
+  final _desktopRoutes = DesktopRouteObserver();
   // Desktop fullscreen reparents the content; keep the playback owner alive.
   final _audioScopeKey = GlobalKey();
   final _navigatorKey = isMediaDesktop
@@ -398,7 +435,11 @@ class _FqAppState extends State<FqApp> {
                   valueListenable: _styleStore,
                   builder: (context, style, _) => MaterialApp(
                     navigatorKey: _navigatorKey,
-                    navigatorObservers: [_audioRoutes, _adRouteObserver],
+                    navigatorObservers: [
+                      _audioRoutes,
+                      _adRouteObserver,
+                      if (isWindowsDesktop) _desktopRoutes,
+                    ],
                     builder: (context, child) {
                       final palette = HomePalette.of(context);
                       final playback = AudioPlaybackScope(
@@ -632,7 +673,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
                   //
                   // 代价是「本地数据未就绪」态没有静止的一帧——测试里不能靠
                   // `pumpAndSettle()` 等它停下来（会卡到超时），要用有界推进
-                  // 推到目标出现为止（见 test/startup_gate_test.dart 的
+                  // 推到目标出现为止（见 test/support/pump_until.dart 的
                   // pumpUntilFound）。
                   child: AppStyleTokens.of(context).isClassic
                       ? const ClassicHomeSkeleton()
@@ -695,10 +736,14 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
   /// 底栏滚动自动隐藏状态（对齐 PiliPlus）：body 的用户拖动驱动，
   /// bottomNavigationBar 经 [DockAutoHideSlide] 滑入滑出，切 tab 强制露出。
   ///
+  /// 这套接线在 `331c58e0`（PR #429 整合）里整段丢失过，widget 与
+  /// dock_auto_hide_test 一直留着、三条壳层用例却被改成了「底栏常驻」
+  /// 守卫（#385/#386 也一直开着），于是按“合并事故”恢复。
+  ///
   /// 短路探针：
-  /// - 桌面平台（Windows/Linux）：Flutter 会把 PointerScrollEvent 走
-  ///   beginUserScroll 转成 UserScrollNotification，鼠标滚轮每格都会让
-  ///   dock 抖一下；PiliPlus 只有 Android/iOS，滚轮语义不同，直接禁用。
+  /// - 桌面平台：Flutter 会把 PointerScrollEvent 转成
+  ///   UserScrollNotification，鼠标滚轮每格都让 dock 抖一下；PiliPlus 只有
+  ///   Android/iOS，滚轮语义不同，直接禁用。
   /// - 墨水屏：局部刷新代价高，dock 显隐跳变会看到明显残影，完全禁用。
   final DockAutoHide _dockAutoHide = DockAutoHide(
     disabledProbe: () =>
@@ -707,8 +752,8 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
 
   /// 盖在 RootShell 之上的路由的动画监听：子路由 pop 回 RootShell 时把
   /// dock 强制露出（对齐 PiliPlus 的 didPopNext）。
-  /// 约定与 [Widgets.video_player_chrome] 一致：不引入全局 RouteObserver，
-  /// 而是订阅本页的 secondaryAnimation，测试里裸 MaterialApp 也能生效。
+  /// 约定与 [VideoPlayerChrome] 一致：不引入全局 RouteObserver，而是订阅
+  /// 本页的 secondaryAnimation，测试里裸 MaterialApp 也能生效。
   late final DockRouteReveal _dockReveal = DockRouteReveal(_dockAutoHide);
 
   /// 上一次「重复点击底部首页 tab」的时间，用于 800ms 防抖。
@@ -724,10 +769,12 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
   /// 首页头部是普通 sliver（不是折叠 AppBar），把 offset 归零即等价，吸顶的
   /// 分类栏会自己重新吸住。
   void _selectTab(int index) {
+    if (index == 1 && !DramaFeaturePreferences.instance.enabled.value) return;
+    // 切 tab 是「回到入口」的明确动作：dock 收起时用户够不到它，必须在
+    // 这类操作里无条件露出（与 DockAutoHide.reveal 的约定一致）。
+    _dockAutoHide.reveal();
     if (index != _index) {
       FrameStats.mark('shell tab $index');
-      // 换页一律把 dock 带回：收起态下入口够不到，落点必须可见。
-      _dockAutoHide.reveal();
       // 先广播可见性：页面据此暂停/恢复播放器与定时器，不靠 TickerMode 翻转
       // 触发整页重建。
       shellVisibleTab.value = index;
@@ -771,8 +818,6 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
     final last = _lastHomeTabRepeatAt;
     if (last != null && now.difference(last).inMilliseconds < 800) return;
     _lastHomeTabRepeatAt = now;
-    // jumpTo 回顶不产生用户拖动通知，显式把 dock 露出来。
-    _dockAutoHide.reveal();
     if (!_homeScroll.hasClients) return;
     // 官方是瞬间跳转（scrollToPosition(0)），没有动画。
     _homeScroll.jumpTo(_homeScroll.position.minScrollExtent);
@@ -789,15 +834,6 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
     }
     _pageFrom = from;
     _pageMotion.forward(from: 0);
-  }
-
-  /// 壳层 body 冒泡上来的用户拖动 → 底栏收起/露出。横轴（频道 pager、
-  /// 卡片横排、TabSwipeArea）在控制器里被忽略；平台与墨水屏的短路在
-  /// [DockAutoHide.disabledProbe] 里处理。返回 false 让通知继续上冒，
-  /// 不影响既有消费者。
-  bool _onShellUserScroll(UserScrollNotification notification) {
-    _dockAutoHide.handleUserScroll(notification);
-    return false;
   }
 
   /// 当前显示的连续页码（动画中为小数，静止时等于 [_index]）。
@@ -830,7 +866,9 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
         // 切到短剧 tab。
         return LibraryPage(
           onBrowse: () => _selectTab(0),
-          onFindDrama: () => _selectTab(1),
+          onFindDrama: DramaFeaturePreferences.instance.enabled.value
+              ? () => _selectTab(1)
+              : null,
         );
       default:
         return const MinePage();
@@ -845,14 +883,13 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
     // 短剧频道在推荐（视频流）与浅色页之间切换时，悬浮 dock 和系统导航栏
     // 要跟着换肤，所以停在壳层的 build 里监听。
     dramaLightPageNotifier.addListener(_onDramaChromeChanged);
-    // 墨水屏开启时 dock 必须常驻（见 _onShellUserScroll 的短路）：若切换
-    // 前 dock 正处于收起态，不主动 reveal 的话它会永远停在屏幕外。同时
-    // 需要 rebuild 把新的 einkModeNotifier.value 刷到 DockAutoHideSlide
-    // 的 reduceMotion，否则 reveal 过渡仍会跑 500ms。
+    // 墨水屏切换后重建壳层:部分子组件据此降级动效。
     einkModeNotifier.addListener(_onEinkModeChanged);
     // 初始可见页：页面据此决定是否暂停播放器/定时器。
     shellVisibleTab.value = _index;
-    _pageMotion.addStatusListener(_onPageMotionStatus);
+    DramaFeaturePreferences.instance.enabled.addListener(
+      _onDramaFeatureChanged,
+    );
     _startBackend();
   }
 
@@ -861,31 +898,47 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
   }
 
   void _onEinkModeChanged() {
+    // 墨水屏开启时 dock 必须常驻（见 _dockAutoHide 的 disabledProbe）：
+    // 切換前若正处于收起态，不主动 reveal 就会永远停在屏幕外。
     if (einkModeNotifier.value) _dockAutoHide.reveal();
-    // build 里读取 einkModeNotifier.value 作为 DockAutoHideSlide 的
-    // reduceMotion；不 setState 就沿用旧 widget 的 reduceMotion，
-    // reveal 过渡会跑 500ms 平移，墨水屏下会看到残影。
     if (mounted) setState(() {});
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // 子路由（SeriesDetailPage、BookDetailPage 等）pop 回 RootShell 时把
-    // dock 强制露出——离开前 dock 可能已被滚动手势收起，但用户直觉上认为
-    // 「回到入口页 dock 应该可见」（对齐 PiliPlus 的 didPopNext）。
+    // 子路由（详情页等）pop 回 RootShell 时把 dock 强制露出：离开前 dock
+    // 可能已被滚动手势收起，但用户直觉上认为「回到入口页 dock 应该可见」。
     _dockReveal.attach(context);
   }
 
-  /// 页面滑动动画结束时触发一次 rebuild：让 dock 恢复 BackdropFilter
-  /// 实时模糊（动画期间跳过了模糊以避免逐帧全屏高斯开销）。
-  void _onPageMotionStatus(AnimationStatus status) {
-    if ((status == AnimationStatus.completed ||
-            status == AnimationStatus.dismissed) &&
-        mounted) {
-      FrameStats.mark('motion end');
-      setState(() {});
-    }
+  /// 壳层 body 冒泡上来的用户拖动 → 底栏收起/露出。
+  ///
+  /// 横轴（频道 pager、卡片横排）由控制器忽略；平台与墨水屏的短路在
+  /// disabledProbe 里。返回 false 让通知继续上冒，不影响既有消费者。
+  bool _onShellUserScroll(UserScrollNotification notification) {
+    _dockAutoHide.handleUserScroll(notification);
+    return false;
+  }
+
+  void _onDramaFeatureChanged() {
+    if (!mounted) return;
+    final enabled = DramaFeaturePreferences.instance.enabled.value;
+    if (!enabled && desktopTab.value == 1) desktopTab.value = 0;
+    setState(() {
+      if (enabled) return;
+      _visitedTabs.remove(1);
+      _tabCache.remove(1);
+      _tabCache.remove(2);
+      if (_index == 1 || _premount == 1) {
+        ++_premountGeneration;
+        if (_index == 1) _index = 0;
+        _premount = null;
+        _pageFrom = _index.toDouble();
+        _pageMotion.value = 1;
+        shellVisibleTab.value = _index;
+      }
+    });
   }
 
   Future<void> _startBackend() async {
@@ -957,8 +1010,10 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
   void dispose() {
     dramaLightPageNotifier.removeListener(_onDramaChromeChanged);
     einkModeNotifier.removeListener(_onEinkModeChanged);
+    DramaFeaturePreferences.instance.enabled.removeListener(
+      _onDramaFeatureChanged,
+    );
     _dockReveal.detach();
-    _pageMotion.removeStatusListener(_onPageMotionStatus);
     _homeScroll.dispose();
     _dockAutoHide.dispose();
     _pageMotion.dispose();
@@ -984,10 +1039,15 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
             index: index,
             children: [
               HomePage(cueLoader: ApiClient.instance.searchCue),
-              const DramaPage(),
+              if (DramaFeaturePreferences.instance.enabled.value)
+                const DramaPage()
+              else
+                const SizedBox.shrink(),
               LibraryPage(
                 onBrowse: () => desktopTab.value = 0,
-                onFindDrama: () => desktopTab.value = 1,
+                onFindDrama: DramaFeaturePreferences.instance.enabled.value
+                    ? () => desktopTab.value = 1
+                    : null,
               ),
               const MinePage(),
             ],
@@ -1034,9 +1094,9 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
                       ? Brightness.light
                       : Brightness.dark,
                 ),
+        // 底栏滚动自动隐藏（对齐 PiliPlus）：把用户拖动方向递送给控制器。
+        // 弹层与上层路由不在本壳层子树、通知不会经过这里，不会被误触发。
         child: NotificationListener<UserScrollNotification>(
-          // 底栏滚动自动隐藏（对齐 PiliPlus）：把用户拖动方向递送给控制器。
-          // 弹层与上层路由不在本壳层子树、通知不会经过这里，不会被误触发。
           onNotification: _onShellUserScroll,
           child: LayoutBuilder(
             builder: (context, constraints) {
@@ -1087,18 +1147,21 @@ class _RootShellState extends State<RootShell> with TickerProviderStateMixin {
       ),
       // 上游 Wenku8 GlassDock：胶囊、拖动预览和液态玻璃选中区；短剧视频流
       // 与 OLED 纯黑下改用同色静态底板，不对每帧变化的画面做实时折射。
+      //
+      // DockAutoHideSlide 把底栏包成“下滚收起 / 上滑露出”（PiliPlus 同参：
+      // 500ms 强调三段曲线）。收起只平移不改变槽位高度（extendBody 下内容
+      // 本来就画在 dock 下方），滚动位置与安全区都不因它变化。
       bottomNavigationBar: DockAutoHideSlide(
-        // 下滚收起 / 上滑露出（PiliPlus 同参：500ms、强调三段曲线）。
         hide: _dockAutoHide,
-        // 墨水屏已通过 disabledProbe 完全禁用收起；此处仅保证进入 eink 时
-        // reveal 回正过渡零帧落位（与 _startPageMotion 降级约定一致）。
+        // 墨水屏已通过 disabledProbe 完全禁用收起；此处只保证进入 eink 时
+        // reveal 回正的过渡零帧落位，不跑 500ms 残影。
         reduceMotion: einkModeNotifier.value,
         child: ShellDock(
           selectedIndex: _index,
           onSelected: _selectTab,
           overVideo: dramaOnVideo,
           staticMaterial: shellDockStaticMaterial(overVideo: dramaOnVideo),
-          animating: _pageMotion.isAnimating,
+          showDrama: DramaFeaturePreferences.instance.enabled.value,
         ),
       ),
     );

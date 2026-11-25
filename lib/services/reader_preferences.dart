@@ -1,3 +1,5 @@
+import 'dart:ui' show Size;
+
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -25,9 +27,82 @@ enum ReaderInfoMode { hidden, compact, detailed }
 /// .agents/notes/implemented/feature/2026-09-11-reader-paragraph-bubble.md
 enum ReaderPageTurnStyle { cover, slide, curl, none }
 
+/// Column layout for paged reading:
+/// [auto] switches to a two-column spread on tablet/desktop landscape
+/// viewports; [single] forces one column; [dual] uses two columns whenever
+/// the viewport is wide enough to fit two readable columns.
+enum ReaderColumnMode {
+  auto,
+  single,
+  dual;
+
+  int resolveColumns(Size viewport) => switch (this) {
+    ReaderColumnMode.single => 1,
+    ReaderColumnMode.dual => viewport.width >= 420 ? 2 : 1,
+    ReaderColumnMode.auto =>
+      viewport.width >= 840 && viewport.width > viewport.height ? 2 : 1,
+  };
+}
+
 @immutable
 class ReaderPreferences {
   static Future<void>? _writes;
+
+  /// 正文字号档位表，照抄官方主阅读器（7.0.9.32 `rm4.e` 的 `k` 数组）：
+  /// 13 起，13~29 多为 1dp 一档，之后 32/36/40/44 每档跳 4。
+  ///
+  /// 官方不做连续字号：滑条拖的是这份表的**下标**（`TextSectionSeekBar`
+  /// 的 `setIntText` + `getTextValue`），A+/A− 也按下标走一格。
+  static const List<double> fontSizes = <double>[
+    13,
+    15,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    32,
+    36,
+    40,
+    44,
+  ];
+
+  /// 官方 `rm4.c` 读 `reader_font_dp_size` 的缺省档（该字段 `m = 24`）。
+  static const double defaultFontSize = 24;
+
+  static double get minFontSize => fontSizes.first;
+
+  static double get maxFontSize => fontSizes.last;
+
+  /// 官方 `rm4/c.z()`：不在档位表里的字号对齐到**最近的 ≥ 档**，超过最大档
+  /// 一律落回 44；非有限值退回默认档。
+  static double snapFontSize(double value) {
+    if (!value.isFinite) return defaultFontSize;
+    for (final size in fontSizes) {
+      if (size >= value) return size;
+    }
+    return maxFontSize;
+  }
+
+  /// 档位表下标；滑条在「档」上滑动，存盘仍是字号本身。
+  static int fontSizeIndex(double value) =>
+      fontSizes.indexOf(snapFontSize(value));
+
+  static double fontSizeAt(int index) =>
+      fontSizes[index.clamp(0, fontSizes.length - 1)];
+
+  /// 标题字号范围比正文高一档，保证大字号下章名不会比正文还小。
+  static const double minTitleSize = 16;
+  static const double maxTitleSize = 48;
+
   static const _fontSizeKey = 'reader_font_size';
   static const _fontWeightKey = 'reader_font_weight';
   static const _lineHeightKey = 'reader_line_height';
@@ -53,6 +128,7 @@ class ReaderPreferences {
   static const _justifyTextKey = 'reader_justify_text';
   static const _pageModeKey = 'reader_page_mode';
   static const _pageTurnStyleKey = 'reader_page_turn_style';
+  static const _columnModeKey = 'reader_column_mode';
   static const _volumeKeyTurnKey = 'reader_volume_key_turn';
   static const _keepScreenOnKey = 'reader_keep_screen_on';
   static const _autoTurnSecondsKey = 'reader_auto_turn_seconds';
@@ -71,6 +147,7 @@ class ReaderPreferences {
   static const _showParagraphBubblesKey = 'reader_show_paragraph_bubbles';
   static const _showVideoButtonKey = 'reader_show_video_button';
   static const _videoChapterSyncKey = 'reader_video_chapter_sync';
+  static const _desktopSidebarOpenKey = 'reader_desktop_sidebar_open';
 
   final double fontSize;
   final int fontWeight;
@@ -96,6 +173,7 @@ class ReaderPreferences {
   final bool justifyText;
   final ReaderPageMode pageMode;
   final ReaderPageTurnStyle pageTurnStyle;
+  final ReaderColumnMode columnMode;
   final bool volumeKeyTurn;
   final bool keepScreenOn;
   final int autoTurnSeconds;
@@ -184,9 +262,10 @@ class ReaderPreferences {
   final bool showParagraphBubbles;
   final bool showVideoButton;
   final bool videoChapterSync;
+  final bool desktopSidebarOpen;
 
   const ReaderPreferences({
-    this.fontSize = 18,
+    this.fontSize = defaultFontSize,
     this.fontWeight = 400,
     this.lineHeight = 1.8,
     this.paragraphSpacing = 12,
@@ -195,7 +274,7 @@ class ReaderPreferences {
     this.customBackgroundColor,
     this.letterSpacing = 0,
     this.verticalPadding = 16,
-    this.titleSize = 20,
+    this.titleSize = 26,
     this.titleAlignment = ReaderTitleAlignment.start,
     bool? showReadingInfo,
     ReaderInfoMode readingInfoMode = ReaderInfoMode.compact,
@@ -210,6 +289,7 @@ class ReaderPreferences {
     this.justifyText = true,
     this.pageMode = ReaderPageMode.paged,
     this.pageTurnStyle = ReaderPageTurnStyle.slide,
+    this.columnMode = ReaderColumnMode.auto,
     this.volumeKeyTurn = false,
     this.keepScreenOn = false,
     this.autoTurnSeconds = 10,
@@ -228,6 +308,7 @@ class ReaderPreferences {
     this.showParagraphBubbles = true,
     this.showVideoButton = true,
     this.videoChapterSync = true,
+    this.desktopSidebarOpen = true,
   }) : readingInfoMode = showReadingInfo == false
            ? ReaderInfoMode.hidden
            : readingInfoMode;
@@ -258,6 +339,7 @@ class ReaderPreferences {
     bool? justifyText,
     ReaderPageMode? pageMode,
     ReaderPageTurnStyle? pageTurnStyle,
+    ReaderColumnMode? columnMode,
     bool? volumeKeyTurn,
     bool? keepScreenOn,
     int? autoTurnSeconds,
@@ -283,6 +365,7 @@ class ReaderPreferences {
     bool? showParagraphBubbles,
     bool? showVideoButton,
     bool? videoChapterSync,
+    bool? desktopSidebarOpen,
   }) {
     return ReaderPreferences(
       fontSize: fontSize ?? this.fontSize,
@@ -318,6 +401,7 @@ class ReaderPreferences {
       justifyText: justifyText ?? this.justifyText,
       pageMode: pageMode ?? this.pageMode,
       pageTurnStyle: pageTurnStyle ?? this.pageTurnStyle,
+      columnMode: columnMode ?? this.columnMode,
       volumeKeyTurn: volumeKeyTurn ?? this.volumeKeyTurn,
       keepScreenOn: keepScreenOn ?? this.keepScreenOn,
       autoTurnSeconds: autoTurnSeconds ?? this.autoTurnSeconds,
@@ -341,6 +425,7 @@ class ReaderPreferences {
       showParagraphBubbles: showParagraphBubbles ?? this.showParagraphBubbles,
       showVideoButton: showVideoButton ?? this.showVideoButton,
       videoChapterSync: videoChapterSync ?? this.videoChapterSync,
+      desktopSidebarOpen: desktopSidebarOpen ?? this.desktopSidebarOpen,
     ).normalized();
   }
 
@@ -348,7 +433,7 @@ class ReaderPreferences {
     final normalizedWeight = ((fontWeight.clamp(300, 700) / 100).round() * 100)
         .clamp(300, 700);
     return ReaderPreferences(
-      fontSize: fontSize.isFinite ? fontSize.clamp(14, 32) : 18,
+      fontSize: snapFontSize(fontSize),
       fontWeight: normalizedWeight,
       lineHeight: lineHeight.isFinite ? lineHeight.clamp(1.2, 2.4) : 1.8,
       paragraphSpacing: paragraphSpacing.isFinite
@@ -365,7 +450,9 @@ class ReaderPreferences {
       verticalPadding: verticalPadding.isFinite
           ? verticalPadding.clamp(0, 64)
           : 16,
-      titleSize: titleSize.isFinite ? titleSize.clamp(16, 40) : 20,
+      titleSize: titleSize.isFinite
+          ? titleSize.clamp(minTitleSize, maxTitleSize)
+          : 20,
       titleAlignment: titleAlignment,
       readingInfoMode: readingInfoMode,
       showSystemStatusBar: showSystemStatusBar,
@@ -379,6 +466,7 @@ class ReaderPreferences {
       justifyText: justifyText,
       pageMode: pageMode,
       pageTurnStyle: pageTurnStyle,
+      columnMode: columnMode,
       volumeKeyTurn: volumeKeyTurn,
       keepScreenOn: keepScreenOn,
       autoTurnSeconds: autoTurnSeconds.isFinite
@@ -399,6 +487,7 @@ class ReaderPreferences {
       showParagraphBubbles: showParagraphBubbles,
       showVideoButton: showVideoButton,
       videoChapterSync: videoChapterSync,
+      desktopSidebarOpen: desktopSidebarOpen,
     );
   }
 
@@ -411,7 +500,7 @@ class ReaderPreferences {
       orElse: () => ReaderThemePreset.light,
     );
     return ReaderPreferences(
-      fontSize: _number(preferences, _fontSizeKey) ?? 18,
+      fontSize: _number(preferences, _fontSizeKey) ?? defaultFontSize,
       fontWeight: (_number(preferences, _fontWeightKey) ?? 400).round(),
       lineHeight: _number(preferences, _lineHeightKey) ?? 1.8,
       paragraphSpacing: _number(preferences, _paragraphSpacingKey) ?? 12,
@@ -425,7 +514,10 @@ class ReaderPreferences {
       verticalPadding: _number(preferences, _verticalPaddingKey) ?? 16,
       titleSize:
           _number(preferences, _titleSizeKey) ??
-          ((_number(preferences, _fontSizeKey) ?? 18) + 2),
+          (ReaderPreferences.snapFontSize(
+                _number(preferences, _fontSizeKey) ?? defaultFontSize,
+              ) +
+              2),
       titleAlignment: ReaderTitleAlignment.values.firstWhere(
         (value) => value.name == preferences.get(_titleAlignmentKey),
         orElse: () => ReaderTitleAlignment.start,
@@ -455,6 +547,10 @@ class ReaderPreferences {
       pageTurnStyle: ReaderPageTurnStyle.values.firstWhere(
         (value) => value.name == preferences.get(_pageTurnStyleKey),
         orElse: () => ReaderPageTurnStyle.slide,
+      ),
+      columnMode: ReaderColumnMode.values.firstWhere(
+        (value) => value.name == preferences.get(_columnModeKey),
+        orElse: () => ReaderColumnMode.auto,
       ),
       volumeKeyTurn: _boolean(preferences, _volumeKeyTurnKey) ?? false,
       keepScreenOn: _boolean(preferences, _keepScreenOnKey) ?? false,
@@ -490,6 +586,7 @@ class ReaderPreferences {
           _boolean(preferences, _showParagraphBubblesKey) ?? true,
       showVideoButton: _boolean(preferences, _showVideoButtonKey) ?? true,
       videoChapterSync: _boolean(preferences, _videoChapterSyncKey) ?? true,
+      desktopSidebarOpen: _boolean(preferences, _desktopSidebarOpenKey) ?? true,
     ).normalized();
   }
 
@@ -541,6 +638,7 @@ class ReaderPreferences {
       preferences.setBool(_justifyTextKey, value.justifyText),
       preferences.setString(_pageModeKey, value.pageMode.name),
       preferences.setString(_pageTurnStyleKey, value.pageTurnStyle.name),
+      preferences.setString(_columnModeKey, value.columnMode.name),
       preferences.setBool(_volumeKeyTurnKey, value.volumeKeyTurn),
       preferences.setBool(_keepScreenOnKey, value.keepScreenOn),
       preferences.setInt(_autoTurnSecondsKey, value.autoTurnSeconds),
@@ -580,6 +678,7 @@ class ReaderPreferences {
       preferences.setBool(_showParagraphBubblesKey, value.showParagraphBubbles),
       preferences.setBool(_showVideoButtonKey, value.showVideoButton),
       preferences.setBool(_videoChapterSyncKey, value.videoChapterSync),
+      preferences.setBool(_desktopSidebarOpenKey, value.desktopSidebarOpen),
     ]);
   }
 }

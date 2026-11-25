@@ -1,50 +1,139 @@
 part of 'library_page.dart';
 
-// Keep these in sync with ClassicShellDock's 64dp capsule, 8dp bottom gap,
+// Keep these in sync with ClassicShellDock's 56dp capsule, 8dp bottom gap,
 // and the shared 24dp breathing room. RootShell only uses that dock outside
 // Windows, where the standalone desktop shell has no bottom bar.
-const double _classicRootDockHeight = 64;
+// The capsule shrank 64 → 56 for issue #478 (narrower top/bottom bars, more
+// room for the shelf grid); the clearance shrinks with it so the empty state
+// keeps the same breathing room above the dock.
+const double _classicRootDockHeight = 56;
 const double _classicRootDockBottomGap = 8;
 const double _classicRootDockBreathingRoom = 24;
+
+/// 一级 tab 行收起/展开的尺寸动画时长（issue #478 第二步）。比页面横滑的
+/// 260ms 略短，避免收起动画与邻页入场抢节奏；墨水屏与系统减动效直接落位。
+const Duration _classicTabRowCollapseDuration = Duration(milliseconds: 220);
 
 /// Old three-layout presentation, sharing the current page's entries, actions
 /// and edit state. No archive mode/density/3D preference participates here.
 mixin _LibraryClassicViews on _LibraryClassicChrome {
+  /// 一级 tab 行是否已收起（issue #478 第二步：下滑收起、上滑露出）。
+  ///
+  /// 只监听 **用户拖动**（[UserScrollNotification]）：`jumpTo`、布局变化
+  /// 引起的 ScrollUpdate 都不会翻转它，因此收起后视口变高、宫格重排也不会
+  /// 形成“收起→变高→又收起”的振荡。横轴通知（[TabSwipeArea] 翻页）天然
+  /// 被滤掉，左右滑切 tab 不会把条子收起来。
+  final ValueNotifier<bool> _tabRowCollapsed = ValueNotifier<bool>(false);
+
+  /// 只跟随拖动方向（与底栏 `DockAutoHide` 同一状态机）：下滚收起、
+  /// 上滚露出，回到列表顶部自然会走 forward 分支。
+  ///
+  /// 不用 `extentBefore` 做门槛：从顶部开始上推时，第一条
+  /// [UserScrollNotification] 带回的 metrics 还是 offset 0（方向通知只在
+  /// 方向变化时发），按位移判会永远收不起来。
+  ///
+  /// 墨水屏整层短路（同 `DockAutoHide.disabledProbe` 口径）：高度变动
+  /// 意味着全屏重绘，局部刷新的残影代价比多露一行书封更大。
+  bool _handleClassicUserScroll(UserScrollNotification notification) {
+    if (einkModeNotifier.value) return false;
+    if (notification.metrics.axis == Axis.horizontal) return false;
+    switch (notification.direction) {
+      case ScrollDirection.reverse:
+        _tabRowCollapsed.value = true;
+      case ScrollDirection.forward:
+        _tabRowCollapsed.value = false;
+      case ScrollDirection.idle:
+        break;
+    }
+    return false;
+  }
+
+  /// 切 tab 是“回到入口”的明确动作，收起状态下用户看不到三个标签，
+  /// 所以与底栏的 reveal 同约定：换页必定把条子带回来。
+  @override
+  void _selectTab(int tab) {
+    _tabRowCollapsed.value = false;
+    super._selectTab(tab);
+  }
+
+  @override
+  void dispose() {
+    _tabRowCollapsed.dispose();
+    super.dispose();
+  }
+
+  /// 可收起的一级 tab 槽位：收起时高度归零（不是只平移），真正把 40dp
+  /// 还给宫格。`ClipRect` 保证收起过程中标签不会被画到状态栏区域；
+  /// 墨水屏与系统「减弱动态效果」直接落位，不跑 220ms 的尺寸动画。
+  /// 同时监听 [einkModeNotifier]：切到墨水屏立即展开（抽屉里的旧状态
+  /// 不能残留成一条 0 高的条子）。
+  Widget _classicTabRowSlot(HomePalette palette) => AnimatedBuilder(
+    animation: Listenable.merge([_tabRowCollapsed, einkModeNotifier]),
+    builder: (context, _) {
+      final collapsed = _tabRowCollapsed.value && !einkModeNotifier.value;
+      final duration =
+          MediaQuery.disableAnimationsOf(context) || einkModeNotifier.value
+          ? Duration.zero
+          : _classicTabRowCollapseDuration;
+      final content = collapsed
+          ? const SizedBox(width: double.infinity, height: 0)
+          // The sliding underline needs the measured tab centres, which only
+          // exist after the layout.
+          : Builder(
+              builder: (context) {
+                _scheduleClassicMeasure();
+                return _classicTabRow(palette);
+              },
+            );
+      return ClipRect(
+        key: const Key('classic-tab-row-slot'),
+        // 零时长不进 AnimatedSize：RenderAnimatedSize 在 duration 为 0 时
+        // 会在自己的 performLayout 里把控制器瞬完并 markNeedsLayout，
+        // 触发“re-dirty itself while being laid out”。减动效/墨水屏直接
+        // 换子树，本来就是想要的结果。
+        child: duration == Duration.zero
+            ? content
+            : AnimatedSize(
+                duration: duration,
+                curve: Curves.easeOutCubic,
+                alignment: Alignment.topCenter,
+                child: content,
+              ),
+      );
+    },
+  );
+
   Widget _classicPage(BuildContext context) {
     final palette = HomePalette.of(context);
     return Scaffold(
       backgroundColor: palette.canvas,
       body: SafeArea(
         bottom: false,
-        child: Column(
-          children: [
-            if (_editing)
-              _classicEditBar(palette)
-            else
-              // The sliding underline needs the measured tab centres, which
-              // only exist after the layout.
-              Builder(
-                builder: (context) {
-                  _scheduleClassicMeasure();
-                  return _classicTabRow(palette);
-                },
+        child: NotificationListener<UserScrollNotification>(
+          onNotification: _handleClassicUserScroll,
+          child: Column(
+            children: [
+              if (_editing)
+                _classicEditBar(palette)
+              else
+                _classicTabRowSlot(palette),
+              Expanded(
+                child: TabSwipeArea.pages(
+                  index: _tab,
+                  count: _tabTitles.length,
+                  onSelect: _selectTab,
+                  onProgress: (value) {
+                    if (_tabProgress.value != value) {
+                      _tabProgress.value = value;
+                    }
+                  },
+                  enabled: !_editing,
+                  pageBuilder: (context, target) =>
+                      _classicTabBody(context, target),
+                ),
               ),
-            Expanded(
-              child: TabSwipeArea.pages(
-                index: _tab,
-                count: _tabTitles.length,
-                onSelect: _selectTab,
-                onProgress: (value) {
-                  if (_tabProgress.value != value) {
-                    _tabProgress.value = value;
-                  }
-                },
-                enabled: !_editing,
-                pageBuilder: (context, target) =>
-                    _classicTabBody(context, target),
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
       bottomNavigationBar: _editing ? _classicEditBottomBar(palette) : null,
@@ -158,7 +247,11 @@ mixin _LibraryClassicViews on _LibraryClassicChrome {
           'manju' => '暂无漫剧',
           _ => '暂无收藏内容',
         },
-        actionLabel: _collectionFilter == 'manju' ? '找漫剧' : '找短剧',
+        actionLabel: widget.onFindDrama == null
+            ? null
+            : _collectionFilter == 'manju'
+            ? '找漫剧'
+            : '找短剧',
         actionKey: const Key('collection-find-drama-button'),
         onAction: widget.onFindDrama,
         headerHeight: headerHeight,
@@ -186,7 +279,7 @@ mixin _LibraryClassicViews on _LibraryClassicChrome {
     );
   }
 
-  /// The classic root shell has a 64dp dock plus an 8dp gap and safe-area inset.
+  /// The classic root shell has a 56dp dock plus an 8dp gap and safe-area inset.
   /// Only Windows uses the standalone desktop tabs without [ShellDock]; other
   /// platforms retain the root dock. Edit mode also has its own bottom bar.
   double get _classicEmptyBottomClearance {
@@ -201,101 +294,132 @@ mixin _LibraryClassicViews on _LibraryClassicChrome {
   }
 
   Widget _classicGrid(List<_ShelfEntry> entries, int tab) => LayoutBuilder(
-    builder: (context, constraints) => GridView.builder(
-      physics: const AlwaysScrollableScrollPhysics(),
-      key: PageStorageKey('classic-shelf-grid-$tab'),
-      padding: const EdgeInsets.fromLTRB(
-        ShelfTokens.screenPadding,
-        ShelfTokens.spaceXS,
-        ShelfTokens.screenPadding,
-        ShelfTokens.contentBottomInset,
-      ),
-      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: ShelfTokens.gridColumns,
-        crossAxisSpacing: ShelfTokens.gridSpacing,
-        mainAxisSpacing: ShelfTokens.gridRunSpacing,
-        childAspectRatio: shelfGridChildAspectRatio(
-          context,
-          availableWidth: constraints.maxWidth,
+    builder: (context, constraints) {
+      final columns = isWindowsDesktop
+          ? ((constraints.maxWidth - ShelfTokens.screenPadding * 2) / 168)
+                .floor()
+                .clamp(ShelfTokens.gridColumns, 8)
+          : ShelfTokens.gridColumns;
+      return GridView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
+        key: PageStorageKey('classic-shelf-grid-$tab'),
+        padding: EdgeInsets.fromLTRB(
+          ShelfTokens.screenPadding,
+          ShelfTokens.spaceXS,
+          ShelfTokens.screenPadding,
+          isWindowsDesktop ? 24.0 : ShelfTokens.contentBottomInset,
         ),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: columns,
+          crossAxisSpacing: ShelfTokens.gridSpacing,
+          mainAxisSpacing: ShelfTokens.gridRunSpacing,
+          childAspectRatio: shelfGridChildAspectRatio(
+            context,
+            availableWidth: constraints.maxWidth,
+            columns: columns,
+          ),
+        ),
+        itemCount: entries.length,
+        itemBuilder: (context, index) {
+          final entry = entries[index];
+          return BookshelfGridCard(
+            key: ValueKey('shelf-grid-${entry.selectionKey}'),
+            item: entry.item,
+            badgeText: entry.badgeText,
+            infoText: entry.infoText,
+            editing: _editing,
+            selected: _selected.contains(entry.selectionKey),
+            onTap: () => _tap(entry),
+            onLongPress: () => _longPress(entry),
+          );
+        },
+      );
+    },
+  );
+
+  Widget _classicDoubleGrid(List<_ShelfEntry> entries, int tab) =>
+      LayoutBuilder(
+        builder: (context, constraints) {
+          final columns = isWindowsDesktop
+              ? ((constraints.maxWidth - ShelfTokens.screenPadding * 2) / 340)
+                    .floor()
+                    .clamp(2, 4)
+              : 2;
+          return GridView.builder(
+            physics: const AlwaysScrollableScrollPhysics(),
+            key: PageStorageKey('classic-shelf-double-$tab'),
+            padding: EdgeInsets.fromLTRB(
+              ShelfTokens.screenPadding,
+              ShelfTokens.spaceXS,
+              ShelfTokens.screenPadding,
+              isWindowsDesktop ? 24.0 : ShelfTokens.contentBottomInset,
+            ),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: columns,
+              crossAxisSpacing: ShelfTokens.gridSpacing,
+              mainAxisSpacing: ShelfTokens.gridSpacing,
+              childAspectRatio: shelfDoubleChildAspectRatio(
+                context,
+                availableWidth: constraints.maxWidth,
+                columns: columns,
+              ),
+            ),
+            itemCount: entries.length,
+            itemBuilder: (context, index) {
+              final entry = entries[index];
+              return BookshelfDoubleCard(
+                key: ValueKey('shelf-double-${entry.selectionKey}'),
+                item: entry.item,
+                badgeText: entry.badgeText,
+                subtitleText: entry.subtitleText,
+                editing: _editing,
+                selected: _selected.contains(entry.selectionKey),
+                onTap: () => _tap(entry),
+                onLongPress: () => _longPress(entry),
+              );
+            },
+          );
+        },
+      );
+
+  Widget _classicList(List<_ShelfEntry> entries, int tab) {
+    final list = ListView.separated(
+      physics: const AlwaysScrollableScrollPhysics(),
+      key: PageStorageKey('classic-shelf-list-$tab'),
+      padding: EdgeInsets.only(
+        left: isWindowsDesktop ? 16 : 0,
+        right: isWindowsDesktop ? 16 : 0,
+        top: ShelfTokens.spaceXS,
+        bottom: isWindowsDesktop ? 24.0 : ShelfTokens.contentBottomInset,
       ),
       itemCount: entries.length,
+      separatorBuilder: (context, index) => Divider(
+        height: .5,
+        thickness: .5,
+        color: HomePalette.of(context).line,
+      ),
       itemBuilder: (context, index) {
         final entry = entries[index];
-        return BookshelfGridCard(
-          key: ValueKey('shelf-grid-${entry.selectionKey}'),
+        return BookshelfListCard(
+          key: ValueKey('shelf-list-${entry.selectionKey}'),
           item: entry.item,
-          badgeText: entry.badgeText,
-          infoText: entry.infoText,
+          progressText: entry.readingText,
+          metaText: entry.metaText,
+          progress: entry.progress,
           editing: _editing,
           selected: _selected.contains(entry.selectionKey),
           onTap: () => _tap(entry),
           onLongPress: () => _longPress(entry),
         );
       },
-    ),
-  );
-
-  Widget _classicDoubleGrid(List<_ShelfEntry> entries, int tab) =>
-      LayoutBuilder(
-        builder: (context, constraints) => GridView.builder(
-          physics: const AlwaysScrollableScrollPhysics(),
-          key: PageStorageKey('classic-shelf-double-$tab'),
-          padding: const EdgeInsets.fromLTRB(
-            ShelfTokens.screenPadding,
-            ShelfTokens.spaceXS,
-            ShelfTokens.screenPadding,
-            ShelfTokens.contentBottomInset,
-          ),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 2,
-            crossAxisSpacing: ShelfTokens.gridSpacing,
-            mainAxisSpacing: ShelfTokens.gridSpacing,
-            childAspectRatio: shelfDoubleChildAspectRatio(
-              context,
-              availableWidth: constraints.maxWidth,
-            ),
-          ),
-          itemCount: entries.length,
-          itemBuilder: (context, index) {
-            final entry = entries[index];
-            return BookshelfDoubleCard(
-              key: ValueKey('shelf-double-${entry.selectionKey}'),
-              item: entry.item,
-              badgeText: entry.badgeText,
-              subtitleText: entry.subtitleText,
-              editing: _editing,
-              selected: _selected.contains(entry.selectionKey),
-              onTap: () => _tap(entry),
-              onLongPress: () => _longPress(entry),
-            );
-          },
-        ),
-      );
-
-  Widget _classicList(List<_ShelfEntry> entries, int tab) => ListView.separated(
-    physics: const AlwaysScrollableScrollPhysics(),
-    key: PageStorageKey('classic-shelf-list-$tab'),
-    padding: const EdgeInsets.only(
-      top: ShelfTokens.spaceXS,
-      bottom: ShelfTokens.contentBottomInset,
-    ),
-    itemCount: entries.length,
-    separatorBuilder: (context, index) =>
-        Divider(height: .5, thickness: .5, color: HomePalette.of(context).line),
-    itemBuilder: (context, index) {
-      final entry = entries[index];
-      return BookshelfListCard(
-        key: ValueKey('shelf-list-${entry.selectionKey}'),
-        item: entry.item,
-        progressText: entry.readingText,
-        metaText: entry.metaText,
-        progress: entry.progress,
-        editing: _editing,
-        selected: _selected.contains(entry.selectionKey),
-        onTap: () => _tap(entry),
-        onLongPress: () => _longPress(entry),
-      );
-    },
-  );
+    );
+    if (!isWindowsDesktop) return list;
+    return Align(
+      alignment: Alignment.topCenter,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 1080),
+        child: list,
+      ),
+    );
+  }
 }

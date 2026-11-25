@@ -12,6 +12,9 @@ typedef _FreeNative = Void Function(Pointer<Utf8>);
 typedef _Free = void Function(Pointer<Utf8>);
 
 String desktopCoreLibraryPath() {
+  if (Platform.isMacOS) {
+    return "${File(Platform.resolvedExecutable).parent.parent.path}/Frameworks/libfqapi_core.dylib";
+  }
   if (Platform.isLinux) {
     return '${File(Platform.resolvedExecutable).parent.path}/lib/libfqapi_core.so';
   }
@@ -20,6 +23,19 @@ String desktopCoreLibraryPath() {
   );
   if (bundled.existsSync()) return bundled.path;
   return File('rust/target/release/fqapi_core.dll').absolute.path;
+}
+
+/// 打开 Rust 核心所在的动态库。
+///
+/// iOS 上 Rust 核心是静态库(`-force_load` 链进主二进制,见
+/// `ios/Flutter/Debug.xcconfig`),`desktopCoreLibraryPath()` 返回的 `.dll`
+/// 路径必然打不开,短剧/听书这类 `encrypt_info` 媒体会在
+/// [DesktopMedia.open] 直接抛错。这里改走进程自身导出符号
+/// (`-Wl,-export_dynamic` + `DEAD_CODE_STRIPPING=NO` 保证存在),与
+/// `rust_bootstrap_io.dart` 的 FRB 初始化走同一条路。
+DynamicLibrary _coreLibrary() {
+  if (Platform.isIOS) return DynamicLibrary.process();
+  return DynamicLibrary.open(desktopCoreLibraryPath());
 }
 
 /// A failed media session open. [message] is a fixed user-facing string from
@@ -56,10 +72,11 @@ class DesktopMediaException implements Exception {
 /// shape `NativePlaybackException.fromEvent` reads. Logs only the category.
 Map<String, Object> desktopOpenFailure(int playerId, Object error) {
   final failure = error is DesktopMediaException ? error : null;
-  AppLog.d(
+  AppLog.w(
     'desktop-player',
     'id=$playerId open failed kind=${failure?.kind ?? 'player'} '
-        'status=${failure?.httpStatus}',
+        'status=${failure?.httpStatus} '
+        'error=${error.runtimeType}: $error',
   );
   return {
     'message': '媒体加载失败，请检查网络或重试',
@@ -69,17 +86,15 @@ Map<String, Object> desktopOpenFailure(int playerId, Object error) {
 }
 
 class DesktopMedia {
-  DesktopMedia._(this.id, this.url, this.libraryPath);
+  DesktopMedia._(this.id, this.url);
   final String id;
   final String url;
-  final String libraryPath;
   bool _closed = false;
 
   static Future<DesktopMedia> open(String url, String key) async {
-    final path = desktopCoreLibraryPath();
     // Metadata probing performs synchronous native I/O, away from the UI isolate.
     final result = await Isolate.run(() {
-      final lib = DynamicLibrary.open(path);
+      final lib = _coreLibrary();
       final open = lib.lookupFunction<_OpenNative, _Open>(
         'fq_desktop_media_open',
       );
@@ -106,17 +121,13 @@ class DesktopMedia {
         httpStatus: result['status'] is int ? result['status'] as int : null,
       );
     }
-    return DesktopMedia._(
-      result['id'] as String,
-      result['url'] as String,
-      path,
-    );
+    return DesktopMedia._(result['id'] as String, result['url'] as String);
   }
 
   void close() {
     if (_closed) return;
     _closed = true;
-    final lib = DynamicLibrary.open(libraryPath);
+    final lib = _coreLibrary();
     final close = lib.lookupFunction<_FreeNative, _Free>(
       'fq_desktop_media_close',
     );

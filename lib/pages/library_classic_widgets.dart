@@ -55,7 +55,9 @@ class _ClassicTabButton extends StatelessWidget {
       child: SizedBox(
         width: width,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+          // 上下 2 → 1、标签与下划线间距 5 → 4（issue #478）：只削掉浮量，
+          // 下划线仍占固定 3dp，滑动时的高度基准不变。
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -72,7 +74,7 @@ class _ClassicTabButton extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(height: 5),
+              const SizedBox(height: 4),
               // The underline is drawn once for the whole row now, so it can
               // slide between tabs instead of each tab fading its own in.
               SizedBox(width: 26, height: 3),
@@ -154,6 +156,93 @@ class _ClassicLayoutSegments extends StatelessWidget {
   );
 }
 
+/// 手机选择器与宽屏分段控件共用版式状态和持久化入口。
+class _ClassicLayoutPicker extends StatelessWidget {
+  const _ClassicLayoutPicker({
+    required this.current,
+    required this.palette,
+    required this.onChanged,
+  });
+
+  final BookshelfLayout current;
+  final HomePalette palette;
+  final ValueChanged<BookshelfLayout> onChanged;
+
+  static String labelOf(BookshelfLayout layout) => switch (layout) {
+    BookshelfLayout.grid => '宫格',
+    BookshelfLayout.doubleColumn => '双列',
+    BookshelfLayout.list => '列表',
+  };
+
+  Future<void> _showLayouts(BuildContext context) async {
+    final anchor = context.findRenderObject()! as RenderBox;
+    final overlay =
+        Navigator.of(context).overlay!.context.findRenderObject()! as RenderBox;
+    final rect =
+        anchor.localToGlobal(Offset.zero, ancestor: overlay) & anchor.size;
+    final selected = await showMenu<BookshelfLayout>(
+      context: context,
+      position: RelativeRect.fromSize(rect, overlay.size),
+      color: palette.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: palette.line, width: .6),
+      ),
+      elevation: 4,
+      items: [
+        for (final layout in BookshelfLayout.values)
+          CheckedPopupMenuItem(
+            key: Key('shelf-layout-${layout.segmentKey}'),
+            value: layout,
+            checked: layout == current,
+            child: Row(
+              children: [
+                Icon(layout.menuIcon, size: 16, color: palette.ink),
+                const SizedBox(width: 10),
+                Text(
+                  labelOf(layout),
+                  style: TextStyle(fontSize: 14, color: palette.ink),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+    if (selected != null && context.mounted) onChanged(selected);
+  }
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: '切换版式',
+    child: _ClassicToolbarPill(
+      key: const Key('shelf-layout-picker'),
+      palette: palette,
+      onTap: () => unawaited(_showLayouts(context)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            current.menuIcon,
+            size: ShelfTokens.iconInline,
+            color: palette.muted,
+          ),
+          const SizedBox(width: 5),
+          Text(
+            labelOf(current),
+            style: TextStyle(
+              fontSize: ShelfTokens.subtitle,
+              fontWeight: FontWeight.w500,
+              color: palette.ink,
+            ),
+          ),
+          const SizedBox(width: 2),
+          Icon(LucideIcons.chevron_down, size: 13, color: palette.muted),
+        ],
+      ),
+    ),
+  );
+}
+
 /// 经典书架工具栏的分组胶囊：与「今日已读」胶囊同款外形，也是分组入口
 /// （点开就是现有的分类弹层）。选中分组时用强调色描边与文字，长分组名
 /// 只省略不折行，不会把工具栏挤高一行。
@@ -164,6 +253,7 @@ class _ClassicGroupChip extends StatelessWidget {
     required this.active,
     required this.palette,
     required this.onTap,
+    this.showChevron = false,
   });
 
   final String label;
@@ -171,12 +261,11 @@ class _ClassicGroupChip extends StatelessWidget {
   final HomePalette palette;
   final VoidCallback onTap;
 
+  final bool showChevron;
+
   @override
   Widget build(BuildContext context) {
     final accent = active && !palette.eink;
-    final border = palette.eink || active
-        ? Border.all(color: accent ? HomePalette.accent : palette.line)
-        : null;
     return Semantics(
       button: true,
       selected: active,
@@ -185,53 +274,82 @@ class _ClassicGroupChip extends StatelessWidget {
       excludeSemantics: true,
       child: Tooltip(
         message: '书架分组：$label',
-        excludeFromSemantics: false,
-        child: InkWell(
+        triggerMode: TooltipTriggerMode.manual,
+        child: _ClassicToolbarPill(
+          palette: palette,
+          active: active,
           onTap: onTap,
-          borderRadius: BorderRadius.circular(ShelfTokens.radiusChip),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: _classicTouchTarget),
-            child: Center(
-              widthFactor: 1,
-              heightFactor: 1,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 5,
-                ),
-                decoration: BoxDecoration(
-                  color: palette.soft,
-                  borderRadius: BorderRadius.circular(ShelfTokens.radiusChip),
-                  border: border,
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      LucideIcons.folder,
-                      size: ShelfTokens.iconInline,
-                      color: accent ? HomePalette.accent : palette.muted,
-                    ),
-                    const SizedBox(width: 5),
-                    Flexible(
-                      child: Text(
-                        label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: ShelfTokens.subtitle,
-                          fontWeight: FontWeight.w500,
-                          color: accent ? HomePalette.accent : palette.ink,
-                        ),
-                      ),
-                    ),
-                  ],
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                LucideIcons.folder,
+                size: ShelfTokens.iconInline,
+                color: accent ? HomePalette.accent : palette.muted,
+              ),
+              const SizedBox(width: 5),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: ShelfTokens.subtitle,
+                    fontWeight: FontWeight.w500,
+                    color: accent ? HomePalette.accent : palette.ink,
+                  ),
                 ),
               ),
-            ),
+              if (showChevron) ...[
+                const SizedBox(width: 2),
+                Icon(
+                  LucideIcons.chevron_down,
+                  size: 13,
+                  color: accent ? HomePalette.accent : palette.muted,
+                ),
+              ],
+            ],
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Keep ink on the visible capsule and let Material pad the touch target.
+class _ClassicToolbarPill extends StatelessWidget {
+  const _ClassicToolbarPill({
+    super.key,
+    required this.palette,
+    required this.onTap,
+    required this.child,
+    this.active = false,
+  });
+
+  final HomePalette palette;
+  final VoidCallback onTap;
+  final Widget child;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = active && !palette.eink;
+    return TextButton(
+      onPressed: onTap,
+      clipBehavior: Clip.antiAlias,
+      style: TextButton.styleFrom(
+        backgroundColor: palette.soft,
+        foregroundColor: accent ? HomePalette.accent : palette.ink,
+        minimumSize: const Size(_classicTouchTarget, 0),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        visualDensity: VisualDensity.standard,
+        tapTargetSize: MaterialTapTargetSize.padded,
+        shape: const StadiumBorder(),
+        side: palette.eink || active
+            ? BorderSide(color: accent ? HomePalette.accent : palette.line)
+            : BorderSide.none,
+      ),
+      child: child,
     );
   }
 }

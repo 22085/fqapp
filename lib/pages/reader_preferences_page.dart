@@ -391,6 +391,20 @@ class _ReaderPreferencesPageState extends State<ReaderPreferencesPage>
                     ),
                   ),
                 ),
+              if (_value.pageMode == ReaderPageMode.paged)
+                _choiceRow(
+                  label: '页面分栏',
+                  choices: [
+                    _Choice('自动', _value.columnMode == ReaderColumnMode.auto),
+                    _Choice('单栏', _value.columnMode == ReaderColumnMode.single),
+                    _Choice('双栏', _value.columnMode == ReaderColumnMode.dual),
+                  ],
+                  onSelected: (index) => _apply(
+                    (value) => value.copyWith(
+                      columnMode: ReaderColumnMode.values[index],
+                    ),
+                  ),
+                ),
               _navRow(label: '字体', value: _fontLabel, onTap: _pickFont),
               _switchRow(
                 '段首缩进',
@@ -514,13 +528,19 @@ class _ReaderPreferencesPageState extends State<ReaderPreferencesPage>
               ),
               _sliderRow(
                 label: '字号',
-                value: _value.fontSize,
-                min: 14,
-                max: 32,
-                divisions: 18,
-                format: (value) => '${value.round()}',
+                // 官方滑条走档位表下标（每格一档），存盘仍是字号本身。
+                value: ReaderPreferences.fontSizeIndex(
+                  _value.fontSize,
+                ).toDouble(),
+                min: 0,
+                max: (ReaderPreferences.fontSizes.length - 1).toDouble(),
+                divisions: ReaderPreferences.fontSizes.length - 1,
+                format: (value) =>
+                    '${ReaderPreferences.fontSizeAt(value.round()).round()}',
                 onChanged: (value) => _apply(
-                  (preferences) => preferences.copyWith(fontSize: value),
+                  (preferences) => preferences.copyWith(
+                    fontSize: ReaderPreferences.fontSizeAt(value.round()),
+                  ),
                 ),
               ),
               _choiceRow(
@@ -601,8 +621,8 @@ class _ReaderPreferencesPageState extends State<ReaderPreferencesPage>
               _stepperRow(
                 label: '标题字号',
                 value: _value.titleSize.round(),
-                min: 16,
-                max: 40,
+                min: ReaderPreferences.minTitleSize.round(),
+                max: ReaderPreferences.maxTitleSize.round(),
                 onChanged: (value) => _apply(
                   (preferences) =>
                       preferences.copyWith(titleSize: value.toDouble()),

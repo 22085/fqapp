@@ -496,8 +496,9 @@ void main() {
       final sliderRect = tester.getRect(
         find.byKey(const ValueKey('reader-font-size')),
       );
+      // 滑条走官方档位表下标：第 8 格 = 23pt，第 9 格 = 24pt。
       slider.onInteractionChanged!(true);
-      slider.onPreview!(23);
+      slider.onPreview!(8);
       await tester.pump(const Duration(milliseconds: 150));
       expect(
         tester.getRect(find.byKey(const ValueKey('reader-font-size'))),
@@ -508,7 +509,7 @@ void main() {
         findsNothing,
       );
       expect(changes.last.fontSize, 23);
-      slider.onCommitted!(24);
+      slider.onCommitted!(9);
       slider.onInteractionChanged!(false);
       await tester.pumpAndSettle();
       expect(changes.last.fontSize, 24);

@@ -11,7 +11,6 @@ import 'package:fqapp/services/audio_preferences.dart';
 import 'package:fqapp/services/desktop_platform.dart';
 import 'package:fqapp/services/listening_session.dart';
 import 'package:fqapp/services/native_player.dart';
-import 'package:fqapp/services/platform_channel.dart';
 import 'package:fqapp/widgets/audio/audio_control_rows.dart';
 
 import 'support/controlled_player.dart';
@@ -72,10 +71,6 @@ void main() {
       );
       player.endPlayback();
       await _flush(tester);
-      // 连播倒计时窗口内仍是本章：会话不发布、播放器也还没释放。
-      expect(ListeningSession.instance.playing, isFalse);
-      await tester.pump(const Duration(seconds: 3));
-      await _flush(tester);
       expect(player.disposed, isTrue);
       expect(ListeningSession.instance.playing, isFalse);
       next.complete(_source('2'));
@@ -114,7 +109,6 @@ void main() {
         player.emitDuration(const Duration(seconds: 554));
         player.emitPosition(const Duration(seconds: 553));
         if (completed) player.endPlayback();
-        await _flush(tester);
         player.errors.add(
           const NativePlaybackException('Playback failed', errorCode: 2001),
         );
@@ -131,78 +125,13 @@ void main() {
     );
   }
 
-  for (final action in ['pause', 'noisy', 'replay']) {
-    testWidgets('$action cancels a pending chapter advance', (tester) async {
-      final player = _NativeEndingPlayer();
-      await _mount(tester, player: player);
-      player.endPlayback();
-      await _flush(tester);
-      expect(find.byKey(const Key('audio_advance_banner')), findsOneWidget);
-      switch (action) {
-        case 'pause':
-          await PlatformChannels.notify(
-            'fqapp/native_player',
-            'onNotificationAction',
-            'pause',
-          );
-        case 'noisy':
-          await PlatformChannels.notify(
-            'fqapp/native_player',
-            'onAudioBecomingNoisy',
-          );
-        case 'replay':
-          await tester.tap(find.byTooltip('播放'));
-      }
-      await _flush(tester);
-      expect(find.byKey(const Key('audio_advance_banner')), findsNothing);
-      await tester.pump(const Duration(seconds: 5));
-      await _flush(tester);
-      expect(player.disposed, isFalse);
-      expect(player.isPlaying, action == 'replay');
-      expect(ListeningSession.instance.bookId, 'boundary-book');
-      expect(ListeningSession.instance.chapterId, '1');
-      expect(ListeningSession.instance.playing, action == 'replay');
-    });
-  }
-
-  for (final action in ['seek', 'back15', 'forward15']) {
-    testWidgets('$action cancels a pending chapter advance', (tester) async {
-      final player = _NativeEndingPlayer();
-      final requests = <String>[];
-      await _mount(tester, player: player, sourceRequests: requests);
-      player.emitDuration(const Duration(minutes: 1));
-      player.endPlayback();
-      await _flush(tester);
-      expect(find.byKey(const Key('audio_advance_banner')), findsOneWidget);
-      final row = tester.widget<AudioTimeSeekRow>(
-        find.byType(AudioTimeSeekRow),
-      );
-      switch (action) {
-        case 'seek':
-          row.onChangeEnd!(30000);
-        case 'back15':
-          row.onBack15!();
-        case 'forward15':
-          row.onForward15!();
-      }
-      await _flush(tester);
-      expect(find.byKey(const Key('audio_advance_banner')), findsNothing);
-      await tester.pump(const Duration(seconds: 5));
-      await _flush(tester);
-      expect(player.disposed, isFalse);
-      expect(requests, ['1']);
-      expect(ListeningSession.instance.chapterId, '1');
-    });
-  }
-
-  testWidgets('seek preview cancels chapter advance before release', (
+  testWidgets('seek preview keeps the current chapter before release', (
     tester,
   ) async {
     final player = _NativeEndingPlayer();
     final requests = <String>[];
     await _mount(tester, player: player, sourceRequests: requests);
     player.emitDuration(const Duration(minutes: 1));
-    player.endPlayback();
     await _flush(tester);
     final row = tester.widget<AudioTimeSeekRow>(find.byType(AudioTimeSeekRow));
     row.onChanged!(30000);
@@ -218,16 +147,16 @@ void main() {
   });
 
   for (final background in [false, true]) {
-    testWidgets('chapter countdown respects background playback=$background', (
+    testWidgets('chapter completion respects background playback=$background', (
       tester,
     ) async {
       await AudioPreferences.instance.setBackgroundPlayback(background);
       final player = _NativeEndingPlayer();
       final requests = <String>[];
       await _mount(tester, player: player, sourceRequests: requests);
-      player.endPlayback();
-      await _flush(tester);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await _flush(tester);
+      player.endPlayback();
       await _flush(tester);
       await tester.pump(const Duration(seconds: 5));
       await _flush(tester);
@@ -273,17 +202,26 @@ void main() {
     expect(requests, ['1']);
   }, variant: TargetPlatformVariant({TargetPlatform.linux}));
 
-  testWidgets('closing during chapter countdown cancels its timer', (
+  testWidgets('closing while the next source is loading prevents playback', (
     tester,
   ) async {
     final player = _NativeEndingPlayer();
-    await _mount(tester, player: player);
+    final next = Completer<AudioSource>();
+    final requests = <String>[];
+    await _mount(
+      tester,
+      player: player,
+      nextSource: next.future,
+      sourceRequests: requests,
+    );
     player.endPlayback();
     await _flush(tester);
-    expect(find.byKey(const Key('audio_advance_banner')), findsOneWidget);
+    expect(requests, ['1', '2']);
     await tester.pumpWidget(const SizedBox.shrink());
+    next.complete(_source('2'));
     await _flush(tester);
     expect(player.disposed, isTrue);
+    expect(ListeningSession.instance.playing, isFalse);
   });
 
   testWidgets('next source failure stays on the failed next chapter', (
@@ -324,7 +262,7 @@ void main() {
       await tester.tap(find.text(choice));
       await tester.pumpAndSettle();
       if (choice == '15 分钟后') {
-        await tester.pump(const Duration(minutes: 14, seconds: 59));
+        await tester.pump(const Duration(minutes: 15));
       }
       player.endPlayback();
       await _flush(tester);

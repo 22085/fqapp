@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 import '../../models/book_detail.dart';
 import '../../models/media_item.dart';
+import '../copyable_text.dart';
 import '../home/home_design.dart';
 import 'detail_cover_tile.dart';
 import 'detail_style.dart';
@@ -28,6 +29,14 @@ class DetailHero extends StatelessWidget {
   final bool desktop;
   final bool compactDesktop;
 
+  /// Keeps the desktop cover beside its metadata when the masthead has a
+  /// separate statistics rail.
+  final bool horizontalDesktop;
+
+  /// 经典手机版排版:标签用整宽 Wrap 排在封面+元信息区下方,不再被元信息列
+  /// 的 20.5dp 裁剪框切掉。默认 false,档案与桌面栏保持原样。
+  final bool tagsBelowCover;
+
   const DetailHero({
     super.key,
     required this.item,
@@ -36,6 +45,8 @@ class DetailHero extends StatelessWidget {
     this.lastChapterTitle,
     this.desktop = false,
     this.compactDesktop = false,
+    this.horizontalDesktop = false,
+    this.tagsBelowCover = false,
   });
 
   @override
@@ -45,8 +56,14 @@ class DetailHero extends StatelessWidget {
     // A 3x accessibility scale cannot fit a cover beside the text on a narrow
     // phone, so the masthead stacks instead of squeezing both into one row.
     final stacked = MediaQuery.textScalerOf(context).scale(16) > 26;
-    final centered = desktop && !compactDesktop;
-    final rows = _rows(palette, centered: centered);
+    final centered = desktop && !compactDesktop && !horizontalDesktop;
+    final tags = detail?.tags ?? const <String>[];
+    final rows = _rows(
+      palette,
+      centered: centered,
+      includeTags: !tagsBelowCover,
+    );
+    // #477：书名与作者支持长按复制（具体交互与中文选区的取舍见 CopyableText）。
     final info = Column(
       crossAxisAlignment: centered
           ? CrossAxisAlignment.center
@@ -54,12 +71,16 @@ class DetailHero extends StatelessWidget {
       children: [
         Padding(
           padding: const EdgeInsets.only(top: 2, bottom: 1),
-          child: Text(
+          child: CopyableText(
             title,
-            key: const Key('detail_book_title'),
+            textKey: const Key('detail_book_title'),
             style: TextStyle(
               color: palette.ink,
-              fontSize: desktop ? 22 : 19,
+              fontSize: horizontalDesktop
+                  ? 24
+                  : desktop
+                  ? 22
+                  : 19,
               fontWeight: FontWeight.w700,
               height: 1.3,
             ),
@@ -75,34 +96,56 @@ class DetailHero extends StatelessWidget {
       item: item,
       desktop: desktop,
       compact: compactDesktop,
+      horizontalDesktop: horizontalDesktop,
     );
+
+    final masthead = (stacked || centered)
+        ? Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(child: cover),
+              const SizedBox(height: 18),
+              info,
+            ],
+          )
+        : Row(
+            crossAxisAlignment: horizontalDesktop
+                ? CrossAxisAlignment.center
+                : CrossAxisAlignment.start,
+            children: [
+              cover,
+              const SizedBox(width: 14),
+              Expanded(child: info),
+            ],
+          );
 
     return Padding(
       padding: desktop
-          ? const EdgeInsets.fromLTRB(0, 16, 0, 0)
+          ? horizontalDesktop
+                ? EdgeInsets.zero
+                : const EdgeInsets.fromLTRB(0, 16, 0, 0)
           : const EdgeInsets.fromLTRB(16, 6, 16, 0),
-      child: (stacked || centered)
+      child: tagsBelowCover
           ? Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Center(child: cover),
-                const SizedBox(height: 18),
-                info,
+                masthead,
+                if (tags.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  _HeroTags(tags: tags, centered: false, wrap: true),
+                ],
               ],
             )
-          : Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                cover,
-                const SizedBox(width: 14),
-                Expanded(child: info),
-              ],
-            ),
+          : masthead,
     );
   }
 
   /// The optional meta / rating / rank / update / tags rows, in mockup order.
-  List<Widget> _rows(HomePalette palette, {required bool centered}) {
+  List<Widget> _rows(
+    HomePalette palette, {
+    required bool centered,
+    required bool includeTags,
+  }) {
     final authorName = detail?.author.name.isNotEmpty == true
         ? detail!.author.name
         : item.author.trim();
@@ -141,7 +184,8 @@ class DetailHero extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: TextStyle(color: palette.muted, fontSize: 12, height: 1.5),
         ),
-      if (tags.isNotEmpty) _HeroTags(tags: tags, centered: centered),
+      if (includeTags && tags.isNotEmpty)
+        _HeroTags(tags: tags, centered: centered),
     ];
   }
 }
@@ -185,11 +229,19 @@ class _RankPill extends StatelessWidget {
 
 /// Genre tags in the hero: one clipped line on phones, a centred wrap on the
 /// wide desktop masthead.
+///
+/// [wrap] is the 经典 phone variant: pills keep their own height, so scaled
+/// glyphs are neither clipped vertically nor pushed past the right edge.
 class _HeroTags extends StatelessWidget {
   final List<String> tags;
   final bool centered;
+  final bool wrap;
 
-  const _HeroTags({required this.tags, required this.centered});
+  const _HeroTags({
+    required this.tags,
+    required this.centered,
+    this.wrap = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -204,9 +256,18 @@ class _HeroTags extends StatelessWidget {
       child: Text(
         tag,
         maxLines: 1,
+        overflow: TextOverflow.ellipsis,
         style: TextStyle(color: palette.muted, fontSize: 11, height: 1.5),
       ),
     );
+    if (wrap) {
+      return Wrap(
+        key: const Key('detail_hero_tags'),
+        spacing: 6,
+        runSpacing: 6,
+        children: [for (final tag in tags) pill(tag)],
+      );
+    }
     final row = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -269,13 +330,18 @@ class _MetaLine extends StatelessWidget {
                 semanticLabel: '查看 $name 的主页',
                 onTap: onOpenAuthor!,
                 borderRadius: BorderRadius.circular(4),
-                child: Text(
+                // 点按必须由 CopyableText 自己接：选区区比这里的按钮更深，
+                // 否则跳作者主页会被它抢走（见 CopyableText.onTap）。
+                child: CopyableText(
                   '$name ›',
-                  key: const Key('detail_author_name'),
+                  textKey: const Key('detail_author_name'),
                   style: style.copyWith(color: palette.ink),
+                  onTap: onOpenAuthor,
+                  // 作者行看着像按钮，保留按下回弹（拖动/长按都不影响）。
+                  pressFeedback: true,
                 ),
               )
-            : Text(name, style: style),
+            : CopyableText(name, style: style),
       if (tail.isNotEmpty)
         Text(
           '${name.isEmpty ? '' : ' · '}$tail',

@@ -10,6 +10,7 @@ import 'package:fqapp/services/backend_service.dart';
 import 'package:fqapp/services/network_proxy_preferences.dart';
 import 'package:fqapp/services/backend_transport.dart';
 import 'package:fqapp/services/episode_source_cache.dart';
+import 'package:fqapp/services/playback_issue.dart';
 import 'package:fqapp/src/rust/api.dart' as rust;
 import 'package:fqapp/src/rust/frb_generated.dart';
 
@@ -330,7 +331,8 @@ void main() {
           isA<ApiException>().having(
             (error) => error.message,
             'message',
-            '该视频暂不支持播放',
+            // 播放页按这条文案识别「编码不受支持」，不再静默重试。
+            PlaybackIssue.unsupportedCodecError,
           ),
         ),
       );
@@ -461,12 +463,14 @@ Map<String, dynamic> _videoPayload({bool includeH264 = false}) => {
           'main_url': 'https://example.invalid/bytevc2.mp4',
           'codec_type': 'bytevc2',
           'vwidth': 1080,
+          'vheight': 1920,
         },
         if (includeH264)
           'video_2': {
             'main_url': 'https://example.invalid/h264.mp4',
             'codec_type': 'h264',
             'vwidth': 720,
+            'vheight': 1280,
             'spade_a': 'kbwf80+1N+V9nwHQSp431GWvLeBlqizTYJ0o5FOrHuZhqimysg==',
           },
       },

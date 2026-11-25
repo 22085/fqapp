@@ -252,6 +252,16 @@ Rust 核心按 `arm64-v8a` 与 `armeabi-v7a` 两个 ABI 产出（`scripts/build_
 `.ps1` 的 `aarch64-linux-android` + `armv7-linux-androideabi`），CI 因此用
 `--target-platform android-arm,android-arm64 --split-per-abi` 出两个分包；x86/x86_64 设备不提供。
 
+本地修改版需要与正式版共存时，在构建前设置 `FQAPP_COEXIST=true`。包名变为
+`com.fqapp.fqapp.mod`，显示名为「什锦铺·改」，两份应用的数据各自独立。未设置时使用正式包名和名称；
+该开关不改变签名要求。PowerShell 示例：
+
+```powershell
+$env:FQAPP_COEXIST = 'true'
+flutter build apk --release --target-platform android-arm64 --split-per-abi
+Remove-Item Env:FQAPP_COEXIST
+```
+
 > **release 构建不要加 `--no-pub`**：`integration_test` 在 `dev_dependencies` 里，`flutter test` 会把
 > 它写进 Android 插件注册表；随后用 `--no-pub` 构建 release，Gradle 会报
 > `package dev.flutter.plugins.integration_test does not exist`。先跑测试再构建时保留 pub 步骤即可
@@ -266,7 +276,8 @@ Rust 核心按 `arm64-v8a` 与 `armeabi-v7a` 两个 ABI 产出（`scripts/build_
 
 [工作流](.github/workflows/android-apk.yml) 固定 Flutter `3.50.0`、Rust 工具链与
 flutter_rust_bridge `2.13.0`、JDK 17、NDK `28.2.13676358` 和 CMake `3.22.1`。
-Rust 核心与 C 解密库都会在 runner 上编译。CI 设置 `FQAPP_USE_MAVEN_MIRRORS=false`
+Rust 核心、C 解密库与 `third_party/bytevc2/` 的 bytevc2 转码器都会在 runner 上编译
+(转码器是先打补丁再交叉编译 ffmpeg,源码树单独缓存,细节见该目录 `README.md`)。CI 设置 `FQAPP_USE_MAVEN_MIRRORS=false`
 使用官方 Maven 源；本地构建默认仍使用国内镜像。
 
 每次构建运行 Rust、Web 与诊断脚本测试、Flutter 静态分析与完整单元/组件测试，
@@ -856,6 +867,7 @@ App 通过 `ApiClient` 调用后端 **`/api/v1/*` 业务路由**（Rust 核心 `
 - 分类选中项使用浅背景与短下划线；各项预留选中字号的宽度，切换时不挤动相邻标签，墨水屏改用描边
 - 切分类只把内容区复位到顶部；横滑时预览相邻分类最近显示的内容，未访问的分类显示骨架，窗口宽度或字号变化后重新生成预览；首次进入后再切分类使用轻量加载态
 - 优先调用真实 `/api/v1/recommend/homepage`，推荐接口不可用时回退搜索结果
+- 底部加载的新作品按去重顺序追加在全部首屏作品之后，原始排行榜与卡片区块保持顺序；多个卡片流共用一个分页尾块。首页网格（包括短剧分类）冷启动先显示快照，再以最新首屏替换；只有独立短剧播放页使用续播点追加首屏，滑动位置在两秒防抖后保存。旧版错序区块快照回退到已有作品列表，联网后重写正确布局，不需要清空应用数据
 - 短篇使用独立 UGC 推荐流，按响应的 `next_offset` / `session_id` 分页并按帖子 ID 去重；追加失败重试保留原游标，刷新失败保留已有内容并重试首屏。连续三页没有新增内容时停止自动追页，显示“继续加载短篇”；切走取消请求，已加载内容保留。点击先确认可读范围，截断内容明确提示试读及未返回字数，再进入现有的关联书籍详情或官方阅读；摘要与截断正文不写入标准章节缓存
 - 推荐页的漫剧与小说都取各自的专属推荐流（`tab_type=24` / `2`），短剧、漫画、听书取搜索结果；
   漫剧的推荐流没有翻页游标，后续页仍由漫剧搜索承接
@@ -899,6 +911,15 @@ App 通过 `ApiClient` 调用后端 **`/api/v1/*` 业务路由**（Rust 核心 `
 - 数据三栏：榜单、正在阅读人数、评分（含五星），按可用字段自适应列数
 - 作品 ID 行：显示当前加载所用的 ID（短剧／漫剧为系列 ID），可选中并一键复制；
   复制出的值可直接粘贴到搜索框以 `id:作品ID` 重新打开同一作品
+- 书名、作者与简介长按弹出系统选择菜单（#477）：长按后选区直接落在整段，由系统提供
+  「复制 / 全选」菜单与选择手柄，复制走平台剪贴板，应用不再自带提示条。默认整段选中
+  是刻意的：Flutter 的中文长按按单字扩展选区（实测长按书名只选中一个汉字），不主动
+  全选就只剩一个字可复制。桌面端同一套控件，鼠标拖选与 Ctrl+C 照旧。除详情页的书名、
+  作者、简介外，书评正文与回复、剧评正文也走同一套控件；带表情的评论仍由
+  `CommentEmojiText` 渲染，表情是内嵌图片，选区只覆盖文字部分，复制结果不含
+  `[微笑]` 这类占位符。短剧／漫剧系列详情（剧名与简介）与书旗详情同样适用。
+  小米传送门这类系统识屏依赖无障碍取词，客户端侧只能保证文本进入 semantics，
+  不能承诺触发
 - 演员表：短剧／漫剧显示横向演员卡片（头像、姓名、饰演角色）。数据来自 `/api/v1/series/{id}`；
   该接口失败或没有演员时不显示该区块，不影响播放。头像上游为 HEIC，解码失败时降级为姓名首字
 - 书籍简介三行折叠可展开，题材标签，`查看目录` 行与 3 章目录预览
@@ -1020,14 +1041,328 @@ App 通过 `ApiClient` 调用后端 **`/api/v1/*` 业务路由**（Rust 核心 `
 旧下载偏好一次迁到 `drama_download_max_quality_height`，成功写入后移除旧键；
 已有缓存与断点记录保留文件、原始高度和流身份，并优先从原档位名称恢复短边。
 
-后端短剧取址保留单一的 v5 播放门，以最终 gzip 字节同时生成签名和请求体；
-stream 与整集下载共用这一次模型解析。HTTP 401/403 仍按设备鉴权失败轮换，
-429/5xx 与传输错误在同设备上做有限退避；HTTP 200 空模型只报取流失败，
-不再替换或隔离设备。模型自己的列表会与同次请求可用的 `fallback_api`
+后端短剧取址依次使用 v5、官方单集 `video_model` 的 a/c 两个 host 与签名 GET
+`video_tab` 门，
+POST 以最终 gzip 字节同时生成签名和请求体；stream 与整集下载共用最终选定模型。
+HTTP 401/403 仍按设备鉴权失败处理（预取不轮换），429/5xx、传输错误在同设备上
+做最多两次有限退避并受调用方总超时约束。HTTP 200 解压后空响应体只返回一次，
+由端点控制同身份换门、每请求一次同门重探与至多一次恢复轮换，不因此退休设备。
+原始空实体与有效 gzip 解出空内容都属于空响应体；非空模型、业务拒绝不当作空实体。
+非空但不可播时先尝试其他门，再替换实际应答身份重取；替换轮包含已冷却门，
+总门尝试上限为 8（包含一次同门重探，预算耗尽时替换轮尾部门可能不再尝试）。
+模型自己的列表会与同次请求可用的 `fallback_api`
 响应合并，清晰度短边与 `bytevc2` 拒绝门保持不变。规范化响应的
 `source_trace_id` 可关联 Rust 的 `stream trace` 与 Dart 的 `player-quality`
 日志；旧格式原始响应仍完整透传，诊断不记录播放地址或内容密钥。
 同一播放地址只展示一档，拒绝的别名不占用后续真实流的档位名称。
+补充:上面那句「`bytevc2` 拒绝门保持不变」的前提是请求没带 `transcode=1`。带了这个
+参数即声明调用方自带 `bytevc2` 转码器,此时只放宽**选流**:原生可解码的档仍然永远
+排在前面,只有主列表与 H.265 `fallback_api` 门都被编码门拒掉之后,才用同一次请求
+已经取到的正文再扫一遍,把 `bytevc2` 档的地址交回去,并在响应里用 `codec` 字段标出
+`bytevc2`(直接可播的流该字段为空串)。这条兜底不再发请求;没有 `transcode=1` 的请求
+拿到 `CodecRejected` 与「该视频暂不支持播放」的行为一字未变。转码器、构建方式与它的
+边界见 `third_party/bytevc2/`。
+客户端侧:带转码器的安装取流时声明 `transcode=1`,拿到 `codec=bytevc2` 的档之后由
+`lib/services/bytevc2_transcode.dart` 先落盘、再用随包 ffmpeg(`third_party/bytevc2/`,
+以 `libbvc2transcode.so` 放进 jniLibs)转成明文 H.264 文件回放,播放器侧按「明文本地
+文件」处理。执行这个二进制要求安装期解包原生库(`android/app/build.gradle.kts` 的
+`packaging.jniLibs.useLegacyPackaging`),执行桥在
+`Bytevc2TranscodePlugin.kt`;没有该 `.so` 的安装(缺转码器、桌面端、旧包)不发这个
+参数,行为与之前完全一致。
+
+gzip 解压读取全部成员并保持输出上限；空首成员不会再遮住后续正文。损坏、
+截断或超过上限的后续成员不能被静默丢弃。HTTP 解压失败时仍保留损坏原文供
+解析器拒绝，不当作有效空 gzip 重试；密文解压路径仍报错，不以部分正文当成功响应。
+
+取流用途通过本地参数 `_playback_purpose` 传给 Rust，只接受 `foreground`、
+`prefetch`、`other`，缺省或未知值归为 `other`。地址缓存的真实发起调用显式
+传入预取标记；下载器归为 `other`。ApiClient 在请求合并键形成之后才给实际
+发送 URI 添加用途，因此同一集的前台与预取仍能共享请求，Rust 用途代表发送
+发起者，加入者可由 Dart 的 `queue=shared` 区分。该参数不进入上游 URL、
+gzip 请求体或签名，也不增加逐调用唯一参数。
+
+V5 诊断沿用 `source_trace_id` 作为 `request`，逐次记录用途、尝试序号、同次
+运行可比较的匿名设备代号和取流并发数（包含设备等待及重试退避，取消时释放）。
+HTTP 日志记录最终状态、版本、重定向次数及方法、编码类别、Content-Length、
+原始实体字节／块数、解压后字节数、收头／收体／解压耗时及解压结果；发送体
+只记长度与签名 stub 匹配布尔值。重定向仍由默认 `limited(10)` 策略决定。
+日志不含地址、查询、正文、签名或真实设备身份，可以区分空实体、有效空 gzip
+及损坏 gzip；仍需真实请求证据才能判定现网原因。
+
+推荐流内联播放器失败时，在清除当前集身份之前作废该集的地址缓存与当前档位
+快照，点击重试会重新取流，不再重开两分钟缓存内的失败地址。新播放器仍等旧
+解码器释放完成；未出首帧的失败不覆盖已有续播记录。定向回归覆盖空响应恢复、
+重试耗尽、网络/空响应共用预算、非空 JSON 和普通接口不受影响，以及失效地址
+重取、释放等待与续播点保留。
+
+2026-11-19 在独立播放修复工作区（基线 `18161a89`）验证：6 个受影响 Flutter
+测试文件共 103 项、Rust `upstream_retry` 10 项和 `video_codec_gate` 9 项通过，
+Flutter 静态分析与针对这些 Rust 目标的 clippy 通过。新增空响应及失败地址缓存
+回归在修改前实际失败，修改后通过。应用版本保持基线的 `1.0.205+210`，未改
+Rust 签名算法、生成绑定或依赖锁。
+
+首次恢复逻辑验证使用 MuMu 6.8.8.0 / Android 12 / 实例 `1`，x86_64 经 ARM
+转译，实际界面 1600×900 横屏；保留数据安装 arm64 split release
+（versionCode `2210`）。该恢复逻辑包 SHA-256 为
+`9bb58d6b8c8e2e44db52b8e8f6a156c1eac5637b8a3947719a211c6e8860d37c`，
+签名、ABI、ELF/ZIP 16 KiB 对齐及安装后哈希检查通过。原 `1.0.204` 包在推荐
+流复现空模型取流失败；最新基线 CI 包已采用 v5，但也观察到零字节响应，手动
+重试后能播放。因此本次只补充恢复逻辑，不把旧包问题统称为解码失败。
+
+修复包实际观察到《弃爱从商：我功成名就不负少年时》的推荐播放、选集 2/3、
+后续自动连播及后台返回；《重生1988，从做倒爷开始起家》的推荐播放也有连续
+视频画面。安装时间之后的 5 条全页加载诊断都以首帧结束，其中分别包含在线、
+预热与离线来源，不能把这些全算成在线成功。日志中仍有上游持续零字节响应在
+三次尝试后耗尽；当前观察页面仍正常播放，但未证明所有失败请求都是后台预取，
+也未证明所有作品和网络条件都稳定。未观察到应用崩溃或原生 Playback error。
+本轮未验证实际听感、硬件解码、16 KiB 页设备、所有窗口尺寸或长时间压力场景。
+
+验证结束返回首页，保留修复包与应用数据，显示/字体/旋转设置与测试前一致；
+未清空日志、缓存或设备池。原始截图、日志、包校验和导出证据保留在仓库外。
+这次设备证据不归属日志 PR 或主工作区其他未提交修改。
+
+2026-11-19 晚间在同一独立工作区补充多成员 gzip 修复和 V5 安全诊断后，
+重建 Android Rust 双 ABI 与 arm64 split release，版本仍为 `1.0.205+210`
+（versionCode `2210`）。本轮留存于仓库外证据目录的验证包 SHA-256 为
+`766fed10f3441bb2730b335390f1233d1a942aa028793f2bd64eed36dd027134`，
+签名、ABI、ELF/ZIP 16 KiB 对齐及安装后哈希核对通过。修改的是既有 gzip、
+恢复与本地用途断言；本轮没有新增测试文件或测试函数。受影响 Flutter 用例、
+Rust gzip/重试/视频契约用例和静态检查通过；没有运行完整本地套件或本轮 CI。
+
+MuMuManager 本轮查得实例 `1` / Android 12 / `127.0.0.1:16416`，仍为
+x86_64 经 ARM 转译。实际路径为首页短剧推荐 →《退役归来，这个保镖不好惹》
+详情 → 开始观看 → 第 1 集。前台请求 `request=1` 在线取得 24,904 字节模型、
+5 档可播放画质；同次 `player-quality trace=1` 记录与第 1 集加载记录的时序、
+attempt 一致。持久化 `player-load` 显示 `source=network`、`outcome=firstFrame`，
+取址 5,260ms、首帧总耗时 8,014ms、发出播放后到首帧 2,481ms。
+相隔 5 秒的截图显示视频内容继续变化；采样窗口未见 FATAL EXCEPTION 或原生
+Playback error。该在线首帧样本不能与早前预热、离线样本合并计算在线成功率。
+
+本轮最终采样为 12 次逻辑 V5 调用、26 次 HTTP 尝试，其中 21 次空实体尝试，
+7 次逻辑调用耗尽同设备的三次尝试。26 次均为 HTTP/1.1 200、无 Content-Encoding、
+无重定向、最终方法 POST，且发送体 `stub_matches=true`。空尝试明确记录
+`content_len=0 raw_bytes=0 raw_chunks=0 body_len=0 gzip=false`，因此这份实际
+样本的失败是远端响应链返回的空 HTTP 实体；多成员 gzip 遗漏和 POST 重定向
+改写均不能解释这些样本。尚不能判断空实体来自业务服务、网关或其他中间层。
+
+按逻辑调用计，foreground 1 次成功、prefetch 1 次失败、other 10 次（4 成功、
+6 失败）。本次 7 个空失败均来自后台用途，但前台只有 1 次样本，不能外推为
+前台不受影响。匿名设备代号 D1/D5 共 5 次尝试均非空，D2/D3/D4 共 21 次尝试
+均为空；这是运行内关联，同设备重试不是独立样本，不能据此判定鉴权失败或
+永久退休设备。源码存在旧设备空 `cdid` 使用兼容值的路径，但安全日志没有
+对应标记，尚未证明该路径与失败相关。共享版本/UA 常量及其与服务端设备
+历史的交互仍缺对照证据，不根据这次关联改动签名身份或设备轮换契约。
+
+原计划最多旁观 6 次逻辑取流，播放期间既有自动缓存/下载任务额外发起请求，
+实测达到 12 次后已立即停止应用，阻止继续采样。随后只重启应用导出已有
+应用 + 核心持久日志，重启进程没有 V5 HTTP 请求；未清空应用数据、日志、缓存
+或设备池。结束返回首页，保留本轮包，字体/显示/旋转与开始前一致，移除本轮
+临时 UI dump，并将原先关闭的 MuMu 实例恢复关闭。
+
+本轮证据位于仓库外
+`%TEMP%\fqapp-v5-gzip-device-62009432559c4093a2549134d0bfa2d2`，安全汇总见
+`stopped-final-safe-traces.txt`、`exported-app-core-safe-metrics.json` 与 `report.md`；
+原始导出和 logcat 仅本机保留。现网空响应根因、长时间稳定性、实际听感、
+硬件解码和实体手机仍未验证，本轮不能交付为“V5 空响应已完全修复”。
+
+2026-11-20 使用应用已启动的本地只读 API 单独验证前台取流，不打开播放器界面：
+一次 `mode=stream` 请求返回本地 HTTP 500，内部连续三次收到上游 HTTP/1.1 200
+空实体（`content_len=0 raw_bytes=0 body_len=0`），三次均为同一匿名设备，签名
+stub 与发送体匹配；第三次后按预算停止，没有 fallback、下载、设备替换或注册。
+这确认空响应重试路径在真实上游链路按预期执行，但该请求仍未取得非空模型，不能
+据此判定空响应根因。实例结束时恢复关闭并移除临时端口转发。安全日志与报告
+保留在仓库外 `%TEMP%\fqapp-direct-api-20261120`。
+
+2026-11-20 播放门兜底(移植 `N3urda/hongguoTV` 的 `streamLadderWithCompatibility`):
+v5 空实体不再在同一身份上重试,改为按播放门顺序切换。`rust/src/upstream/playback_routes.rs`
+维护 4 条门的进程级健康度:v5 玩家门加 3 个 `video_tab` 域名(签名 GET,与 v5 同一
+身份、同一设备 pin,响应按 `data.video_model_data.<id>.video_model` 重写成取流器已
+支持的 `data.<id>.video_model` 形状);空实体停 30 秒,其他失败停 5 秒,成功清零并
+优先。所有门都被空实体停用时,前台请求可做一次身份轮换:先用池内其他已注册设备
+(`get_excluding`),池里只剩失败设备时再走 `replace_failed` 重注册;轮换受 30 秒
+冷却(注册失败 5 秒)、连续 2 轮全空门槛、单请求一次上限约束,剩余预算不足 1.5 秒
+不轮换。预取不探冷却门、不轮换、不注册。单请求最多 6 次尝试。
+
+与参考实现的差异(有意保留):我们的匿名身份来自上限 20 台的共享设备池,不像参考
+实现可以无限重注册,所以「空就换身份」降级为「带冷却的一次轮换」,不让空响应
+啃光设备池;参考实现的单集播放协议 route(不同签名栈、我们从未验证)没有搬;
+`hl`/`lf` 两个域名只在主打空后兜底,失败只计冷却不再重试。诊断沿用不带内容的
+格式,新增 `event=door route=v5|tab-b|tab-hl|tab-lf result=ok|empty|failed`、
+`event=rotate result=ok|unavailable|deadline`、`event=final result=empty attempts=
+empty_rounds= rotations=`,仍不记录地址、查询、正文、签名或真实设备身份。
+
+定向验证:Rust `playback_recovery` 6 项(兜底同身份、非空 v5 不兜底、业务拒绝不算
+可播、全空一次轮换且有界、预取不探冷却门、冷却门下次被跳过),`upstream_retry` 8 项
+(空实体单次返回且带设备身份,503 仍同设备重试),`video_codec_gate` 9 项、
+`mock_upstream_contract` 9 项、`playback_routes` 单元 7 项通过;`flutter analyze` 与
+针对这些目标的 clippy 通过。未跑完整本地套件与 CI,未改版本、FRB 生成、Dart 与
+签名算法。**尚未验证**:现网是否接受我们用通用签名打的 `video_tab` GET、`hl`/`lf`
+域名是否可达、空实体是否真的按身份相关——这三项必须靠设备采样,不能由单元测试
+或本次改动声称解决。
+
+2026-11-20 同一包的设备采样(8 次 UI 切集、18 次逻辑请求、22 次门尝试)把上述三项
+测出了结果:`video_tab` 三域名 **6/6 均为 HTTP 200 + 0 字节且耗时 72–139 ms**,
+属验签阶段短路(我们用的是通用请求签名 argus/ladon 的 aid 1967 档,而这扇门属于
+播放器族),因此该门现状不可用;v5 正常时返回 24,308–24,632 B、五档,空实体仅 81/86 ms。
+同时发现空实体是**单次请求级**而非身份级:同一次轮换后的身份在 15.1 s 与 20–34 s
+都拿到模型,39.87 s 却是空实体——两次空实体之后约 250–300 ms v5 就自行恢复。
+据此增加同门重探:空实体后等 250 ms 用**同一身份**再打一次同一扇门,仅前台、每请求
+一次、且剩余预算不足 1 s 时不做;重探仍空才让该门进入 30 秒冷却。已被冷却钉住的
+门被主动探测时不再重探,避免把一次探测变成两次。定向回归新增同门重探成功(两次
+请求、同一身份、不换门)、后台空实体不重探、预取零请求与冷却期不二次轮换。
+
+据此把 `video_tab` 门改成播放器族签名的 GET 形态:与 v5 同一套 Medusa/Helios/Khronos
+信封(`sign/v5.rs::sign_playback_v5_get`),同一身份包(aid 8662 / novelread / 74332),
+空 body 的摘要参与分支选择,不带 `Content-Type`/`Content-Encoding`/`x-ss-stub` ——
+带 body 头却没有 body 正是通用签名那版被判 200+0 的形态。`hl`/`lf` 两个域名一并删除
+(采样里毫无收益,只增加延迟),兜底门只剩 `api5-normal-sinfonlineb` 一个域名,
+诊断代号统一为 `tab-b`。该门是否真的可用仍需下一轮设备采样验证:只有出现
+`event=door route=tab-b result=ok` 才算这扇门成立。
+
+2026-11-21 信封对齐 + 官方单集门(基线 `f1e6d9ad`,并入 PR #457 的整套换身份重取):
+
+`rust/src/sign/v5.rs::playback_query` 按官方客户端 2026-11-21 抓包
+(`log0-applog-lf.fqnovel.com_*.har`)补齐取流请求信封:新增 `ac/os/ssmix/device_brand/
+language/os_api/manifest_version_code/resolution/dpi/host_abi/dragon_device_type/
+pv_player/compliance_status/need_personal_recommend/player_so_load/is_android_pad_screen`
+共 16 个字段,沿用既有播放器 PGT-AN10 / Android 12 档案,品牌与 Medusa 内值一致为
+HONOR,`os_api=31`,分辨率按同机型规格取 `1312*2848`,DPI 按 HAR 回退为 480。
+版本代码派生字段统一用本地 `VERSION_CODE`,`version_name` 保持配套的 `7.4.3.32`;
+字段顺序进入查询哈希与 `_rticket`
+分支选择,`_rticket` branch-12 不变式与「身份不足即拒绝签名」保持。对照抓包:官方
+单集门查询串共 31 个字段,我们发送 29 个,只差 `klink_egdi` 与 `rom_version`(身份/ROM
+派生,不臆造,故本批不发);请求体逐字对齐(`content_type:1004`、`device_level:3`、
+`video_platform:3`、`source:9`、`video_id` 为字符串;抓包里另有不带 `source` 的变体),
+抓包含六个不同集的成功单集请求,解码后正文为 16106–22576 字节,每集五档。
+其中一集五档全 `bytevc2`,四集全 `bytevc1`,另有一集混合两类;非空与五档不等于可播。
+
+新增官方单集门 `Door::VideoModel`(`POST /novel/player/video_model/v1/`,标签 `model-a`/`model-c`),
+请求体按抓包逐字构造(`biz_param{device_level:3, video_platform:3, source:9, ...}` +
+`content_type:1004` + `video_id`)并 gzip,复用同一套 Medusa/Helios/Khronos 信封与同一
+身份。门顺序:v5 → `model-a` → `model-c` → `tab-b` 兜底;批量门 `multi_video_model/v1`
+本轮不接。按计划先用与 v5 同族的 `api5-normal-sinfonlinea`,MuMu B 组单集门 20 次
+均为 200+0 后,再追加抓包 host `api5-normal-sinfonlinec` 独立跟踪健康度并复测。
+
+失败语义:门返回非空 body 后,若解析结果只有不可播档位(全 `bytevc2`/缺宽高/无地址),
+不再直接终结——用请求内 `skip_routes` 跳过该门继续下一条门,用尽门后才做一次身份
+轮换取回(命中 `Found` 才改用新响应,`CODEC_RETRY_BUDGET` 2.5 s、受 `work_deadline`
+约束,轮换阶段预留至少 1 s 给重取,只做一次);替换身份后按原顺序重问所有门,不受
+上一身份空实体造成的门冷却影响,但不突破总尝试上限。整请求共享总尝试计数与单次重探
+标记,不嵌套第二次轮换;四门初轮加一次重探后仅剩三次替换尝试,因此替换轮的 `tab-b`
+可能因预算耗尽而不再重问。
+不可播判定只写请求级集合,不污染门健康度。门与身份都试尽仍不可播时保留「该视频暂不支持
+播放」。
+
+冷却窗口:前台请求在所有门都被冷却钉住时,`plan()` 返回**全部**门(按 `blocked_until`
+升序)而不是只探最早恢复的一条;同门重探由「仅 v5」放宽到「任意门、每请求一次」;预取
+保持不探冷却门、不轮换、不注册。`MAX_PLAYBACK_ATTEMPTS` 仍为 8。
+
+可观测:`stream trace`/`v5 trace` 既有门尝试行新增 `route/http_status/body_len/
+elapsed_ms/result/envelope=full|legacy`,`event=final` 的 `selected_source` 改为实际应答
+门代号,用于把「空实体」归因到信封形态;仍不记录地址、查询、正文、签名或真实身份。
+
+定向验证:Rust `playback_recovery` 18 项(新增 bytevc2 换门换身份命中 h265、全门不可播
+仍有界终结、冷却期前台探全门/预取零请求)、`video_codec_gate` 10 项(新增单集门
+`data.video_model` 对象/字符串两形态与 `device_level/video_platform` 断言)、
+`upstream_retry` 9 项、`mock_upstream_contract` 8 项、`playback_routes` 单元 10 项、
+`playback_trace` 单元 2 项、`endpoints::video` 单元 34 项、`sign::v5` 单元 4 项
+(完整字段集与顺序 golden、branch-12、身份拒绝)、`crypto_vectors` 13 项已执行。
+四门最终版本的 `cargo clippy --locked --all-targets -- -D warnings`、聚焦 rustfmt 检查、
+`git diff --check` 与 `flutter analyze --no-pub` 已执行且无问题。未跑完整本地套件与 CI,
+未改版本、依赖、FRB 生成或 Dart 契约;这些检查只验证回归边界,不代替真实播放验收。
+
+2026-11-22 MuMu 真实上游采样（Android 12 / API 32,应用 ARM 转译）:
+
+在独立临时目录拷贝相同加密设备池,每次初始化重置请求状态,从真实本地只读 HTTP
+`mode=stream` API 调用当前核心。A 使用基线 `f1e6d9ad` 信封重新签名,B 使用本次完整信封,
+其余恢复逻辑相同;同一集每组 20 次,所有请求初始身份一致。临时转发器保留每门原始
+scheme/host/path/query 与 gzip body,`fallback_api` 按服务端原地址无签名透传,不伪造响应。
+主取流路径 A/B 各 20/20 返回 HTTP 200 与五档 `bytevc1`,首 v5 门 200 空体均为 0/20;
+端到端 p50 为 464/463 ms,p95 为 590/591 ms。完整信封在这个真实路径中可用,但基线没有
+复现偶发空体,**无法证明空实体率下降 ≥50%,信封缺字段的根因假设尚未成立**。
+
+主取流已从 v5 + `fallback_api` 恢复地址,不会自然触发后面的门。因此另以同一集、同一
+身份、同一 gzip body 对单集 a/c 两个 host 分别直接签名采样,A/B 各 host 各 20 次,
+全部为 HTTP 200 + 0 字节。a/c 门在本次 `aid=8662/novelread` 身份与版本下仍未成立,
+不把域名追加或自动化测试通过写成现网恢复证据。HAR 中五档全 `bytevc2` 的另一集也做了
+一对真实取流,本次 v5 返回五档 `bytevc1` 且成功;它未触发不可播换门/换身份路径,该路径的
+真实恢复效果仍待偶发样本验证。
+
+脱敏采样记录保留在本地忽略目录 `build/validation/playback/samples-stream.json` 与
+`samples-single-doors.json`,只含状态、字节数、耗时、档数、codec 和身份一致布尔值。
+首轮转发器漏转 `fallback_api` 造成的本地 500 是采样工具缺陷,其结果不纳入产品失败统计。
+设备原应用池仅只读拷贝,采样后原池 SHA-256 保持不变;临时密钥、含身份的控制文件与设备
+探针已清理。本机删除临时二进制/目录的命令被执行策略拒绝,忽略目录仍保留无密钥的加密
+`seed.pool` 副本与构建材料,未纳入源码改动,不应分发。
+Windows 桌面首帧**未验证**:本机 `flutter doctor -v` 确认缺 Visual Studio C++ 桌面工具链,
+且没有可运行的现有 Windows 构建。MuMu 核心取流成功不证明 Android/Windows 播放器出首帧,
+也不证明偶发黑屏已经完全解决。
+
+2026-11-22 MuMu 产品播放页验证推进（未完成首帧验收）:
+
+从当前默认 `lib/main.dart` 构建独立 `com.fqapp.fqapp.debug`，不覆盖原包、不拷贝
+其设备池/Keystore，不使用上次转发 probe。仅本地 ignored Gradle init-script 给
+插件 buildscript 使用项目已有 Maven 镜像、设置独立包后缀和 debug 签名，并在 generated
+assets 将 loopback listener 改为 `18922`，避免与原包 `18921` 冲突；源配置不变，
+上游门、签名和播放器产品代码不变。该包仅用于验证，不是正式发布构建。
+
+profile 与精简 release 包均已构建；release 包为 46256713 字节，SHA-256
+`5cef0f40b65ffd45203b46f002376d4bdedbb19df0f2a35b4bfb06111156b754`，aapt 核对独立包、
+`1.0.205+2210` 与单 ABI，apksigner v2 验证成功。APK 内 Rust 库与当前源码的
+release → merged → stripped 构建逐段哈希匹配，内置配置差异仅 loopback port。
+记录在 `build/validation/playback-ui/artifact-release.json` 与 `verification.md`。
+
+profile 安装被设备空间拒绝，`pm install-create` 明确报告
+`Requested internal only, but not enough space`。构建期间 MuMu 实例停止，原因未确认；
+同一实例正常重启后，精简 release 包仍返回 `INSTALL_FAILED_INSUFFICIENT_STORAGE`。
+设备 `/data` 仅约 194 MiB 可用，独立包未安装，原包未卸载或覆盖，也未主动清其数据/缓存、
+改系统存储水位或终止其他任务进程。原包对照截图出现非本轮输入，观察窗口受到污染，
+不计为播放证据。因此本轮未验证 Android 首帧、换集、重试，未捕获偶发播放失败；
+当时待实例扩容或用户明确授权清理指定资源后，用现有独立包继续真实页面验收。
+
+同日 22:33–22:35，用户明确选择清理、不扩容。只读盘点旧实例时，安装目录合计约
+926 MiB，原产品与官方应用私有数据合计约 813 MiB，设备临时目录约 21 MiB；
+未细分的应用数据不能全部称作可删缓存。盘点期间实例 0 与对应目录消失，
+MuMuManager 仅列出实例 1；变更方式和执行者未核实，本轮没有删除、卸载、清数据或扩容。
+实例 1 / `127.0.0.1:16416` 可用约 118 GiB，已有其他测试包，未删除或覆盖。
+原空间阻塞不应直接沿用到这个新目标，但接管实例与当前包真实播放验证仍未完成。
+
+2026-11-23 独立包真实播放验收(Android 首帧成立,空实体仍在):
+
+在用户授权的现有 MuMu 实例 1(Android 12 / API 32,`127.0.0.1:16416`,ARM 转译,无 root)
+安装独立 `com.fqapp.fqapp.debug` release 验证包;不新建、克隆或导入实例,不动其他测试包。
+首轮启动崩溃属验证构建缺陷而非产品故障:直接 Gradle 打包绕过了 Flutter 的 Java 注册生成,
+APK 缺 `io.flutter.plugins.GeneratedPluginRegistrant`,启动即类缺失后 SIGSEGV
+(`JNI is not initialized`)。按 owning source 改用标准 `flutter build apk --release
+--config-only` 生成 registrant(lockfile 与依赖未变),重新打包后启动正常;APK SHA-256
+`fead78104b8c361dc7aac678084b15ae05ddc03f73a3716ce591a59894b2bc46`,46371401 字节,
+单 ABI,包内 Rust 库哈希与当前构建一致。
+
+真实播放成立:进入短剧产品播放页,实际渲染首帧,第 1→10→20 集切换与暂停/续播均观察到
+画面和进度推进,档位显示 1080P。空实体在真实路径复现:一次前台取流的 `stream trace` 为
+`route=v5|model-a|model-c http_status=200 body_len=0 result=empty envelope=full`,同一请求
+随后 `route=tab-b body_len=22019 result=ok`;门冷却后后续请求直接走 `tab-b`,命中五档
+(1080P/720P/540P/480P/360P)或单档 `bytevc1`,`bytevc2` 档位被丢弃。
+
+结论边界:补齐信封的请求仍返回 200 空体,信封缺字段的根因假设**未被证实**;用户可见失败
+未复现是因为 `tab-b` 兜底成功,不能据此宣称偶发黑屏已修复。20 次取样与失败分类
+(空实体/非空不可播/解码失败)尚未汇总,Windows 桌面首帧仍未验证。脱敏 trace 与截图
+保存于忽略目录 `build/validation/playback-ui/`,不落播放地址、查询、正文、签名或真实身份。
+
+2026-11-23 媒体层 DNS 失败与脱敏诊断:
+
+当前 CI APK 在现有实例 1 上复现独立失败:`tab-b` 已返回 200 且 body 非空,但
+`CryptoNative` 的 `httpSize`/`streamConnect` 连续报 `UnknownHostException`,ExoPlayer
+最终以 `Cannot determine a valid MP4 file length` 或 `MP4 payload read failed` 结束;
+点击重试仍失败。重启应用并重新取流后,同一集正常出画面,下一部剧也正常,说明这是
+瞬时媒体 CDN/DNS 失败,不是取流 200 空实体,也不是整机断网。失败细节只保存在
+`build/validation/playback-ui/`,未记录 URL、查询、签名或真实身份。
+
+为定位此类问题,`HttpRangeClient` 的失败日志改为结构化脱敏字段:
+`phase=size|range|prepare|connect|read`、`host=<host SHA-256 前 16 hex>`、
+`error=<异常类名>`、`attempt`、`status`;不记录完整 URL、查询、正文或签名。
+`HttpRangeDiagnosticsTest` 增加 DNS 失败与 403 脱敏断言。本批只增加可观测性,
+不改变重试、取流或播放行为;媒体 DNS 的恢复策略需在 host 指纹分布确认后另做。
 
 2026-11-15 在 MuMu 6.8.8 / Android 12 / 实例 0 的实际上游路径中，横屏和竖屏
 样本均显示 1080P、720P、540P、480P、360P，Rust 与 Dart 同次请求记录的档位数一致。
@@ -1141,6 +1476,90 @@ stream 与整集下载共用这一次模型解析。HTTP 401/403 仍按设备鉴
 - 生成 Rust 核心后构建 arm64 APK，默认用 MuMu 验证 `/health`、搜索、阅读和加密视频播放；硬件相关行为仍需另行真机验证。Android 的纯 JVM 测试不会加载这两份库。
 
 ### 2. 调试技巧
+
+#### 应用内日志结构
+
+`lib/services/app_log.dart` 保留 `AppLog.d/i/w/e`、捕获安装、内存缓冲及
+`startPersistence/flush` 调用方式。具体职责放在 `lib/services/logging/`：
+
+- `log_models.dart`：条目、级别、来源与筛选条件，不依赖页面或平台 I/O。
+- `log_codec.dart`：捕获、历史回读、核心读取及文本导出的统一脱敏与多行解析。
+- `log_file_store.dart`：UTF-8 文件轮换、启动期间条目排队、串行 flush 与关闭。
+- `log_viewer_controller.dart`：筛选、冻结/跟随、条目身份复用、轮询与生命周期代次。
+- `log_export.dart`：不可变导出快照；区分核心文件不可读与空文件。
+- `rust_log_source.dart`：宿主注入的核心读取；无时区后缀的旧核心时间戳按 UTC
+  解析，显式 `Z`/偏移保持原语义，应用日志仍按本地时间解析。
+
+`LogViewerPage` 负责页面、滚动、弹层和剪贴板/TXT/分享操作，经典与档案主题
+共用状态。日志格式、文件路径和清空当前视图的语义不变，不删除已有日志文件。
+历史回读不重复写入，历史及核心条目在显示/导出前脱敏；不改写旧文件，也不改变
+Rust 日志生产端的格式或平台启用范围。
+
+#### 听书加载与播放失败
+
+听书页通过 `/api/v1/audio/books/{bookId}/chapters/{chapterId}` 获取
+`playinfo`；旧 `/audio/play` 的重试策略不能用于解释这条播放路径。
+HTTP 状态、响应体业务码、CDN 读取和原生解码失败要分别取证；单个 403
+或通用“播放出错”提示不足以认定风控，章末附近的位置也可能来自历史恢复。
+
+手动“重试”保留章节、当前音色和历史进度，重新获取在线播放模型，失效范围
+为当前章节的所有音色缓存键（包含默认音色回退别名）。完整离线下载仍优先使用。
+旧播放代次的在途请求不能回填在线缓存；页面关闭、换章或再次重试后，旧结果
+不能接管新播放器。沿用现有有限网络重试策略，不新增自动切章或通用重试循环。
+
+应用日志的 `audio` 来源记录 `source`（local/cache/network）、`seek`、
+`started`、`failed` 和 `completed`。失败记录错误类型、HTTP/业务/原生数字码、
+位置和时长；完成记录片尾跳过标记。日志不记录签名 URL、内容密钥或设备标识。
+明确的 Dart/后端超时、HTTP 408 和 Media3 网络超时 2002 显示“加载超时”；
+取消和其他未知错误保留通用提示，不能只按错误文字推断超时。
+
+真实使用中再次失败时，按以下顺序保留现场：
+
+1. 截图并记下发生时间、应用版本和设备，以及书名、章节、音色、倍速、
+   自动连播/片尾设置和网络类型。说明失败前是自然播放、历史续播还是拖动定位；
+   离线下载及缓存状态不确定时标为未知。注明所用版本是否包含本轮诊断改动。
+2. 保持音色和网络条件，点击一次“重试”，记录点击时间、是否恢复、恢复位置
+   及音色是否保留。若提示限流或等待时间，按提示等待，不连续点击制造请求。
+3. 在重启或清理缓存前，及时进入“设置 → 服务 → 运行日志 → 日志操作 →
+   导出应用 + 核心”，保留导出的 TXT。若提示核心日志未获取，仍保留应用日志
+   并记录该提示；不附原始 playinfo 响应、完整签名 URL 或设备池文件。
+4. 将截图、两次时间和操作结果与 TXT 一起核对：取源查看 `source` 的
+   `origin` 和 `refresh`，播放查看同一 `generation` 的 `seek/started/failed/completed`，
+   再分别分析 HTTP、业务和原生错误码。在线重试应出现网络取源 `refresh=true`；
+   完整离线下载仍可能走 local。旧版缺少这些事件时注明字段缺失，不能据此
+   判定没有发生错误，也不能仅凭 403 或章末位置判定风控或完成。
+
+2026-11-22 至 23 日使用现有 MuMu Android 12 实例 1、独立包名验证产品
+`main.dart`，后端核心从当前工作区重建，使用真实 LibraryStore 和线上音频。
+升级版 1.9 倍速下，第 2 章从 0 秒自然完成后自动进入第 3 章；暂停并正常退出
+后重启进程，第 3 章的 146.038 秒进度准确恢复。应用内“导出应用 + 核心”
+包含 source/seek/started/completed 时间线。该记录补充先前诊断入口的证据，
+不代表原截图的间歇故障已复现。临时断网时模拟器 ADB shell 失去响应，
+重启现有实例并恢复 Wi-Fi 后收尾；完整产品包的失败重试仍未验证，不能用
+诊断包的受控 403 恢复结果代替。未验证实体设备或实际听感，未运行 CI。
+
+定向回归：
+
+```bash
+flutter test --no-pub test/app_log_test.dart test/log_file_store_test.dart test/log_codec_test.dart test/log_viewer_controller_test.dart test/log_viewer_page_test.dart test/log_viewer_eink_test.dart
+```
+
+2026-11-19 使用 MuMu 6.8.8.0 / Android 12 实例 `1` 验证 arm64 release，
+x86_64 经 ARM 转译，实际界面为 1600×900 横屏。测试包为原开发工作区的
+`1.0.204+209`（split versionCode `2209`），SHA-256 为
+`ed744748e81b7a138998a87d23e40c2ba8dead688fa3ffc2661414621fed087b`；
+保留数据升级，签名、ABI、ELF/ZIP 16 KiB 对齐及安装后哈希检查通过。
+该设备证据只归属此包，不代表之后从更新的 `master` 整理出的 PR 集成版本已做
+设备验收，也不归属为工作区其他业务修改的验收。
+
+实际观察：来源切换、级别/关键词筛选、详情展开、轮询时保留展开状态、冻结/
+恢复跟随、TXT 筛选/全部/合并导出、后台返回和经典/档案主题均正常。重启前
+94 条应用日志全部回读，无遗漏或重复回写；重启后新增 6 条属于新会话。
+实测发现核心无时区后缀 UTC 被当作本地时间，导致近期筛选误排除新日志；上述
+解析层修正后重建并复测通过。复制仅验证成功回显，未核对外部剪贴板全文；
+分享显示无可处理应用，不计为成功发送。未清空数据，临时主题和系统设置已恢复，
+原始截图、日志和导出文本保留在仓库外。未见应用崩溃或 ANR；模拟器结果不代表
+真机性能、硬件兼容性或 16 KiB 页设备验证，也未覆盖所有敏感日志输入。
 
 沿用 MuMu 工作流中已确认的 `$adb` 和 `$serial`。`run-as` 仅适用于可调试构建，默认 release 包不可据此读取私有日志；可改看应用内诊断及 `logcat`，不要为取日志清空数据或改装调试包。
 

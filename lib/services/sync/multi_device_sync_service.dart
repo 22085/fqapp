@@ -1,20 +1,23 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:isolate';
+
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:hive_ce/hive.dart';
+
 import '../../models/library_backup.dart';
 import '../encrypted_hive.dart';
-import '../library_backup_service.dart';
 import '../library_store.dart';
 import '../shelf_store.dart';
 import '../webdav_client.dart';
 import '../legacy_webdav_config_store.dart';
 import 'sync_document.dart';
+import 'sync_capture_work.dart';
 import 'sync_snapshot.dart';
 import 'sync_transport.dart';
 import 'cloud_sync_transport.dart';
@@ -37,14 +40,22 @@ typedef _PreparedProfile = ({
   Map<String, dynamic>? pending,
 });
 
+bool isWebDavProvider(String? provider) =>
+    provider == 'webdav' || provider == 'webdav-compat';
+
 class SyncProvider {
   const SyncProvider(this.id, this.title, this.help);
   final String id, title, help;
   bool get available =>
-      id == 'webdav' ||
+      isWebDavProvider(id) ||
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
   static const values = [
     SyncProvider('webdav', 'WebDAV', '连接 WebDAV 服务并选择同步目录。'),
+    SyncProvider(
+      'webdav-compat',
+      'WebDAV 兼容模式',
+      '用于坚果云等不提供强 ETag 的服务。每台设备单独写入快照，所有设备需选择此模式。',
+    ),
     SyncProvider('ali', '阿里云盘', '官方手机网页登录，使用网页授权凭据直接读写，支持刷新令牌；登录后可验证持续同步。'),
     SyncProvider(
       'quark',
@@ -84,7 +95,7 @@ class MultiDeviceSyncService extends ChangeNotifier
   @override
   bool get needsWebDavReview =>
       (_originalWebDav?.enabled == true && !hasSelectedSyncBackend) ||
-      (_config['provider'] == 'webdav' &&
+      (isWebDavProvider(_config['provider']) &&
           Uri.tryParse(_config['endpoint'] ?? '')?.scheme != 'https');
 
   Map<String, String> _savedWebDav() {
@@ -106,6 +117,12 @@ class MultiDeviceSyncService extends ChangeNotifier
   Map<String, String> get config => Map.unmodifiable(_config);
   @override
   Map<String, String> configFor(String provider) {
+    if (provider == 'webdav-compat') {
+      final saved = _providerConfigs[provider];
+      if (saved != null) return Map.unmodifiable(saved);
+      final legacy = Map.of(_savedWebDav())..remove('profile');
+      return Map.unmodifiable({...legacy, 'provider': provider});
+    }
     if (provider == 'webdav') {
       if (_config['provider'] == 'webdav') return config;
       return _savedWebDav();
@@ -134,6 +151,7 @@ class MultiDeviceSyncService extends ChangeNotifier
   Future<void>? _running;
   Timer? _timer;
   Timer? _webDavPoll;
+  StreamSubscription<BoxEvent>? _historySubscription;
   DateTime? _lastAttempt;
   SyncTransport? _activeTransport;
   UpstreamWebDavExchange? _activeUpstream;
@@ -209,20 +227,20 @@ class MultiDeviceSyncService extends ChangeNotifier
       _applyPreparedProfile(
         _readProfileState(_profile) ?? _newPreparedProfile(),
       );
+      LibraryStore.instance.keepHistoryForSync = hasSelectedSyncBackend;
       _ready = true;
       if (needsWebDavReview) {
         status = '请确认 HTTPS WebDAV 配置和目录后切换到多端同步';
       }
-      LibraryStore.instance.historyListenable.addListener(_changed);
+      _historySubscription = LibraryStore.instance.historyChanges.listen(
+        _historyChanged,
+      );
       LibraryStore.instance.watchedListenable.addListener(_changed);
       ShelfStore.instance.listenable.addListener(_changed);
       WidgetsBinding.instance.addObserver(this);
       notifyListeners();
       _updateWebDavPolling(WidgetsBinding.instance.lifecycleState);
-      if (enabled) {
-        _changed();
-        unawaited(sync());
-      }
+      if (enabled) unawaited(_autoSync());
     } catch (error) {
       _ready = false;
       status = '同步初始化失败，本机阅读不受影响';
@@ -344,7 +362,7 @@ class MultiDeviceSyncService extends ChangeNotifier
     status = enabled ? '等待同步' : '未启用多端同步';
   }
 
-  String _encodePreparedProfile(
+  static String _encodePreparedProfile(
     _PreparedProfile prepared, {
     required bool includeUpstream,
   }) => jsonEncode({
@@ -360,19 +378,21 @@ class MultiDeviceSyncService extends ChangeNotifier
 
   Map<String, dynamic>? _pendingRecovery;
   Future<void> _persist({Map<String, dynamic>? pending}) async {
-    await _box!.put(
-      _profile,
-      _encodePreparedProfile((
-        actor: _actor,
-        document: _document,
-        baseline: _baseline,
-        sequence: _sequence,
-        published: _published,
-        lastSuccess: lastSuccess,
-        upstreamEstablished: _upstreamEstablished,
-        pending: pending,
-      ), includeUpstream: _config['provider'] == 'webdav'),
+    final prepared = (
+      actor: _actor,
+      document: _document,
+      baseline: _baseline,
+      sequence: _sequence,
+      published: _published,
+      lastSuccess: lastSuccess,
+      upstreamEstablished: _upstreamEstablished,
+      pending: pending,
     );
+    final includeUpstream = _config['provider'] == 'webdav';
+    final encoded = await Isolate.run(
+      () => _encodePreparedProfile(prepared, includeUpstream: includeUpstream),
+    );
+    await _box!.put(_profile, encoded);
     await _box!.flush();
     _journalDirty = false;
   }
@@ -387,7 +407,7 @@ class MultiDeviceSyncService extends ChangeNotifier
       _configuring = false;
       _updateWebDavPolling(WidgetsBinding.instance.lifecycleState);
     }
-    if (enabled) unawaited(sync());
+    if (enabled) unawaited(_autoSync());
   }
 
   Future<void> _configure(Map<String, String> config) async {
@@ -454,7 +474,9 @@ class MultiDeviceSyncService extends ChangeNotifier
         value: jsonEncode(next),
       );
       _timer?.cancel();
+      _captureWork.cancelHistoryDelay();
       _config = next;
+      LibraryStore.instance.keepHistoryForSync = hasSelectedSyncBackend;
       _profile = next['profile']!;
       _providerConfigs[key] = providerConfig;
       _applyPreparedProfile(prepared);
@@ -543,7 +565,7 @@ class MultiDeviceSyncService extends ChangeNotifier
 
   SyncTransport transportFor(Map<String, String> config) {
     final provider = config['provider'];
-    if (provider == 'webdav') {
+    if (isWebDavProvider(provider)) {
       return WebDavSyncTransport(
         config['endpoint'] ?? '',
         config['username'] ?? '',
@@ -563,28 +585,41 @@ class MultiDeviceSyncService extends ChangeNotifier
     );
   }
 
+  late final _captureWork = CoalescedSyncWork(
+    enqueue: (action) => _serial(action),
+    run: () async {
+      if (!enabled || !ready || _stopping) return;
+      try {
+        if (await _capture()) _schedule();
+      } catch (_) {
+        status = '本地同步日志写入失败，记录仍保存在本机';
+        _schedule();
+        notifyListeners();
+      }
+    },
+  );
+
   void _changed() {
     if (!enabled || !ready || _stopping) return;
-    unawaited(
-      _serial(() async {
-        try {
-          if (await _capture()) _schedule();
-        } catch (_) {
-          status = '本地同步日志写入失败，记录仍保存在本机';
-          _schedule();
-          notifyListeners();
-        }
-      }),
-    );
+    _captureWork.request();
+  }
+
+  void _historyChanged(BoxEvent event) {
+    if (!enabled || !ready || _stopping) return;
+    if (event.deleted) {
+      _changed();
+    } else {
+      _captureWork.requestAfterHistoryIdle();
+    }
   }
 
   void _schedule() {
     if (_timer?.isActive ?? false) return;
-    // Persist every change immediately; coalesce network writes to avoid quota
-    // exhaustion while a player updates its position every few seconds.
+    // Local scans coalesce independently; throttle network writes while a
+    // player updates its position every few seconds.
     final elapsed = DateTime.now().difference(_lastAttempt ?? DateTime(2000));
     final wait = elapsed.inSeconds >= 30 ? 2 : 30 - elapsed.inSeconds;
-    _timer = Timer(Duration(seconds: wait), () => unawaited(sync()));
+    _timer = Timer(Duration(seconds: wait), () => unawaited(_autoSync()));
   }
 
   void _updateWebDavPolling(AppLifecycleState? state) {
@@ -593,7 +628,7 @@ class MultiDeviceSyncService extends ChangeNotifier
         state == AppLifecycleState.resumed ||
         state == AppLifecycleState.inactive;
     if (!enabled ||
-        _config['provider'] != 'webdav' ||
+        !isWebDavProvider(_config['provider']) ||
         _stopping ||
         !foreground) {
       _webDavPoll?.cancel();
@@ -602,13 +637,23 @@ class MultiDeviceSyncService extends ChangeNotifier
     }
     _webDavPoll ??= Timer.periodic(
       const Duration(minutes: 2),
-      (_) => unawaited(sync()),
+      (_) => unawaited(_autoSync()),
     );
   }
 
-  Future<SyncSnapshot> _current() async => SyncSnapshot.fromBackup(
-    await LibraryBackupService().capture(includeAi: false),
-  );
+  Future<SyncSnapshot> _current() async {
+    final library = await LibraryStore.instance.backupSnapshot();
+    final shelf = ShelfStore.instance.records();
+    return Isolate.run(
+      () => SyncSnapshot.fromBackup(
+        LibraryBackup.capture(
+          shelf: shelf,
+          history: library.history,
+          watched: library.watched,
+        ),
+      ),
+    );
+  }
 
   static WebDavConfig _upstreamConfig(Map<String, String> config) =>
       WebDavConfig(
@@ -702,31 +747,15 @@ class MultiDeviceSyncService extends ChangeNotifier
   }
 
   Future<bool> _capture() async {
-    final current = await _current();
+    // Explicit sync and in-flight reconciliation already read current history.
+    _captureWork.cancelHistoryDelay();
+    final snapshot = await _current();
     final pending = _pendingRecovery;
-    if (pending != null) {
-      final desired = Map<String, dynamic>.from(pending);
-      final keys = {..._baseline.values.keys, ...desired.keys};
-      for (final key in keys) {
-        if (syncJson(current.values[key]) == syncJson(desired[key])) {
-          if (desired[key] == null) {
-            _baseline.values.remove(key);
-          } else {
-            _baseline.values[key] = Map<String, dynamic>.from(
-              desired[key] as Map,
-            );
-          }
-        }
-      }
-      _pendingRecovery = null;
-    }
-    final keys = {...current.values.keys, ..._baseline.values.keys};
+    final captured = await diffLocalSyncCapture(snapshot, _baseline, pending);
+    final current = captured.current;
     final firstCapture = _box!.get(_profile) == null;
-    var changed = false;
-    for (final key in keys) {
-      if (syncJson(current.values[key]) == syncJson(_baseline.values[key])) {
-        continue;
-      }
+    final changed = captured.changes.isNotEmpty;
+    for (final key in captured.changes.keys) {
       _document.change(
         key,
         current.values[key],
@@ -740,9 +769,9 @@ class MultiDeviceSyncService extends ChangeNotifier
                   .toInt()
             : DateTime.now().millisecondsSinceEpoch,
       );
-      changed = true;
     }
     _baseline = current;
+    _pendingRecovery = null;
     // Also persist recovery reconciliation when it produced no new operation.
     _journalDirty =
         _journalDirty ||
@@ -759,9 +788,24 @@ class MultiDeviceSyncService extends ChangeNotifier
     return transportFor(_config);
   }
 
+  Future<void> _autoSync() {
+    final state = WidgetsBinding.instance.lifecycleState;
+    if (!enabled ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      return Future.value();
+    }
+    return sync();
+  }
+
   @override
   Future<void> sync() {
-    if (!ready || !enabled || _stopping || _configuring) {
+    if (!ready ||
+        !hasSelectedSyncBackend ||
+        needsWebDavReview ||
+        _stopping ||
+        _configuring) {
       return Future.value();
     }
     if (_running != null) return _running!;
@@ -771,11 +815,12 @@ class MultiDeviceSyncService extends ChangeNotifier
   }
 
   Future<void> _applyMerged(SyncSnapshot desired) async {
+    final backup = await prepareMergedSyncApply(desired, _baseline);
+    if (backup == null) return;
     // Write the intent first so a process death cannot turn a downloaded
     // deletion into a fresh local add on next startup.
     await _persist(pending: desired.values);
     _pendingRecovery = desired.values;
-    final backup = desired.toBackup();
     final shelfApplied = await ShelfStore.instance.applySyncedRecords(
       incoming: backup.shelf,
       acceptsCurrent: (shelf) => SyncSnapshot.fromBackup(
@@ -822,16 +867,19 @@ class MultiDeviceSyncService extends ChangeNotifier
           published,
           requireJournal: _upstreamEstablished,
         );
-        final serverVersion = syncJson(merged.toJson());
+        final serverVersion = await _documentVersion(merged);
         await _serial(() async {
           await _capture();
-          merged.merge(_document);
-          _document = merged;
+          final (document, snapshot) = await _reconcileWebDav(
+            merged,
+            _document,
+          );
+          _document = document;
           _upstreamEstablished = true;
-          await _applyMerged(SyncSnapshot.fromDocument(merged));
+          await _applyMerged(snapshot);
           lastSuccess = DateTime.now();
           await _persist();
-          if (syncJson(_document.toJson()) != serverVersion) {
+          if (await _documentVersion(_document) != serverVersion) {
             _schedule();
           }
         });
@@ -842,7 +890,9 @@ class MultiDeviceSyncService extends ChangeNotifier
       transport = _transport();
       _activeTransport = transport;
       final exchange = SyncExchange(transport);
-      final slots = await exchange.readAll();
+      final slots = await exchange.readAll(
+        prepare: _config['provider'] != 'webdav-compat',
+      );
       late SyncSlot outgoing;
       await _serial(() async {
         await _capture();
@@ -891,7 +941,7 @@ class MultiDeviceSyncService extends ChangeNotifier
       if (enabled && !_stopping) {
         _timer = Timer(
           Duration(seconds: min(300, 30 * (1 << min(_failures, 4)))),
-          () => unawaited(sync()),
+          () => unawaited(_autoSync()),
         );
       }
     } finally {
@@ -904,17 +954,30 @@ class MultiDeviceSyncService extends ChangeNotifier
     }
   }
 
+  static Future<String> _documentVersion(SyncDocument document) =>
+      Isolate.run(() => syncJson(document.toJson()));
+
+  static Future<(SyncDocument, SyncSnapshot)> _reconcileWebDav(
+    SyncDocument merged,
+    SyncDocument local,
+  ) => Isolate.run(() {
+    merged.merge(local);
+    return (merged, SyncSnapshot.fromDocument(merged));
+  });
+
   /// Called before closing Hive on desktop, and by integration tests. Cancels
   /// network IO but flushes the local journal; no reading records are removed.
   Future<void> shutdown() async {
     _stopping = true;
+    _captureWork.cancelHistoryDelay();
     _timer?.cancel();
     _webDavPoll?.cancel();
     _activeTransport?.close();
     _activeUpstream?.close();
     await _running;
     if (_box == null) return;
-    LibraryStore.instance.historyListenable.removeListener(_changed);
+    await _historySubscription?.cancel();
+    _historySubscription = null;
     LibraryStore.instance.watchedListenable.removeListener(_changed);
     ShelfStore.instance.listenable.removeListener(_changed);
     WidgetsBinding.instance.removeObserver(this);
@@ -925,13 +988,7 @@ class MultiDeviceSyncService extends ChangeNotifier
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _updateWebDavPolling(state);
-    if (state == AppLifecycleState.resumed) unawaited(sync());
-    if (state == AppLifecycleState.paused) {
-      if (_config['provider'] == 'webdav') {
-        unawaited(sync());
-      } else {
-        _changed();
-      }
-    }
+    if (state == AppLifecycleState.resumed) unawaited(_autoSync());
+    if (state == AppLifecycleState.paused) _changed();
   }
 }

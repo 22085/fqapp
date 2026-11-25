@@ -12,10 +12,12 @@ import '../models/audio_extra.dart';
 import '../models/media_item.dart';
 import '../services/episode_source_cache.dart';
 import '../services/haptic_preferences.dart';
+import '../services/ios_audio_session.dart';
 import '../services/native_player.dart';
 import '../services/playback_format.dart';
 import '../services/playback_gesture_levels.dart';
 import '../services/player_layout_preferences.dart';
+import '../services/player_load_diagnostics.dart';
 import '../services/player_preferences.dart';
 import '../services/player_style_config.dart';
 import '../services/player_system_ui.dart';
@@ -38,6 +40,7 @@ import 'player/quality_icon.dart';
 import 'player/player_cover.dart';
 import 'player/player_side_panel.dart';
 import 'player/player_split_panel.dart' show SplitPanelAxis;
+import 'player/player_statistics_overlay.dart';
 import 'player/player_toast.dart';
 import 'player/player_video_layout.dart';
 import 'player/story_seek_bar.dart';
@@ -216,6 +219,10 @@ class VideoPlayerChrome extends StatefulWidget {
   final Future<void> Function(double)? onPlaybackRateChanged;
   final Future<void> Function(double)? onPlaybackVolumeChanged;
 
+  /// 当前加载尝试的诊断快照。统计浮层轮询时即时调用；宿主会用一个
+  /// 闭包核对 attempt 与当前目标集，避免显示上一集的样本。
+  final PlayerLoadSample? Function()? loadSample;
+
   /// 最终确定的 seek 目标（进度条拖动收尾、横滑收尾、±10s 快进/回拖、
   /// 播完重播回零）。拖动过程中的实时 seek 不上报，只报收尾值，
   /// 对齐官方 `seekTo()` 的 `ON_SEEK_FINISH` 时机（l.java:1213-1227）。
@@ -300,6 +307,7 @@ class VideoPlayerChrome extends StatefulWidget {
     this.onQualitySelected,
     this.onPlaybackRateChanged,
     this.onPlaybackVolumeChanged,
+    this.loadSample,
     this.openFullScreen = false,
     this.layoutMode = PlayerLayoutMode.immersive,
     this.splitPanel,
@@ -321,6 +329,14 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   /// yet; back-to-back taps accumulate onto it instead of reusing the last
   /// acknowledged position.
   Duration? _pendingSeek;
+
+  /// iOS 媒体会话（锁屏卡片 / 控制中心 / 耳机键）。非 iOS 或未接入时为空操作。
+  ///
+  /// 听书页自己会接一套 IosAudioSession；两处按「谁最后接入谁接管」协作，
+  /// 播放页只在自己仍是接管方时清理，避免把听书的会话一起关掉。
+  final String _iosMediaOwner = NativePlayer.allocateRemoteOwner();
+  bool _iosMediaArmed = false;
+  DateTime? _lastIosMediaPush;
   late final _timeline = Listenable.merge([_position, _seekValue]);
   StreamSubscription<Duration>? _positionSubscription;
   StreamSubscription<bool>? _playWhenReadySubscription;
@@ -365,6 +381,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   bool _resumeAfterSeek = false;
   bool _modalOpen = false;
   bool _panelOpen = false;
+  bool _statisticsVisible = false;
 
   /// 面板形态：横屏（短剧全屏）走右侧深色抽屉（`StoryEpisodeDrawer`，
   /// 官方截图第二十三轮），竖屏走白色 bottom sheet（`StoryPlayerPanel`）。
@@ -451,8 +468,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   bool _clearScreen = false;
 
   /// 横屏防误触锁（官方 `fullscreen.b` 单例的本地等价）：锁定后画面手势、
-  /// 播放控件、选集/更多面板与清屏全部被吞；退出横屏或换播放器即解除
-  /// （官方 `ShortSeriesLandActivity.onDestroy` → `EXIST_LAND_ACTIVITY`）。
+  /// 播放控件、选集/更多面板与清屏全部被吞；退出横屏或关闭锁定配置时解除。
   bool _locked = false;
   bool _lockVisible = true;
   Timer? _lockHideTimer;
@@ -616,6 +632,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     _pages = PageController(initialPage: widget.currentIndex);
     _panel.addListener(_panelChanged);
     _listenToPosition();
+    _attachIosMediaSession();
     WidgetsBinding.instance.addObserver(this);
     _appActive = playbackAppIsActive(WidgetsBinding.instance.lifecycleState);
     _lockController =
@@ -684,10 +701,11 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
       _bottomPanelCollapsed = false;
     }
     if (oldWidget.player != widget.player) {
+      IosAudioSession.cancelInterruption(_iosMediaOwner);
+      widget.player?.iosMediaOwner = _iosMediaOwner;
+      widget.player?.iosMediaAction = _handleIosMediaAction;
       _listenToPosition();
-      // 换播放器等于换 holder：官方 `d.release()` 会摘掉锁监听，本地等价是
-      // 撤销锁态，避免下一个剧集继承上一个的锁定。
-      _releaseLock();
+      // 切集/切清晰度会替换播放器，触摸锁属于播放页面，需跨集保留。
       _doubleTapGuard?.cancel();
     }
     if (oldWidget.landscapeLockEnabled && !widget.landscapeLockEnabled) {
@@ -741,10 +759,33 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
       if ((!widget.playing && !_seeking) || !widget.enabled) _visible = true;
       _scheduleHide();
     }
+    if (oldWidget.enabled && !widget.enabled) {
+      unawaited(IosAudioSession.stop(owner: _iosMediaOwner));
+    }
+    if ((!oldWidget.playing && widget.playing ||
+            !oldWidget.enabled && widget.enabled ||
+            oldWidget.player != widget.player) &&
+        (widget.player?.playWhenReady ?? false) &&
+        widget.enabled &&
+        _iosMediaArmed) {
+      IosAudioSession.claim(
+        owner: _iosMediaOwner,
+        onAction: _handleIosMediaAction,
+      );
+    }
+    if (oldWidget.playing != widget.playing ||
+        oldWidget.currentIndex != widget.currentIndex ||
+        oldWidget.duration != widget.duration ||
+        oldWidget.enabled != widget.enabled ||
+        oldWidget.player != widget.player ||
+        oldWidget.episodes.length != widget.episodes.length) {
+      _publishIosMedia(force: true);
+    }
   }
 
   @override
   void dispose() {
+    _detachIosMediaSession();
     WidgetsBinding.instance.removeObserver(this);
     _hideTimer?.cancel();
     _doubleTapGuard?.cancel();
@@ -781,6 +822,119 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     super.dispose();
   }
 
+  // MARK: - iOS 媒体会话（锁屏 / 控制中心 / 耳机键）
+
+  /// 接管 MPRemoteCommandCenter。
+  ///
+  /// 听书链路（AudioPlaybackController）也接同一套桥；播放页进来时直接
+  /// 申请独立的 owner，离开时只在自己仍拥有会话时清理，
+  /// 因此从播放页进听书页不会因为播放页 dispose 而丢掉会话。
+  void _attachIosMediaSession() {
+    if (!isIOSPlatform) return;
+    _iosMediaArmed = true;
+    widget.player?.iosMediaOwner = _iosMediaOwner;
+    widget.player?.iosMediaAction = _handleIosMediaAction;
+    if (widget.player?.playWhenReady ?? false) {
+      IosAudioSession.claim(
+        owner: _iosMediaOwner,
+        onAction: _handleIosMediaAction,
+      );
+    }
+    _publishIosMedia(force: true);
+  }
+
+  void _detachIosMediaSession() {
+    if (!_iosMediaArmed) return;
+    _iosMediaArmed = false;
+    unawaited(IosAudioSession.stop(owner: _iosMediaOwner));
+  }
+
+  /// 耳机键 / 锁屏 / 控制中心的动作。
+  ///
+  /// 不能复用 _togglePlayback：那条路径带 _appActive 等前台态门禁，
+  /// 而在锁屏或后台正是需要它工作的时候。
+  void _handleIosMediaAction(String action, int? positionMs) {
+    final player = widget.player;
+    if (player == null || !_ready || !IosAudioSession.owns(_iosMediaOwner)) {
+      return;
+    }
+    if (action != 'interruptionPause' && action != 'interruptionResume') {
+      IosAudioSession.cancelInterruption(_iosMediaOwner);
+    }
+    switch (action) {
+      case 'interruptionResume':
+      case 'play':
+        unawaited(_control((p) => p.play()));
+      case 'interruptionPause':
+        _resumeOnForeground = false;
+        unawaited(_control((p) => p.pauseForInterruption()));
+      case 'pause':
+        _resumeOnForeground = false;
+        unawaited(_control((p) => p.pause()));
+      case 'playPause':
+        final pause = _playbackRequested;
+        unawaited(_control((p) => pause ? p.pause() : p.play()));
+      case 'next':
+        unawaited(_selectEpisode(widget.currentIndex + 1));
+      case 'prev':
+        unawaited(_selectEpisode(widget.currentIndex - 1));
+      case 'seek':
+        if (positionMs == null) return;
+        final total = widget.duration.inMilliseconds;
+        final clamped = total > 0 ? positionMs.clamp(0, total) : positionMs;
+        final target = Duration(milliseconds: clamped);
+        _position.value = target;
+        widget.onSeeked?.call(target);
+        unawaited(_control((p) => p.seek(target)));
+      case 'stop':
+        _resumeOnForeground = false;
+        unawaited(_control((p) => p.pause()));
+        unawaited(IosAudioSession.stop(owner: _iosMediaOwner));
+        return;
+      default:
+        return;
+    }
+    _publishIosMedia(force: true);
+  }
+
+  /// 把当前进度与剧集信息推给系统。原生每收到一次就重写锁屏卡片；
+  /// 进度流是 200ms 一条，这里节流到 1 秒（force 用于状态切换）。
+  void _publishIosMedia({bool force = false}) {
+    if (!_iosMediaArmed || !IosAudioSession.owns(_iosMediaOwner)) return;
+    final now = DateTime.now();
+    final previous = _lastIosMediaPush;
+    if (!force &&
+        previous != null &&
+        now.difference(previous) < const Duration(seconds: 1)) {
+      return;
+    }
+    _lastIosMediaPush = now;
+    final index = widget.currentIndex;
+    final episodes = widget.episodes;
+    final episode = index >= 0 && index < episodes.length
+        ? episodes[index].title
+        : widget.episodeLabel;
+    unawaited(
+      IosAudioSession.update(
+        owner: _iosMediaOwner,
+        title: widget.seriesTitle.isNotEmpty
+            ? widget.seriesTitle
+            : widget.title,
+        episode: episode,
+        cover: widget.seriesCover,
+        playing:
+            (widget.player?.playWhenReady ?? widget.playing) &&
+            !(widget.player?.completed ?? false),
+        positionMs: _position.value.inMilliseconds,
+        durationMs: widget.duration.inMilliseconds,
+        rate: _rate,
+        hasPrev: index > 0,
+        hasNext: index + 1 < episodes.length,
+        mode: 'video',
+      ),
+    );
+  }
+
   void _listenToPosition() {
     unawaited(_positionSubscription?.cancel());
     unawaited(_playWhenReadySubscription?.cancel());
@@ -792,10 +946,19 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     _positionSubscription = player?.positionStream.listen((position) {
       if (mounted && identical(widget.player, player)) {
         _position.value = position;
+        _publishIosMedia();
       }
     });
-    _playWhenReadySubscription = player?.playWhenReadyStream.listen((_) {
-      if (mounted && identical(widget.player, player)) setState(() {});
+    _playWhenReadySubscription = player?.playWhenReadyStream.listen((playing) {
+      if (!mounted || !identical(widget.player, player)) return;
+      if (playing && _iosMediaArmed) {
+        IosAudioSession.claim(
+          owner: _iosMediaOwner,
+          onAction: _handleIosMediaAction,
+        );
+      }
+      _publishIosMedia(force: true);
+      setState(() {});
     });
   }
 
@@ -814,6 +977,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     if (player == null || !_ready) return;
     try {
       await operation(player);
+      if (mounted && widget.player == player) _publishIosMedia(force: true);
     } catch (error) {
       if (mounted && widget.player == player && _ready) widget.onError(error);
     }
@@ -846,7 +1010,10 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
       _endBoost();
       _doubleTapGuard?.cancel();
       _hideTimer?.cancel();
-      if (!floating) unawaited(_control((player) => player.pause()));
+      if (!floating) {
+        IosAudioSession.cancelInterruption(_iosMediaOwner);
+        unawaited(_control((player) => player.pause()));
+      }
     } else if (active && !_appActive) {
       _appActive = true;
       if (_resumeOnForeground) unawaited(_control((player) => player.play()));
@@ -956,8 +1123,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     }
   }
 
-  /// 退出横屏 / 换播放器：官方在 Activity 销毁时无条件解锁
-  /// （`EXIST_LAND_ACTIVITY`），本地等价是离开横屏与替换播放器。
+  /// 退出横屏或关闭锁定配置时解锁；播放器替换不改变页面的触摸锁。
   void _releaseLock() {
     _lockHideTimer?.cancel();
     if (_locked) _visible = true;
@@ -1094,6 +1260,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   }
 
   void _togglePlayback() {
+    IosAudioSession.cancelInterruption(_iosMediaOwner);
     if (!_ready ||
         !_appActive ||
         _locked ||
@@ -1466,6 +1633,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
           onFontScaleSelected: () {
             if (mounted) setState(() {});
           },
+          statisticsEnabled: _statisticsVisible,
+          onToggleStatistics: () =>
+              setState(() => _statisticsVisible = !_statisticsVisible),
           fillScreen: widget.fillScreen,
           onFillScreenChanged: widget.onFillScreenChanged,
           defaultMute: widget.defaultMute,
@@ -1742,6 +1912,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
           // 官方 `jm3.t0`：行尾当前档 + 点击级联打开字号弹层。
           fontScaleLabel: ShortSeriesFontScale.label,
           onOpenFontSettings: () => _pendingFontScale = true,
+          statisticsEnabled: _statisticsVisible,
+          onToggleStatistics: () =>
+              setState(() => _statisticsVisible = !_statisticsVisible),
           onOpenListenMode: widget.onOpenListenMode,
           onOpenOfflineCache: widget.onOpenOfflineCache,
         );
@@ -1777,6 +1950,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                       Navigator.pop(sheetContext);
                     }
                   : null,
+              statisticsEnabled: _statisticsVisible,
+              onToggleStatistics: () =>
+                  setState(() => _statisticsVisible = !_statisticsVisible),
             )
           : StatefulBuilder(
               builder: (context, setSheetState) => SafeArea(
@@ -1890,6 +2066,51 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                           },
                         ),
                       ],
+                      const SizedBox(height: 12),
+                      InkWell(
+                        key: const ValueKey('player-more-statistics-row'),
+                        onTap: () {
+                          setState(
+                            () => _statisticsVisible = !_statisticsVisible,
+                          );
+                          Navigator.pop(sheetContext);
+                        },
+                        child: SizedBox(
+                          height: 44,
+                          child: Row(
+                            children: [
+                              const SizedBox.square(
+                                dimension: 24,
+                                child: Icon(
+                                  Icons.query_stats_rounded,
+                                  size: 22,
+                                  color: Color(0xFF1B1B1B),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              const Expanded(
+                                child: Text(
+                                  '详细统计信息',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: Color(0xFF1B1B1B),
+                                  ),
+                                ),
+                              ),
+                              Switch(
+                                key: const ValueKey(
+                                  'player-more-statistics-switch',
+                                ),
+                                value: _statisticsVisible,
+                                onChanged: (value) {
+                                  setState(() => _statisticsVisible = value);
+                                  Navigator.pop(sheetContext);
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -2139,6 +2360,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   }
 
   Future<void> _selectEpisode(int index) async {
+    IosAudioSession.cancelInterruption(_iosMediaOwner);
     if (index < 0 ||
         index >= widget.episodes.length ||
         index == widget.currentIndex) {
@@ -2304,6 +2526,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     final covered = animation.value > 0;
     if (covered == _routeCovered) return;
     _routeCovered = covered;
+    setState(() {});
     if (covered) {
       // 新路由盖住播放页：把系统栏还给上层页面。全屏时不走
       // `_restoreSystemUi`，否则被 push 的详情页会跟着转屏。
@@ -2336,6 +2559,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   Widget build(BuildContext context) => isWindowsDesktop
       ? DesktopVideoChrome(
           configuration: widget,
+          routeVisible: !_routeCovered,
           onRateSelected: (rate) async {
             ++_rateGeneration;
             setState(() => _rate = rate);
@@ -2547,6 +2771,30 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     final showTextActions =
         _bottomRateTextVisible &&
         (!_fullScreen || landscape || _clearScreen || controls);
+    final statisticsVideo = PlayerVideoLayout.calculate(
+      window: window,
+      insets: insets,
+      videoSize: _videoSize,
+      fit: compact
+          ? VideoFit.contain
+          : PlayerVideoLayout.fitFor(
+              fillScreen: widget.fillScreen,
+              fullScreen: _fullScreen || landscape,
+            ),
+      panelFraction: compact ? 0 : _panelFraction,
+      restingPanelFraction: compact ? 0 : _panelRestFraction,
+      fullScreen: _fullScreen || landscape,
+      compact: compact,
+    ).video;
+    final statisticsViewport = layout.viewport.intersect(
+      Rect.fromLTRB(
+        insets.left,
+        insets.top +
+            (landscape ? _landscapeTopBarHeight : _portraitTopBarHeight),
+        window.width - insets.right,
+        window.height - insets.bottom - (compact ? 76 : (landscape ? 80 : 0)),
+      ),
+    );
     // 旧底栏清屏/还原只在 pad 配置开启时出现（`jj3/i.java:620-637`）。
     // 手机旧栏项序「清晰度 / 倍速」（bom.xml），清晰度仅多档流在场。
     return Stack(
@@ -2976,7 +3224,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                 playingIndex:
                     widget.playingIndex ??
                     (_ready ? widget.currentIndex : null),
-                playing: widget.playing,
+                playing:
+                    (widget.player?.playWhenReady ?? widget.playing) &&
+                    !(widget.player?.completed ?? false),
                 watched: widget.watchedEpisodes,
                 onSelectEpisode: (index) {
                   unawaited(_closePanel());
@@ -3045,7 +3295,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                     playingIndex:
                         widget.playingIndex ??
                         (_ready ? widget.currentIndex : null),
-                    playing: widget.playing,
+                    playing:
+                        (widget.player?.playWhenReady ?? widget.playing) &&
+                        !(widget.player?.completed ?? false),
                     watched: widget.watchedEpisodes,
                     onSelectEpisode: (index) {
                       unawaited(_animatePanel(0));
@@ -3064,6 +3316,25 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
             ),
           ),
         ],
+        if (_statisticsVisible && !statisticsViewport.isEmpty)
+          Positioned.fromRect(
+            rect: PlayerStatisticsOverlay.placement(
+              viewport: statisticsViewport,
+              video: statisticsVideo,
+            ),
+            child: PlayerStatisticsOverlay(
+              player: widget.player,
+              position: _position,
+              duration: widget.duration,
+              playbackRate: _rate,
+              currentIndex: widget.currentIndex,
+              episodeLabel: _episodeNumberLabel,
+              active: !_routeCovered,
+              loadSample: widget.loadSample,
+              displaySize: statisticsVideo.intersect(layout.viewport).size,
+              onClose: () => setState(() => _statisticsVisible = false),
+            ),
+          ),
         _lockButton(window, insets),
         // 分屏视频盒的底部紧凑条：时间/进度 + 播放/下一集/倍速/全屏。
         if (compact && _ready && showChrome && (_visible || _seeking))

@@ -31,22 +31,28 @@ import '../services/app_update_service.dart';
 import '../services/app_theme_style.dart';
 import '../services/app_style_tokens.dart';
 import '../services/audio_preferences.dart';
+import '../models/audio_extra.dart';
+import '../services/drama_feature_preferences.dart';
 import '../services/desktop_platform.dart';
 import '../services/linux_platform.dart' show isLinuxDesktop;
 import '../services/native_player.dart';
 import '../services/player_layout_preferences.dart';
 import '../services/player_preferences.dart';
 import '../services/book_open_preferences.dart';
+import '../services/boss_key_preferences.dart';
 import '../services/drama_mute_preferences.dart';
 import '../services/haptic_preferences.dart';
 import '../services/library_store.dart';
 import '../widgets/desktop_settings_body.dart';
+import '../widgets/desktop_shell_scope.dart';
+import '../widgets/home/home_design.dart';
 import '../widgets/settings/settings_archive_rows.dart';
 import '../widgets/settings/settings_widgets.dart';
 import '../widgets/settings/classic_settings_icons.dart';
 import '../widgets/wenku/wenku_ui.dart';
 import 'about_page.dart';
 import 'api_service_page.dart';
+import 'boss_key_settings_page.dart';
 import 'cached_books_page.dart';
 import 'cached_dramas_page.dart';
 import 'library_backup_page.dart';
@@ -60,14 +66,47 @@ import 'ai_reading/settings/ai_settings_page.dart';
 
 /// Settings home: a list of category entries (PiliPlus multi-level
 /// navigation). Each category opens its own archive option page.
-class SettingsPage extends StatelessWidget {
+class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  @override
+  void initState() {
+    super.initState();
+    if (isWindowsDesktop) DesktopShellState.enterSettings();
+  }
+
+  @override
+  void dispose() {
+    if (isWindowsDesktop) DesktopShellState.exitSettings();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     // 开关读的是 ValueNotifier：先把持久化的值读出来，读到后自动重绘。
     unawaited(BookOpenPreferences.instance.load());
+    if (!isMediaDesktop) return _buildContent(context);
+    unawaited(BossKeyPreferences.instance.load());
+    return ListenableBuilder(
+      listenable: Listenable.merge([
+        BossKeyPreferences.instance.enabled,
+        BossKeyPreferences.instance.shortcut,
+      ]),
+      builder: (context, _) => _buildContent(context),
+    );
+  }
+
+  Widget _buildContent(BuildContext context) {
     final style = AppStyleTokens.of(context);
+    final bossKeyPrefs = BossKeyPreferences.instance;
+    final bossKeyValue = bossKeyPrefs.enabled.value
+        ? bossKeyPrefs.shortcut.value.formatLabel()
+        : '已关闭';
     final categories = <SettingsCategory>[
       SettingsCategory(
         icon: SettingsCategoryIcons.appearance,
@@ -82,6 +121,7 @@ class SettingsPage extends StatelessWidget {
         // 播放页布局只在手机端有效（Windows/Linux 由桌面播放器承担）。
         itemsBuilder: (context) => [
           _themeModeItem(),
+          _dramaFeatureItem(),
           if (HapticPreferences.supported) _hapticsItem(),
           if (isDarkAppearance(
             systemBrightness: MediaQuery.platformBrightnessOf(context),
@@ -137,8 +177,9 @@ class SettingsPage extends StatelessWidget {
       SettingsCategory(
         icon: SettingsCategoryIcons.listening,
         title: '听书',
-        subtitle: '后台播放、通知栏控制与系统朗读',
+        subtitle: '默认音色、后台播放与系统朗读',
         items: [
+          _defaultVoiceItem(),
           _backgroundAudioItem(),
           if (!isMediaDesktop) _audioRateEngineItem(),
           SettingsItem(
@@ -162,6 +203,15 @@ class SettingsPage extends StatelessWidget {
             if (!isMediaDesktop) _floatingWindowItem(),
             if (!isMediaDesktop) _videoDecoderItem(),
           ],
+        ),
+      if (isMediaDesktop)
+        SettingsCategory(
+          icon: SettingsCategoryIcons.bossKey,
+          title: '老板键',
+          subtitle: '全局快捷键隐藏窗口并暂停播放',
+          value: bossKeyValue,
+          pageBuilder: (_) => const BossKeySettingsPage(),
+          items: const [],
         ),
       SettingsCategory(
         icon: SettingsCategoryIcons.data,
@@ -239,21 +289,13 @@ class SettingsPage extends StatelessWidget {
     // Keep the desktop body at one element path while switching themes: its
     // nested Navigator owns the theme picker and must not be recreated mid-tap.
     if (isWindowsDesktop) {
-      return WenkuPage(
-        header: _header(context),
-        child: Padding(
-          padding: EdgeInsets.only(
-            top:
-                MediaQuery.paddingOf(context).top + FrostedHeader.toolbarHeight,
-          ),
-          child: DesktopSettingsBody(
-            categories: style.isClassic
-                ? [
-                    for (final category in categories)
-                      _classicCategory(category),
-                  ]
-                : categories,
-          ),
+      final palette = HomePalette.of(context);
+      return Scaffold(
+        backgroundColor: palette.canvas,
+        body: DesktopSettingsBody(
+          categories: style.isClassic
+              ? [for (final category in categories) _classicCategory(category)]
+              : categories,
         ),
       );
     }
@@ -606,6 +648,60 @@ class SettingsPage extends StatelessWidget {
       }
     }
   }
+
+  SettingsItem _dramaFeatureItem() => SettingsItem(
+    icon: LucideIcons.clapperboard,
+    title: '短剧功能',
+    rowBuilder: (context) => ValueListenableBuilder<bool>(
+      valueListenable: DramaFeaturePreferences.instance.enabled,
+      builder: (context, enabled, _) => SettingsToggleRow(
+        icon: LucideIcons.clapperboard,
+        title: '短剧功能',
+        description: '关闭后隐藏短剧入口并停用短剧播放',
+        optimistic: false,
+        value: enabled,
+        onChanged: (value) async {
+          try {
+            await DramaFeaturePreferences.instance.setEnabled(value);
+          } catch (_) {
+            if (context.mounted) {
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(const SnackBar(content: Text('短剧设置保存失败，请重试')));
+            }
+          }
+        },
+      ),
+    ),
+  );
+
+  SettingsItem _defaultVoiceItem() => SettingsItem(
+    icon: CupertinoIcons.headphones,
+    title: '默认音色',
+    rowBuilder: (context) => ValueListenableBuilder<DefaultListeningVoice>(
+      valueListenable: AudioPreferences.instance.defaultVoice,
+      builder: (context, value, _) => GlassSettingMenu<DefaultListeningVoice>(
+        icon: CupertinoIcons.headphones,
+        label: '默认音色',
+        value: value,
+        options: {
+          for (final voice in DefaultListeningVoice.values) voice: voice.label,
+        },
+        reduceMotion: MediaQuery.disableAnimationsOf(context),
+        onChanged: (voice) async {
+          try {
+            await AudioPreferences.instance.setDefaultVoice(voice);
+          } catch (_) {
+            if (context.mounted) {
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(const SnackBar(content: Text('默认音色保存失败，请重试')));
+            }
+          }
+        },
+      ),
+    ),
+  );
 
   SettingsItem _hapticsItem() => SettingsItem(
     icon: CupertinoIcons.waveform,

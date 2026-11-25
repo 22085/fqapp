@@ -3,9 +3,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use md5::{Digest, Md5};
+
 use crate::device::{Device, DevicePool};
 use crate::sign::Manager;
 use crate::upstream::http::{HttpTransport, TransportError};
+use crate::upstream::playback_identity::{PlaybackDevice, PlaybackIdentity};
 
 pub const DEFAULT_USER_AGENT: &str = "com.dragon.read/66732 (Linux; U; Android 10; zh_CN; Pixel 4 XL; Build/QD1A.190821.007;tt-ok/3.12.13.4-tiktok)";
 
@@ -51,6 +54,14 @@ pub enum ClientError {
         message: String,
         retry_after: Option<Duration>,
     },
+    /// A successful HTTP 200 whose body carries no bytes at all.
+    ///
+    /// This is the shape the playback gate returns when it refuses a
+    /// request without saying why. It is not a device failure and it is not
+    /// worth repeating on the same identity: the caller switches door or
+    /// rotates identity instead. Generic callers keep accepting empty bodies,
+    /// so only the playback path converts one into this error.
+    EmptyPlaybackBody,
     Http(String),
     Other(String),
 }
@@ -59,6 +70,10 @@ impl ClientError {
     pub fn is_device_failed(&self) -> bool {
         matches!(self, ClientError::DeviceFailed(_))
     }
+
+    pub fn is_empty_playback_body(&self) -> bool {
+        matches!(self, ClientError::EmptyPlaybackBody)
+    }
 }
 
 impl std::fmt::Display for ClientError {
@@ -66,6 +81,7 @@ impl std::fmt::Display for ClientError {
         match self {
             ClientError::DeviceFailed(m) => write!(f, "device failed: {m}"),
             ClientError::Transient { message, .. } => f.write_str(message),
+            ClientError::EmptyPlaybackBody => f.write_str("empty playback response body"),
             ClientError::Http(m) => f.write_str(m),
             ClientError::Other(m) => f.write_str(m),
         }
@@ -102,6 +118,8 @@ pub struct UpstreamClient {
     /// therefore every signature input - are untouched, so a local mock server
     /// can answer real signed requests without touching the network.
     mock_origin: Option<String>,
+    /// Anonymous playback identity, intentionally separate from the pool.
+    playback_identity: PlaybackIdentity,
 }
 
 impl UpstreamClient {
@@ -123,12 +141,14 @@ impl UpstreamClient {
         sign: Manager,
         mock_origin: Option<String>,
     ) -> Result<Self, String> {
+        let playback_identity = PlaybackIdentity::new(mock_origin.clone())?;
         Ok(UpstreamClient {
             http: HttpTransport::new(15)?,
             sign,
             pool,
             max_retries: 3,
             mock_origin,
+            playback_identity,
         })
     }
 
@@ -210,6 +230,34 @@ impl UpstreamClient {
             }
         }
 
+        if let Some(trace) = super::playback_trace::current() {
+            let envelope = if crate::sign::v5::playback_envelope_is_full(query) {
+                "full"
+            } else {
+                "legacy"
+            };
+            trace
+                .exchange
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .envelope = envelope;
+            let body = req.body.as_deref().unwrap_or_default();
+            let stub = hex::encode_upper(Md5::digest(body));
+            let stub_matches = headers.iter().any(|(name, value)| {
+                name.eq_ignore_ascii_case("x-ss-stub") && value.eq_ignore_ascii_case(&stub)
+            });
+            log::info!(
+                "v5 trace request={} purpose={} attempt={} device={} in_flight={} event=send route={} envelope={envelope} body_bytes={} stub_matches={stub_matches}",
+                trace.request_id,
+                trace.purpose,
+                trace.attempt,
+                trace.device_tag,
+                trace.in_flight,
+                trace.route,
+                body.len(),
+            );
+        }
+
         let resp = self
             .http
             .request_with_limit(
@@ -251,19 +299,55 @@ impl UpstreamClient {
     }
 
     /// Runs one signed attempt, retrying transient failures (transport error,
-    /// 429/5xx) on the same identity with a short backoff. A `Retry-After`
+    /// 429/5xx) on the same identity with a short backoff. Playback alone opts
+    /// into treating an empty HTTP 200 body as transient; it shares the same
+    /// retry count rather than nesting another retry loop. A `Retry-After`
     /// hint is honoured up to [RETRY_AFTER_CAP].
     async fn do_resp_with_transient_retry(
         &self,
         mut request_for_attempt: impl FnMut() -> Result<UpstreamRequest, ClientError>,
         body_limit: Option<usize>,
         auth_is_device_failure: bool,
+        retry_empty_body: bool,
     ) -> Result<(Vec<u8>, Vec<(String, String)>), ClientError> {
         let mut attempt = 0;
         let mut delay = TRANSIENT_BACKOFF;
         loop {
-            let req = request_for_attempt()?;
-            match self.do_resp(&req, body_limit, auth_is_device_failure).await {
+            let send = async {
+                let req = request_for_attempt()?;
+                match self.do_resp(&req, body_limit, auth_is_device_failure).await {
+                    Ok((body, _)) if retry_empty_body && body.is_empty() => {
+                        if let Some(trace) = super::playback_trace::current() {
+                            log::info!(
+                                "v5 playback empty response request={} purpose={} attempt={} device={} in_flight={} retryable={}",
+                                trace.request_id,
+                                trace.purpose,
+                                trace.attempt,
+                                trace.device_tag,
+                                trace.in_flight,
+                                attempt < TRANSIENT_RETRIES,
+                            );
+                        } else {
+                            log::info!(
+                                "v5 playback empty response attempt={} retryable={}",
+                                attempt + 1,
+                                attempt < TRANSIENT_RETRIES,
+                            );
+                        }
+                        Err(ClientError::Transient {
+                            message: "empty playback response body".to_string(),
+                            retry_after: None,
+                        })
+                    }
+                    result => result,
+                }
+            };
+            let result = if retry_empty_body {
+                super::playback_trace::with_attempt(attempt + 1, send).await
+            } else {
+                send.await
+            };
+            match result {
                 Err(err @ ClientError::Transient { retry_after, .. })
                     if attempt < TRANSIENT_RETRIES =>
                 {
@@ -336,7 +420,12 @@ impl UpstreamClient {
             attempt.pin = None;
 
             match self
-                .do_resp_with_transient_retry(|| Ok(attempt.clone()), body_limit, !attempt.no_sign)
+                .do_resp_with_transient_retry(
+                    || Ok(attempt.clone()),
+                    body_limit,
+                    !attempt.no_sign,
+                    false,
+                )
                 .await
             {
                 Ok((data, _)) => return Ok((data, dev)),
@@ -364,20 +453,30 @@ impl UpstreamClient {
         )))
     }
 
-    /// Calls the v5 playback door with the exact gzip bytes it signs.
+    /// Calls the v5 playback door with the exact gzip bytes it signs and
+    /// reports which pooled identity answered.
     ///
     /// The v5 signer owns every query/header field and the wire body hash, so
-    /// this path deliberately bypasses generic signing. Transport/429/5xx
-    /// retries stay on the same device; only HTTP 401/403 replace it.
-    pub async fn v5_playback(&self, base: &str, body: &[u8]) -> Result<Vec<u8>, ClientError> {
+    /// this path deliberately bypasses generic signing. Transport/429/5xx are
+    /// retried on the same device under the caller's deadline and HTTP 401/403
+    /// replace it; an empty 200 body is returned as `Ok((vec![], device))`
+    /// instead of being repeated, because the caller owns the recovery ladder
+    /// (same-door re-probe, then another door, then one rotation). A non-empty
+    /// business payload is returned untouched so the endpoint can judge it.
+    ///
+    /// `pin` holds a retry on the identity that just answered. Without a pin the
+    /// pool's least-recently-used slot is used, which is also the slot
+    /// [Self::rotate_playback_identity] hands out.
+    pub async fn v5_playback_with_device(
+        &self,
+        base: &str,
+        body: &[u8],
+        pin: Option<&str>,
+    ) -> Result<(Vec<u8>, Device), ClientError> {
         let mut last_err = None;
 
         for _ in 0..self.max_retries {
-            let dev = self
-                .pool
-                .get()
-                .await
-                .map_err(|e| ClientError::Other(format!("get device: {e}")))?;
+            let dev = self.pinned_or_next_device(pin).await?;
 
             let cdid = if dev.cdid.is_empty() {
                 dev.openudid.as_str()
@@ -389,29 +488,62 @@ impl UpstreamClient {
                 install_id: &dev.install_id,
                 cdid,
             };
-            match self
-                .do_resp_with_transient_retry(
-                    || {
-                        let signed = crate::sign::v5::sign_playback_v5(base, body, &identity)
-                            .map_err(ClientError::Other)?;
-                        Ok(UpstreamRequest {
-                            method: Some("POST".to_string()),
-                            url: signed.url,
-                            body: Some(body.to_vec()),
-                            headers: signed.headers,
-                            no_sign: true,
-                            pin: None,
-                        })
-                    },
-                    Some(crate::upstream::http::API_BODY_LIMIT_BYTES),
-                    true,
-                )
-                .await
-            {
-                Ok((data, _)) => return Ok(data),
+            let request = self.do_resp_with_transient_retry(
+                || {
+                    if let Some(trace) = super::playback_trace::current() {
+                        log::info!(
+                            "v5 trace request={} purpose={} attempt={} device={} event=identity cdid_fallback_used={} registration_version_known={}",
+                            trace.request_id,
+                            trace.purpose,
+                            trace.attempt,
+                            trace.device_tag,
+                            dev.cdid.is_empty(),
+                            !dev.registered_version_code.is_empty(),
+                        );
+                    }
+                    let signed = crate::sign::v5::sign_playback_v5(base, body, &identity)
+                        .map_err(ClientError::Other)?;
+                    Ok(UpstreamRequest {
+                        method: Some("POST".to_string()),
+                        url: signed.url,
+                        body: Some(body.to_vec()),
+                        headers: signed.headers,
+                        no_sign: true,
+                        pin: None,
+                    })
+                },
+                Some(crate::upstream::http::API_BODY_LIMIT_BYTES),
+                true,
+                // Empty bodies are the caller's business: repeating them on the
+                // same identity is exactly the loop that never recovers.
+                false,
+            );
+            match super::playback_trace::with_device(&dev.device_id, request).await {
+                Ok((data, _)) if data.is_empty() => {
+                    // The caller switches door or identity; repeating this one
+                    // on the same identity is exactly the loop that never
+                    // recovers, so the body is handed back with its identity.
+                    if let Some(trace) = super::playback_trace::current() {
+                        log::info!(
+                            "v5 playback empty response request={} purpose={} attempt={} device={} in_flight={}",
+                            trace.request_id,
+                            trace.purpose,
+                            trace.attempt,
+                            trace.device_tag,
+                            trace.in_flight,
+                        );
+                    } else {
+                        log::info!("v5 playback empty response");
+                    }
+                    return Ok((Vec::new(), dev));
+                }
+                Ok((data, _)) => return Ok((data, dev)),
                 Err(err) => {
                     last_err = Some(err.clone());
                     if err.is_device_failed() {
+                        if Self::speculative_playback() {
+                            return Err(err);
+                        }
                         if super::budget::remaining().is_some_and(|left| left.is_zero()) {
                             return Err(err);
                         }
@@ -431,6 +563,209 @@ impl UpstreamClient {
             self.max_retries,
             last_err.map(|error| error.to_string()).unwrap_or_default()
         )))
+    }
+
+    /// Signs and sends one `GET` on a door of the v5 player family.
+    ///
+    /// The `video_tab` fallback belongs to the same player family as the v5
+    /// door, so it is signed with the same Medusa/Helios/Khronos envelope in
+    /// `GET` form instead of the generic argus/ladon profile. The identity is
+    /// [pin] when given (the door that just refused), otherwise the pool's
+    /// least-recently-used slot. An empty body is returned as `Ok((vec![], _))`
+    /// and the caller owns the recovery decision.
+    pub async fn v5_get_with_device(
+        &self,
+        base: &str,
+        extra: &[(&str, &str)],
+        pin: Option<&str>,
+    ) -> Result<(Vec<u8>, Device), ClientError> {
+        let mut last_err = None;
+
+        for _ in 0..self.max_retries {
+            let dev = self.pinned_or_next_device(pin).await?;
+            let cdid = if dev.cdid.is_empty() {
+                dev.openudid.as_str()
+            } else {
+                dev.cdid.as_str()
+            };
+            let identity = crate::sign::v5::V5Identity {
+                device_id: &dev.device_id,
+                install_id: &dev.install_id,
+                cdid,
+            };
+            let signed = crate::sign::v5::sign_playback_v5_get(base, extra, &identity)
+                .map_err(ClientError::Other)?;
+            let request = UpstreamRequest {
+                method: Some("GET".to_string()),
+                url: signed.url,
+                body: None,
+                headers: signed.headers,
+                no_sign: true,
+                pin: None,
+            };
+            let send = self.do_resp_with_transient_retry(
+                || Ok(request.clone()),
+                Some(crate::upstream::http::API_BODY_LIMIT_BYTES),
+                true,
+                false,
+            );
+            match super::playback_trace::with_device(&dev.device_id, send).await {
+                Ok((data, _)) => return Ok((data, dev)),
+                Err(err) => {
+                    last_err = Some(err.clone());
+                    if err.is_device_failed() {
+                        if Self::speculative_playback() {
+                            return Err(err);
+                        }
+                        if super::budget::remaining().is_some_and(|left| left.is_zero()) {
+                            return Err(err);
+                        }
+                        let _ = self.pool.replace_failed(&dev.device_id).await;
+                        if !super::budget::retry_pause(Duration::from_millis(100)).await {
+                            return Err(err);
+                        }
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
+
+        Err(ClientError::Other(format!(
+            "v5 fallback door failed after {} device attempts: {}",
+            self.max_retries,
+            last_err.map(|error| error.to_string()).unwrap_or_default()
+        )))
+    }
+
+    /// Reuses [pin] when the pool still holds it, otherwise draws the
+    /// least-recently-used device.
+    async fn pinned_or_next_device(&self, pin: Option<&str>) -> Result<Device, ClientError> {
+        if let Some(device_id) = pin {
+            if let Ok(device) = self.pool.get_by_id(device_id).await {
+                return Ok(device);
+            }
+        }
+        if Self::speculative_playback() {
+            return self
+                .pool
+                .get_excluding("")
+                .await
+                .map_err(|_| ClientError::Other("no playback device available".to_string()));
+        }
+        self.pool
+            .get()
+            .await
+            .map_err(|e| ClientError::Other(format!("get device: {e}")))
+    }
+
+    fn speculative_playback() -> bool {
+        super::playback_trace::current().is_some_and(|trace| trace.purpose == "prefetch")
+    }
+
+    /// Body-only wrapper kept for callers that do not need the identity that
+    /// answered (the endpoint orchestrator uses the `_with_device` form).
+    pub async fn v5_playback(&self, base: &str, body: &[u8]) -> Result<Vec<u8>, ClientError> {
+        let (data, _) = self.v5_playback_with_device(base, body, None).await?;
+        if data.is_empty() {
+            return Err(ClientError::EmptyPlaybackBody);
+        }
+        Ok(data)
+    }
+
+    /// Calls the enhanced anonymous V5 playback door.
+    ///
+    /// The identity never enters `DevicePool`, so this path neither reads nor
+    /// writes the generic playback pin. An empty HTTP 200 body may refresh the
+    /// cached anonymous identity once, paced by the identity cache; it is then
+    /// returned as an empty body so the endpoint's route ladder can fall back.
+    pub async fn anonymous_playback(
+        &self,
+        base: &str,
+        body: &[u8],
+    ) -> Result<(Vec<u8>, String), ClientError> {
+        let device = self
+            .playback_identity
+            .current()
+            .await
+            .map_err(ClientError::Other)?;
+        let data = self
+            .send_anonymous_playback_once(base, body, &device)
+            .await?;
+        if !data.is_empty() {
+            return Ok((data, device.device_id));
+        }
+        log::info!("v5 playback empty response route=anon event=refresh");
+        match self
+            .playback_identity
+            .refresh_after_empty(&device.device_id)
+            .await
+        {
+            Ok(Some(refreshed)) => {
+                let data = self
+                    .send_anonymous_playback_once(base, body, &refreshed)
+                    .await?;
+                Ok((data, refreshed.device_id))
+            }
+            Ok(None) => Ok((Vec::new(), device.device_id)),
+            Err(error) => Err(ClientError::Other(error)),
+        }
+    }
+
+    async fn send_anonymous_playback_once(
+        &self,
+        base: &str,
+        body: &[u8],
+        device: &PlaybackDevice,
+    ) -> Result<Vec<u8>, ClientError> {
+        let identity = crate::sign::v5::AnonymousV5Identity {
+            device_id: &device.device_id,
+            install_id: &device.install_id,
+            cdid: &device.cdid,
+            egdi: &device.egdi,
+        };
+        let send = self.do_resp_with_transient_retry(
+            || {
+                let signed = crate::sign::v5::sign_anonymous_playback_v5(base, body, &identity)
+                    .map_err(ClientError::Other)?;
+                Ok(UpstreamRequest {
+                    method: Some("POST".to_string()),
+                    url: signed.url,
+                    body: Some(body.to_vec()),
+                    headers: signed.headers,
+                    no_sign: true,
+                    pin: None,
+                })
+            },
+            Some(crate::upstream::http::API_BODY_LIMIT_BYTES),
+            true,
+            false,
+        );
+        let (data, _) = super::playback_trace::with_device(&device.device_id, send).await?;
+        Ok(data)
+    }
+
+    /// One bounded identity rotation for playback recovery.
+    ///
+    /// A standby device from the pool costs nothing and is preferred; only a
+    /// pool that holds nothing else pays for a fresh registration, which can
+    /// take seconds, so callers wrap this in their own deadline. No device is
+    /// retired on an empty body: [failed] is the identity to step away from,
+    /// not a verdict about it.
+    pub async fn rotate_playback_identity(&self, failed: Option<&str>) -> Result<Device, String> {
+        match failed {
+            Some(failed) => match self.pool.get_excluding(failed).await {
+                Ok(device) => Ok(device),
+                Err(_) => self.pool.replace_failed(failed).await,
+            },
+            None => {
+                let victim = self.pool.get().await?;
+                match self.pool.get_excluding(&victim.device_id).await {
+                    Ok(device) => Ok(device),
+                    Err(_) => self.pool.replace_failed(&victim.device_id).await,
+                }
+            }
+        }
     }
 }
 
