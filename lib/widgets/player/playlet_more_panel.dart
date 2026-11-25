@@ -21,6 +21,8 @@ class PlayletMorePanel extends StatefulWidget {
     this.clearScreen = false,
     this.onToggleClearScreen,
     this.onOpenDanmakuSettings,
+    this.statisticsEnabled = false,
+    this.onToggleStatistics,
     this.rateLabel,
     this.onOpenRate,
     this.qualityLabel,
@@ -42,6 +44,10 @@ class PlayletMorePanel extends StatefulWidget {
 
   /// 「弹幕设置」入口（官方 `jm3.e`，label `a2v`，在弹幕开关之后）。
   final VoidCallback? onOpenDanmakuSettings;
+
+  /// 当前详细统计浮层状态。回调非空时显示开/关入口，点击后收起面板。
+  final bool statisticsEnabled;
+  final VoidCallback? onToggleStatistics;
 
   /// 倍速/清晰度的**入口行**（行尾是当前档，点击交给宿主开档位弹层）。
   ///
@@ -154,6 +160,11 @@ class _PlayletMorePanelState extends State<PlayletMorePanel> {
                         'danmaku_settings',
                         widget.onOpenDanmakuSettings!,
                       ),
+                    if (widget.onToggleStatistics != null)
+                      _actionRow('statistics', '详细统计信息', null, () {
+                        widget.onToggleStatistics!();
+                        Navigator.pop(context);
+                      }, value: widget.statisticsEnabled ? '已开启' : '已关闭'),
                     // aae.xml 底部整行「取消」按钮（@string/biu，16sp 居中、
                     // 上下 16dip），点击仅关闭面板。
                     Semantics(

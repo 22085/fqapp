@@ -17,6 +17,7 @@ import '../services/native_player.dart';
 import '../services/playback_format.dart';
 import '../services/playback_gesture_levels.dart';
 import '../services/player_layout_preferences.dart';
+import '../services/player_load_diagnostics.dart';
 import '../services/player_preferences.dart';
 import '../services/player_style_config.dart';
 import '../services/player_system_ui.dart';
@@ -39,6 +40,7 @@ import 'player/quality_icon.dart';
 import 'player/player_cover.dart';
 import 'player/player_side_panel.dart';
 import 'player/player_split_panel.dart' show SplitPanelAxis;
+import 'player/player_statistics_overlay.dart';
 import 'player/player_toast.dart';
 import 'player/player_video_layout.dart';
 import 'player/story_seek_bar.dart';
@@ -217,6 +219,10 @@ class VideoPlayerChrome extends StatefulWidget {
   final Future<void> Function(double)? onPlaybackRateChanged;
   final Future<void> Function(double)? onPlaybackVolumeChanged;
 
+  /// 当前加载尝试的诊断快照。统计浮层轮询时即时调用；宿主会用一个
+  /// 闭包核对 attempt 与当前目标集，避免显示上一集的样本。
+  final PlayerLoadSample? Function()? loadSample;
+
   /// 最终确定的 seek 目标（进度条拖动收尾、横滑收尾、±10s 快进/回拖、
   /// 播完重播回零）。拖动过程中的实时 seek 不上报，只报收尾值，
   /// 对齐官方 `seekTo()` 的 `ON_SEEK_FINISH` 时机（l.java:1213-1227）。
@@ -301,6 +307,7 @@ class VideoPlayerChrome extends StatefulWidget {
     this.onQualitySelected,
     this.onPlaybackRateChanged,
     this.onPlaybackVolumeChanged,
+    this.loadSample,
     this.openFullScreen = false,
     this.layoutMode = PlayerLayoutMode.immersive,
     this.splitPanel,
@@ -374,6 +381,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   bool _resumeAfterSeek = false;
   bool _modalOpen = false;
   bool _panelOpen = false;
+  bool _statisticsVisible = false;
 
   /// 面板形态：横屏（短剧全屏）走右侧深色抽屉（`StoryEpisodeDrawer`，
   /// 官方截图第二十三轮），竖屏走白色 bottom sheet（`StoryPlayerPanel`）。
@@ -1625,6 +1633,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
           onFontScaleSelected: () {
             if (mounted) setState(() {});
           },
+          statisticsEnabled: _statisticsVisible,
+          onToggleStatistics: () =>
+              setState(() => _statisticsVisible = !_statisticsVisible),
           fillScreen: widget.fillScreen,
           onFillScreenChanged: widget.onFillScreenChanged,
           defaultMute: widget.defaultMute,
@@ -1901,6 +1912,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
           // 官方 `jm3.t0`：行尾当前档 + 点击级联打开字号弹层。
           fontScaleLabel: ShortSeriesFontScale.label,
           onOpenFontSettings: () => _pendingFontScale = true,
+          statisticsEnabled: _statisticsVisible,
+          onToggleStatistics: () =>
+              setState(() => _statisticsVisible = !_statisticsVisible),
           onOpenListenMode: widget.onOpenListenMode,
           onOpenOfflineCache: widget.onOpenOfflineCache,
         );
@@ -1936,6 +1950,9 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                       Navigator.pop(sheetContext);
                     }
                   : null,
+              statisticsEnabled: _statisticsVisible,
+              onToggleStatistics: () =>
+                  setState(() => _statisticsVisible = !_statisticsVisible),
             )
           : StatefulBuilder(
               builder: (context, setSheetState) => SafeArea(
@@ -2049,6 +2066,47 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
                           },
                         ),
                       ],
+                      const SizedBox(height: 12),
+                      InkWell(
+                        key: const ValueKey('player-more-statistics-row'),
+                        onTap: () {
+                          setState(
+                            () => _statisticsVisible = !_statisticsVisible,
+                          );
+                          Navigator.pop(sheetContext);
+                        },
+                        child: SizedBox(
+                          height: 44,
+                          child: Row(
+                            children: [
+                              const Text(
+                                '详细统计信息',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: Color(0xFF1B1B1B),
+                                ),
+                              ),
+                              const Spacer(),
+                              Text(
+                                _statisticsVisible ? '已开启' : '已关闭',
+                                key: const ValueKey(
+                                  'player-more-statistics-value',
+                                ),
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  color: Color(0xFF777777),
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              const Icon(
+                                Icons.chevron_right,
+                                size: 18,
+                                color: Color(0xFF777777),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -2464,6 +2522,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     final covered = animation.value > 0;
     if (covered == _routeCovered) return;
     _routeCovered = covered;
+    setState(() {});
     if (covered) {
       // 新路由盖住播放页：把系统栏还给上层页面。全屏时不走
       // `_restoreSystemUi`，否则被 push 的详情页会跟着转屏。
@@ -2496,6 +2555,7 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
   Widget build(BuildContext context) => isWindowsDesktop
       ? DesktopVideoChrome(
           configuration: widget,
+          routeVisible: !_routeCovered,
           onRateSelected: (rate) async {
             ++_rateGeneration;
             setState(() => _rate = rate);
@@ -3228,6 +3288,24 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
             ),
           ),
         ],
+        if (_statisticsVisible)
+          Positioned.fromRect(
+            rect: layout.video.intersect(layout.viewport),
+            child: LayoutBuilder(
+              builder: (context, constraints) => PlayerStatisticsOverlay(
+                player: widget.player,
+                position: _position,
+                duration: widget.duration,
+                playbackRate: _rate,
+                currentIndex: widget.currentIndex,
+                episodeLabel: _episodeNumberLabel,
+                active: !_routeCovered,
+                loadSample: widget.loadSample,
+                displaySize: constraints.biggest,
+                onClose: () => setState(() => _statisticsVisible = false),
+              ),
+            ),
+          ),
         _lockButton(window, insets),
         // 分屏视频盒的底部紧凑条：时间/进度 + 播放/下一集/倍速/全屏。
         if (compact && _ready && showChrome && (_visible || _seeking))

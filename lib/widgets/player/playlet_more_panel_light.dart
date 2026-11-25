@@ -30,6 +30,8 @@ class PlayletMorePanelLight extends StatelessWidget {
     this.onOpenDanmakuSettings,
     this.fontScaleLabel,
     this.onOpenFontSettings,
+    this.statisticsEnabled = false,
+    this.onToggleStatistics,
     this.onOpenListenMode,
     this.onOpenOfflineCache,
     this.rateLabel,
@@ -54,6 +56,10 @@ class PlayletMorePanelLight extends StatelessWidget {
   /// 官方 `jm3.t0.m()`：点击关闭面板并打开字号弹层（`nm3.e`）。null 时
   /// 整行不出现（feed 长按面板未接字号）。
   final VoidCallback? onOpenFontSettings;
+
+  /// 当前详细统计浮层状态；回调非空时点击切换并收起面板。
+  final bool statisticsEnabled;
+  final VoidCallback? onToggleStatistics;
 
   /// 官方 `jm3.d0.y()`：点击关闭面板并打开听书模式页。null 时整行不出现。
   final VoidCallback? onOpenListenMode;
@@ -241,6 +247,17 @@ class PlayletMorePanelLight extends StatelessWidget {
                         onTap: () {
                           Navigator.pop(context);
                           onOpenFontSettings!();
+                        },
+                      ),
+                    if (onToggleStatistics != null)
+                      _actionRow(
+                        context,
+                        key: 'player-more-light-statistics',
+                        label: '详细统计信息',
+                        trailing: statisticsEnabled ? '已开启' : '已关闭',
+                        onTap: () {
+                          onToggleStatistics!();
+                          Navigator.pop(context);
                         },
                       ),
                   ]),
