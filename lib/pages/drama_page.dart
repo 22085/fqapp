@@ -2,6 +2,7 @@ import '../widgets/video_player_chrome.dart';
 import '../services/desktop_platform.dart';
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
@@ -2051,42 +2052,34 @@ class _DramaPageState extends ConsumerState<DramaPage>
             opening: _openingId == item.id,
             playback: onScreen ? _inline : null,
             video: onScreen
-                ? _InlineVideoLayer(
-                    item: item,
-                    playback: _inline,
-                    statisticsOverlayBuilder: _feedStatisticsVisible
-                        ? (displaySize) {
-                            final index = _inline.activeEpisodeIndex ?? 0;
-                            final episodes = _inline.episodes;
-                            final episodeLabel =
-                                index >= 0 && index < episodes.length
-                                ? episodes[index].title
-                                : '';
-                            return PlayerStatisticsOverlay(
-                              key: ValueKey<Object>((
-                                item.id,
-                                _inline.activeVid.value,
-                                _inline.player?.hashCode,
-                                index,
-                              )),
-                              player: _inline.player,
-                              position: _inline.position,
-                              duration: _inline.duration.value,
-                              playbackRate: _inline.rate.value,
-                              currentIndex: index,
-                              episodeLabel: episodeLabel,
-                              active:
-                                  _tickerEnabled &&
-                                  !_modalOpen &&
-                                  !_feedPanelOpen,
-                              displaySize: displaySize,
-                              onClose: () => setState(
-                                () => _feedStatisticsVisible = false,
-                              ),
-                            );
-                          }
-                        : null,
-                  )
+                ? _InlineVideoLayer(item: item, playback: _inline)
+                : null,
+            statisticsOverlayBuilder: onScreen && _feedStatisticsVisible
+                ? (displaySize) {
+                    final index = _inline.activeEpisodeIndex ?? 0;
+                    final episodes = _inline.episodes;
+                    final episodeLabel = index >= 0 && index < episodes.length
+                        ? episodes[index].title
+                        : '';
+                    return PlayerStatisticsOverlay(
+                      key: ValueKey<Object>((
+                        item.id,
+                        _inline.activeVid.value,
+                        _inline.player?.hashCode,
+                        index,
+                      )),
+                      player: _inline.player,
+                      position: _inline.position,
+                      duration: _inline.duration.value,
+                      playbackRate: _inline.rate.value,
+                      currentIndex: index,
+                      episodeLabel: episodeLabel,
+                      active: _tickerEnabled && !_modalOpen && !_feedPanelOpen,
+                      displaySize: displaySize,
+                      onClose: () =>
+                          setState(() => _feedStatisticsVisible = false),
+                    );
+                  }
                 : null,
             // 弹幕与视频同裁剪（12dp 圆角内），清屏态整层不出现（与播放
             // 页 chrome 的 `!_clearScreen` 同门）。
@@ -3055,6 +3048,7 @@ class _DramaFeedCard extends StatelessWidget {
   final MediaItem item;
   final bool opening;
   final Widget? video;
+  final Widget Function(Size displaySize)? statisticsOverlayBuilder;
 
   /// 弹幕层，与视频一起裁在 12dp 圆角内；清屏/未上屏时由宿主不传或整层
   /// 自隐藏。层自身 IgnorePointer，不抢手势。
@@ -3084,6 +3078,7 @@ class _DramaFeedCard extends StatelessWidget {
     required this.item,
     required this.opening,
     this.video,
+    this.statisticsOverlayBuilder,
     this.danmakuOverlay,
     this.errorOverlay,
     this.playback,
@@ -3258,6 +3253,51 @@ class _DramaFeedCard extends StatelessWidget {
                     ),
                   ],
                 ),
+              ),
+            ),
+          ),
+        if (statisticsOverlayBuilder != null && playback != null)
+          Positioned.fill(
+            child: LayoutBuilder(
+              builder: (context, constraints) => ListenableBuilder(
+                listenable: Listenable.merge([
+                  playback!.videoSize,
+                  playback!.duration,
+                  playback!.rate,
+                ]),
+                builder: (context, _) {
+                  final window = constraints.biggest;
+                  final wide = isWindowsDesktop || window.width >= 840;
+                  final layout = PlayerVideoLayout.calculate(
+                    window: window,
+                    insets: EdgeInsets.zero,
+                    videoSize: playback!.videoSize.value,
+                    fullScreen: true,
+                    fit: wide ? VideoFit.contain : VideoFit.fillFrame,
+                  );
+                  final insets = MediaQuery.paddingOf(context);
+                  final top = insets.top + _feedDanmakuTopMargin;
+                  final viewport = Rect.fromLTRB(
+                    insets.left,
+                    top,
+                    window.width - insets.right,
+                    math.max(top, window.height - bottomInset - 160),
+                  );
+                  if (viewport.isEmpty) return const SizedBox.shrink();
+                  return Stack(
+                    children: [
+                      Positioned.fromRect(
+                        rect: PlayerStatisticsOverlay.placement(
+                          viewport: viewport,
+                          video: layout.video,
+                        ),
+                        child: statisticsOverlayBuilder!(
+                          layout.video.intersect(layout.viewport).size,
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
           ),
@@ -4343,13 +4383,8 @@ class _SwipeUpHint extends StatelessWidget {
 class _InlineVideoLayer extends StatelessWidget {
   final MediaItem item;
   final InlineVideoPlayback playback;
-  final Widget Function(Size displaySize)? statisticsOverlayBuilder;
 
-  const _InlineVideoLayer({
-    required this.item,
-    required this.playback,
-    this.statisticsOverlayBuilder,
-  });
+  const _InlineVideoLayer({required this.item, required this.playback});
 
   /// The cover laid over this card while nothing is playing (or before the
   /// first frame arrives).
@@ -4391,8 +4426,6 @@ class _InlineVideoLayer extends StatelessWidget {
             playback.firstFrame,
             playback.rotation,
             playback.videoSize,
-            playback.duration,
-            playback.rate,
           ]),
           builder: (context, _) {
             final cover = _cover(cacheWidth, wide: wide);
@@ -4413,9 +4446,6 @@ class _InlineVideoLayer extends StatelessWidget {
               // the source is wide enough to be pinned to its width. The
               // overflow is clipped by the ClipRRect above this layer.
               fit: wide ? VideoFit.contain : VideoFit.fillFrame,
-            );
-            final visibleVideo = layout.video.intersect(
-              Rect.fromLTWH(0, 0, window.width, window.height),
             );
             return Stack(
               fit: StackFit.expand,
@@ -4449,11 +4479,6 @@ class _InlineVideoLayer extends StatelessWidget {
                     videoSize.width <= 0 ||
                     videoSize.height <= 0)
                   cover,
-                if (statisticsOverlayBuilder != null && !visibleVideo.isEmpty)
-                  Positioned.fromRect(
-                    rect: visibleVideo,
-                    child: statisticsOverlayBuilder!(visibleVideo.size),
-                  ),
               ],
             );
           },

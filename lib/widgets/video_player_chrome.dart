@@ -2767,6 +2767,30 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
     final showTextActions =
         _bottomRateTextVisible &&
         (!_fullScreen || landscape || _clearScreen || controls);
+    final statisticsVideo = PlayerVideoLayout.calculate(
+      window: window,
+      insets: insets,
+      videoSize: _videoSize,
+      fit: compact
+          ? VideoFit.contain
+          : PlayerVideoLayout.fitFor(
+              fillScreen: widget.fillScreen,
+              fullScreen: _fullScreen || landscape,
+            ),
+      panelFraction: compact ? 0 : _panelFraction,
+      restingPanelFraction: compact ? 0 : _panelRestFraction,
+      fullScreen: _fullScreen || landscape,
+      compact: compact,
+    ).video;
+    final statisticsViewport = layout.viewport.intersect(
+      Rect.fromLTRB(
+        insets.left,
+        insets.top +
+            (landscape ? _landscapeTopBarHeight : _portraitTopBarHeight),
+        window.width - insets.right,
+        window.height - insets.bottom - (compact ? 76 : (landscape ? 80 : 0)),
+      ),
+    );
     // 旧底栏清屏/还原只在 pad 配置开启时出现（`jj3/i.java:620-637`）。
     // 手机旧栏项序「清晰度 / 倍速」（bom.xml），清晰度仅多档流在场。
     return Stack(
@@ -3288,22 +3312,23 @@ class _VideoPlayerChromeState extends State<VideoPlayerChrome>
             ),
           ),
         ],
-        if (_statisticsVisible)
+        if (_statisticsVisible && !statisticsViewport.isEmpty)
           Positioned.fromRect(
-            rect: layout.video.intersect(layout.viewport),
-            child: LayoutBuilder(
-              builder: (context, constraints) => PlayerStatisticsOverlay(
-                player: widget.player,
-                position: _position,
-                duration: widget.duration,
-                playbackRate: _rate,
-                currentIndex: widget.currentIndex,
-                episodeLabel: _episodeNumberLabel,
-                active: !_routeCovered,
-                loadSample: widget.loadSample,
-                displaySize: constraints.biggest,
-                onClose: () => setState(() => _statisticsVisible = false),
-              ),
+            rect: PlayerStatisticsOverlay.placement(
+              viewport: statisticsViewport,
+              video: statisticsVideo,
+            ),
+            child: PlayerStatisticsOverlay(
+              player: widget.player,
+              position: _position,
+              duration: widget.duration,
+              playbackRate: _rate,
+              currentIndex: widget.currentIndex,
+              episodeLabel: _episodeNumberLabel,
+              active: !_routeCovered,
+              loadSample: widget.loadSample,
+              displaySize: statisticsVideo.intersect(layout.viewport).size,
+              onClose: () => setState(() => _statisticsVisible = false),
             ),
           ),
         _lockButton(window, insets),

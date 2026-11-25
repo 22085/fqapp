@@ -16,6 +16,28 @@ import '../../services/player_load_diagnostics.dart';
 /// open. It owns the polling loop so every chrome variant has the same timing,
 /// stale-reply guard, and lifecycle behavior.
 class PlayerStatisticsOverlay extends StatefulWidget {
+  /// Prefer letterboxing over covering the picture, within the host's safe
+  /// area. A smaller gap cannot hold the header and a usable scroll region.
+  static Rect placement({required Rect viewport, required Rect video}) {
+    final visibleVideo = video.intersect(viewport);
+    if (visibleVideo.isEmpty) return viewport;
+    final above = Rect.fromLTRB(
+      viewport.left,
+      viewport.top,
+      viewport.right,
+      visibleVideo.top,
+    );
+    if (above.height >= 150) return above;
+    final left = Rect.fromLTRB(
+      viewport.left,
+      viewport.top,
+      visibleVideo.left,
+      viewport.bottom,
+    );
+    if (left.width >= 220 && left.height >= 150) return left;
+    return visibleVideo;
+  }
+
   const PlayerStatisticsOverlay({
     super.key,
     required this.player,
