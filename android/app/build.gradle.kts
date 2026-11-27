@@ -69,6 +69,10 @@ android {
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.ssff.cc.vv"
+        // 上游 1.0.206 起 manifest 用 ${appLabel} 做应用名（coexist 那个分支
+        // 的 manifestPlaceholders 在合并时被我连 coexist 一起删了，run #38
+        // 的 manifest 合并因此报错）；这里直接给定固定名。
+        manifestPlaceholders["appLabel"] = "什锦铺"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
