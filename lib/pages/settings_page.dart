@@ -71,6 +71,13 @@ class SettingsPage extends StatefulWidget {
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
+
+  /// Silent startup update check, called from the app root. The
+  /// implementation lives on [_SettingsPageState] (upstream 1.0.206 made
+  /// this page stateful and the merge put the update statics there);
+  /// this forwards so `SettingsPage.checkOnStartup` keeps working.
+  static Future<void> checkOnStartup(BuildContext context) =>
+      _SettingsPageState.checkOnStartup(context);
 }
 
 class _SettingsPageState extends State<SettingsPage> {
