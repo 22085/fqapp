@@ -201,10 +201,17 @@ jobs:
       # makes the second and later `flutter build apk` runs cheap. The release
       # build reuses every cacheable task output (R8, resource shrink, CMake
       # objects for shortplay_crypto) instead of redoing them.
-      # Cache writes are limited to master by default; PRs read only, which is
-      # the behaviour we want for a public repo's cache budget.
+      # Cache writes are limited to the default branch (master) by default, so
+      # runs on `ads` never wrote anything and re-downloaded every dependency
+      # from Maven Central each time — run #34 and run #37 both died on HTTP
+      # 429 (Too Many Requests) resolving kotlin-gradle-plugins-bom:2.3.20.
+      # Let `ads` write its own branch-scoped cache too; PRs stay read-only.
+      # One successful run populates it, and later runs reuse the downloaded
+      # dependencies instead of hitting Maven Central again.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@07d1f8453baaff67fb503883367f8b13e6158a54 # v6.4.0
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/master' && github.ref != 'refs/heads/ads' }}
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
