@@ -67,7 +67,7 @@ dependencies {
     implementation 'com.google.code.gson:gson:2.9.0'
     implementation 'com.github.bumptech.glide:glide:3.7.0'
 
-    // Bundled mediation AARs (Huijing 5.6.1.2 / ad-mill 5.6.1), via the
+    // Bundled mediation AARs (Huijing 5.6.1.5 / ad-mill 5.6.1), via the
     // flatDir repository above (see the AGP note there). Names are the
     // file names minus the .aar extension.
     api(name: 'ad-mill-adscope-adapter-5.6.1.7-5.6.1', ext: 'aar')
@@ -84,7 +84,7 @@ dependencies {
     api(name: 'beizi_fusion_sdk_5.6.1.7', ext: 'aar')
     api(name: 'GDTSDK.unionNormal.4.710.1580', ext: 'aar')
 
-    api(name: 'hj-openads-5.6.1.2', ext: 'aar')
+    api(name: 'hj-openads-5.6.1.5', ext: 'aar')
 
     api(name: 'kssdkad', ext: 'aar')
     api(name: 'octopus_ad_sdk_2.6.10.10', ext: 'aar')

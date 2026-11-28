@@ -1,4 +1,11 @@
-# Vendoring notes — flutter_ads_plugin (Huijing 5.6.1.2 / ad-mill 5.6.1)
+# Vendoring notes — flutter_ads_plugin (Huijing 5.6.1.5 / ad-mill 5.6.1)
+#
+# 2026-11-28: hj-openads bumped 5.6.1.2 -> 5.6.1.5 from user-supplied
+# `flutter_ads_plugin-hj561_5_0_oks3.zip`. That zip differs from the
+# original `flutter_ads_plugin-hj561_3_45sm.zip` in exactly two places:
+# the hj-openads AAR and the build.gradle reference to it. The other 17
+# AARs are byte-identical, Java/Dart/manifest unchanged. New openads has
+# 10 more (obfuscated) classes; no changelog in the zip.
 #
 # Source: user-supplied `flutter_ads_plugin-hj561_3_45sm.zip` (plugin
 # version 0.0.1, Android-only). Vendored at `plugins/flutter_ads_plugin`
